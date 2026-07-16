@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <!-- iPhone 全画面・ピンチズーム無効(描画を邪魔しない) -->
+  <meta name="viewport"
+        content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <title>Phase 0 書き味検証</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      overflow: hidden;
+      background: #48484c;
+      /* iOS Safari のタップ時ハイライト・選択を無効化 */
+      -webkit-tap-highlight-color: transparent;
+      -webkit-user-select: none;
+      user-select: none;
+      overscroll-behavior: none;
+    }
+    canvas {
+      display: block;
+      touch-action: none; /* 描画中のスクロール/ズームを止める */
+    }
+    #loading {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #ddd;
+      font-family: -apple-system, sans-serif;
+      font-size: 15px;
+      text-align: center;
+      padding: 24px;
+    }
+    #err {
+      color: #ff9a9a;
+      max-width: 32em;
+      line-height: 1.6;
+    }
+  </style>
+</head>
+<body>
+  <div id="loading">読み込み中… 指またはApple Pencilで描いてください</div>
+  <script type="module">
+    // wasm-bindgen が生成した JS グルー。`init()` 実行時に Rust の run() が走る。
+    import init from "./pkg/phase0_desktop.js";
+    init()
+      .then(() => {
+        const el = document.getElementById("loading");
+        if (el) el.remove();
+      })
+      .catch((e) => {
+        console.error(e);
+        const el = document.getElementById("loading");
+        if (el) {
+          el.innerHTML =
+            '<div id="err">起動に失敗しました。<br>' +
+            'この端末/ブラウザが WebGPU または WebGL2 に対応していない可能性があります。' +
+            '<br>iOS 18 以降の Safari を推奨します。<br><br>' +
+            '<small>' + (e && e.message ? e.message : e) + '</small></div>';
+        }
+      });
+  </script>
+</body>
+</html>

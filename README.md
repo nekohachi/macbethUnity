@@ -26,4 +26,7 @@ cargo test -p brush-core
 cargo run --release -p phase0-desktop
 ```
 
+**iPhone / iPad の Safari でも試せます**(Mac 不要、WASM + WebGPU)。
+手順は [apps/phase0-desktop/web/README.md](apps/phase0-desktop/web/README.md) を参照。
+
 詳細は [apps/phase0-desktop/README.md](apps/phase0-desktop/README.md) を参照。

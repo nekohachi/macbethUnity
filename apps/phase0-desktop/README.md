@@ -14,7 +14,7 @@
 色は RGBA16Float・リニア空間・premultiplied alpha で合成しており、
 本番のタイルキャンバスと同じ前提で書き味を評価できる。
 
-## 実行
+## 実行(デスクトップ)
 
 GPU のあるデスクトップ環境(Windows / macOS / Linux)で:
 
@@ -24,6 +24,20 @@ cargo run --release -p phase0-desktop
 
 ペンタブレット/タッチスクリーンがあれば筆圧が反映される(winit の Touch force 経由)。
 マウスの場合は「速度→筆圧」シミュレーション(P キーで切替)で入り抜きの挙動を確認できる。
+
+## 実行(iPhone / iPad の Safari)
+
+同じコードを WebAssembly にビルドして、**Mac 不要**で iPhone / iPad の Safari から
+指 / Apple Pencil で試せる。手順は [web/README.md](web/README.md) を参照。
+
+```sh
+./build-web.sh          # web/pkg を生成(ビルド済みのものも同梱済み)
+cd web && python3 -m http.server 8000
+# → 同一 Wi-Fi の iPhone Safari で http://<PCのIP>:8000/ を開く
+```
+
+> Web 版はあくまで触感確認用。真の低遅延・Apple Pencil 実筆圧・120Hz の評価は
+> ネイティブ iOS ビルド(要 Mac)が必要。
 
 ## 操作
 

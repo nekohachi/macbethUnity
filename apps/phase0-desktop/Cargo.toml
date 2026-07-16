@@ -2,13 +2,41 @@
 name = "phase0-desktop"
 version = "0.1.0"
 edition.workspace = true
-description = "Phase 0: 書き味検証用デスクトップアプリ(wgpu + winit)"
+description = "Phase 0: 書き味検証用アプリ(wgpu + winit)。デスクトップと iPhone Safari(WASM)で動く"
 
 [dependencies]
 brush-core = { path = "../../crates/brush-core" }
 wgpu = "0.19"
 winit = "0.29"
-pollster = "0.3"
 bytemuck = { version = "1", features = ["derive"] }
 log = "0.4"
+
+# --- ネイティブ(デスクトップ)専用 ---
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+pollster = "0.3"
 env_logger = "0.11"
+
+# --- WASM(iPhone Safari など)専用 ---
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "=0.2.92"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = [
+    "Document",
+    "Window",
+    "Element",
+    "HtmlCanvasElement",
+    "CssStyleDeclaration",
+    "Performance",
+] }
+console_error_panic_hook = "0.1"
+console_log = "1"
+# WebGPU が無い環境(古い iOS)では WebGL2 へフォールバックできるようにする
+wgpu = { version = "0.19", features = ["webgl"] }
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+path = "src/lib.rs"
+
+[[bin]]
+name = "phase0-desktop"
+path = "src/main.rs"

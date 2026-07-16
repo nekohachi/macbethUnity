@@ -345,6 +345,7 @@ impl Gfx {
         })
     }
 
+    #[allow(dead_code)] // ネイティブのログ出力でのみ使用
     pub fn canvas_size(&self) -> (u32, u32) {
         self.canvas_size
     }
