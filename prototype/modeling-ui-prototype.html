@@ -173,15 +173,15 @@ button{font-family:inherit; font-size:inherit; color:inherit; background:none; b
   border-radius:2px; padding:0 3px; color:#dbe2e8}
 .marquee{position:absolute; border:1px solid #e8eef2; background:rgba(232,238,242,.14); pointer-events:none; display:none}
 
-/* 左下のタッチ用クラスタ */
-.cluster{position:absolute; left:12px; bottom:12px; display:flex; flex-direction:column; align-items:center; gap:6px; z-index:8}
-.cluster .mods{display:flex; gap:6px}
-.cmod{width:42px; height:34px; border-radius:var(--radius); font-weight:600; font-size:10px; letter-spacing:.03em;
+/* 左下のタッチ用クラスタ:  SHF  F  /  CTL  ALT */
+.cluster{position:absolute; left:12px; bottom:12px; display:grid; grid-template-columns:46px 66px;
+  grid-auto-rows:auto; gap:6px; z-index:8; align-items:end}
+.cmod{width:46px; height:40px; border-radius:var(--radius); font-weight:600; font-size:10px; letter-spacing:.03em;
   background:rgba(37,42,48,.9); border:1px solid var(--line); color:var(--text-dim); backdrop-filter:blur(4px)}
 .cmod[data-state="latch"]{background:var(--accent-dim); border-color:var(--accent); color:#fff}
 .cmod[data-state="lock"]{background:var(--accent); border-color:var(--accent); color:#0f1418;
   box-shadow:inset 0 0 0 1px rgba(255,255,255,.4)}
-.cframe{width:64px; height:56px; border-radius:8px; display:grid; place-items:center; position:relative;
+.cframe{width:66px; height:58px; border-radius:8px; display:grid; place-items:center; position:relative;
   background:rgba(37,42,48,.92); border:1px solid var(--line-soft); color:var(--text); backdrop-filter:blur(4px);
   box-shadow:0 4px 14px rgba(0,0,0,.4); touch-action:none}
 .cframe:hover{background:var(--panel-hi)}
@@ -270,15 +270,13 @@ button{font-family:inherit; font-size:inherit; color:inherit; background:none; b
       <div class="hud hud-mode" id="hudMode"></div>
       <div class="hud hud-hint" id="hudHint"></div>
       <div class="cluster">
-        <div class="mods">
-          <button class="cmod" id="modShift" data-state="off">SHF</button>
-          <button class="cmod" id="modCtrl" data-state="off">CTL</button>
-          <button class="cmod" id="modAlt" data-state="off">ALT</button>
-        </div>
-        <button class="cframe" id="btnFrame" data-radial="selmode" title="選択をフレーム (F) — 長押しでマーキングメニュー">
+        <button class="cmod" id="modShift" data-state="off">SHF</button>
+        <button class="cframe" id="btnFrame" data-radial="selmode" title="選択をフレーム (F) — 長押しでマーキングメニュー、SHF + 長押しで編集メニュー">
           <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3"/><circle cx="12" cy="12" r="3"/></svg>
           <small>F</small>
         </button>
+        <button class="cmod" id="modCtrl" data-state="off">CTL</button>
+        <button class="cmod" id="modAlt" data-state="off">ALT</button>
       </div>
     </div>
 
@@ -394,6 +392,25 @@ Mesh.prototype.faceNormal=function(f){
 Mesh.prototype.stats=function(){
   var tris=0; for(var i=0;i<this.faces.length;i++) tris+=this.faces[i].length-2;
   return {v:this.vcount(), e:this.edges().length, f:this.faces.length, t:tris};
+};
+Mesh.prototype.faceNormals=function(){
+  var out=[]; for(var i=0;i<this.faces.length;i++) out.push(this.faceNormal(i));
+  return out;
+};
+Mesh.prototype.vertexAdj=function(){
+  var adj={};
+  this.faces.forEach(function(f,fi){ f.forEach(function(v){ (adj[v]||(adj[v]=[])).push(fi); }); });
+  return adj;
+};
+Mesh.prototype.vertexNormals=function(){
+  var fn=this.faceNormals(), adj=this.vertexAdj(), out=[];
+  for(var v=0;v<this.vcount();v++){
+    var n=[0,0,0], a=adj[v]||[];
+    a.forEach(function(f){ n[0]+=fn[f][0]; n[1]+=fn[f][1]; n[2]+=fn[f][2]; });
+    var L=Math.hypot(n[0],n[1],n[2])||1;
+    out.push([n[0]/L,n[1]/L,n[2]/L]);
+  }
+  return out;
 };
 function Builder(){ this.pos=[]; this.faces=[]; this.map=new Map(); }
 Builder.prototype.v=function(x,y,z){
@@ -616,7 +633,9 @@ var PRIM_ORDER=["cube","sphere","cylinder","cone","torus","plane","disk","platon
    4. トポロジ編集
    ========================================================================= */
 function ekey(a,b){ return a<b? a+"_"+b : b+"_"+a; }
-function insertEdgeLoop(mesh, ea, eb, t){
+
+// 四角形ストリップをたどってループを収集する
+function loopStrip(mesh, ea, eb, t){
   var ef=mesh.edgeFaceMap(), strip=[], seenFace={};
   function walk(a,b,tt,fromFace,forward){
     var guard=0;
@@ -639,14 +658,46 @@ function insertEdgeLoop(mesh, ea, eb, t){
   }
   walk(ea,eb,t,-1,true);
   walk(eb,ea,1-t, strip.length? strip[0].face : -1, false);
+  return strip;
+}
+// エッジ上の分割点。エッジフローが有効なら頂点法線から三次ベジエ（PN エッジ）で
+// 曲げて、周囲のサーフェスの流れに沿わせる。
+function splitPoint(mesh, a, b, t, flow, vn){
+  var P1=mesh.p(a), P2=mesh.p(b);
+  if(!flow || !vn) return [P1[0]+(P2[0]-P1[0])*t, P1[1]+(P2[1]-P1[1])*t, P1[2]+(P2[2]-P1[2])*t];
+  var N1=vn[a], N2=vn[b];
+  var d=[P2[0]-P1[0],P2[1]-P1[1],P2[2]-P1[2]];
+  var w12=d[0]*N1[0]+d[1]*N1[1]+d[2]*N1[2];
+  var w21=-(d[0]*N2[0]+d[1]*N2[1]+d[2]*N2[2]);
+  var b210=[],b120=[];
+  for(var k=0;k<3;k++){
+    b210.push((2*P1[k]+P2[k]-w12*N1[k])/3);
+    b120.push((2*P2[k]+P1[k]-w21*N2[k])/3);
+  }
+  var u=1-t, out=[];
+  for(var k2=0;k2<3;k2++)
+    out.push(u*u*u*P1[k2] + 3*u*u*t*b210[k2] + 3*u*t*t*b120[k2] + t*t*t*P2[k2]);
+  return out;
+}
+// 予測線用。ループに沿った点列をローカル座標で返す
+function loopPreviewPoints(mesh, ea, eb, t, flow){
+  var strip=loopStrip(mesh,ea,eb,t);
   if(!strip.length) return null;
+  var vn = flow? mesh.vertexNormals() : null;
+  var pts=[splitPoint(mesh,strip[0].a,strip[0].b,strip[0].t,flow,vn)];
+  strip.forEach(function(r){ pts.push(splitPoint(mesh,r.d,r.c,r.t,flow,vn)); });
+  return {pts:pts, count:strip.length};
+}
+function insertEdgeLoop(mesh, ea, eb, t, flow){
+  var strip=loopStrip(mesh,ea,eb,t);
+  if(!strip.length) return null;
+  var vn = flow? mesh.vertexNormals() : null;
   var out=mesh.clone(), splitOf={};
   function splitVert(a,b,tt){
     var lo=Math.min(a,b), hi=Math.max(a,b), k=lo+"_"+hi;
     if(splitOf[k]!==undefined) return splitOf[k];
-    var tn=(a===lo)? tt : 1-tt;
-    var pa=out.p(lo), pb=out.p(hi), i=out.pos.length/3;
-    out.pos.push(pa[0]+(pb[0]-pa[0])*tn, pa[1]+(pb[1]-pa[1])*tn, pa[2]+(pb[2]-pa[2])*tn);
+    var p=splitPoint(mesh,a,b,tt,flow,vn), i=out.pos.length/3;
+    out.pos.push(p[0],p[1],p[2]);
     splitOf[k]=i; return i;
   }
   var replace={};
@@ -694,6 +745,134 @@ function extrudeFaces(mesh, faceSet, dist){
   return {mesh:out, count:sel.length};
 }
 
+// エッジの押し出し。共有する頂点は一度だけ複製するので、連続したエッジは
+// 一枚の帯として押し出される。
+function extrudeEdges(mesh, edgeIdxSet, edgeList, dist){
+  var out=mesh.clone(), sel=[], used={};
+  edgeIdxSet.forEach(function(ei){
+    var e=edgeList[ei]; if(!e) return;
+    sel.push(e); used[e[0]]=1; used[e[1]]=1;
+  });
+  if(!sel.length) return null;
+  var ef=mesh.edgeFaceMap(), fn=mesh.faceNormals();
+  var n=[0,0,0];
+  sel.forEach(function(e){
+    (ef[ekey(e[0],e[1])]||[]).forEach(function(f){ n[0]+=fn[f][0]; n[1]+=fn[f][1]; n[2]+=fn[f][2]; });
+  });
+  var L=Math.hypot(n[0],n[1],n[2]);
+  if(L<1e-6) n=[0,1,0]; else n=[n[0]/L,n[1]/L,n[2]/L];
+  var remap={};
+  Object.keys(used).forEach(function(vs){
+    var v=+vs, p=out.p(v), i=out.pos.length/3;
+    out.pos.push(p[0]+n[0]*dist, p[1]+n[1]*dist, p[2]+n[2]*dist);
+    remap[v]=i;
+  });
+  // 隣接面での向きと逆向きに張ることで、法線の向きが揃う
+  sel.forEach(function(e){
+    var a=e[0], b=e[1], fs=ef[ekey(a,b)]||[];
+    var fwd=true;
+    if(fs.length){
+      var v=mesh.faces[fs[0]];
+      for(var i=0;i<v.length;i++) if(v[i]===a && v[(i+1)%v.length]===b){ fwd=false; break; }
+    }
+    if(fwd) out.faces.push([a,b,remap[b],remap[a]]);
+    else    out.faces.push([b,a,remap[a],remap[b]]);
+  });
+  var newEdges=sel.map(function(e){ return [remap[e[0]], remap[e[1]]]; });
+  return {mesh:out, newEdges:newEdges, count:sel.length};
+}
+
+// 頂点の統合。map は 元の頂点 -> 代表座標のキー
+function weldVerts(mesh, groups){
+  var out=new Mesh(), target={}, made={};
+  groups.forEach(function(g,gi){
+    var c=[0,0,0];
+    g.forEach(function(v){ var p=mesh.p(v); c[0]+=p[0]; c[1]+=p[1]; c[2]+=p[2]; });
+    c=[c[0]/g.length, c[1]/g.length, c[2]/g.length];
+    made["g"+gi]=c;
+    g.forEach(function(v){ target[v]="g"+gi; });
+  });
+  var idx={}, n=0;
+  function outIdx(v){
+    var k=target[v]!==undefined? target[v] : "v"+v;
+    if(idx[k]===undefined){
+      idx[k]=n++;
+      var p=target[v]!==undefined? made[target[v]] : mesh.p(v);
+      out.pos.push(p[0],p[1],p[2]);
+    }
+    return idx[k];
+  }
+  mesh.faces.forEach(function(f){
+    var nf=[], prev=-1;
+    f.forEach(function(v){ var i=outIdx(v); if(i!==prev && nf.indexOf(i)<0) nf.push(i); prev=i; });
+    if(nf.length>=3) out.faces.push(nf);
+  });
+  return out;
+}
+
+// Catmull-Clark 細分割（Maya の Smooth / 本アプリのディバイドに相当）
+function catmullClark(mesh){
+  var out=new Mesh();
+  var ef=mesh.edgeFaceMap(), nv=mesh.vcount();
+  var facePt=[], faceIdx=[];
+  mesh.faces.forEach(function(f,fi){
+    var c=mesh.faceCenter(fi);
+    facePt.push(c); faceIdx.push(out.pos.length/3); out.pos.push(c[0],c[1],c[2]);
+  });
+  var edgeIdx={}, edgeList=mesh.edges();
+  edgeList.forEach(function(e){
+    var k=ekey(e[0],e[1]), fs=ef[k]||[];
+    var pa=mesh.p(e[0]), pb=mesh.p(e[1]), p;
+    if(fs.length===2){
+      var f0=facePt[fs[0]], f1=facePt[fs[1]];
+      p=[(pa[0]+pb[0]+f0[0]+f1[0])/4,(pa[1]+pb[1]+f0[1]+f1[1])/4,(pa[2]+pb[2]+f0[2]+f1[2])/4];
+    } else p=[(pa[0]+pb[0])/2,(pa[1]+pb[1])/2,(pa[2]+pb[2])/2];   // 境界は中点
+    edgeIdx[k]=out.pos.length/3; out.pos.push(p[0],p[1],p[2]);
+  });
+  var adj=mesh.vertexAdj(), vertIdx=[];
+  var boundary={}, bAdj={};
+  edgeList.forEach(function(e){
+    if((ef[ekey(e[0],e[1])]||[]).length===1){
+      boundary[e[0]]=1; boundary[e[1]]=1;
+      (bAdj[e[0]]||(bAdj[e[0]]=[])).push(e[1]);
+      (bAdj[e[1]]||(bAdj[e[1]]=[])).push(e[0]);
+    }
+  });
+  for(var v=0;v<nv;v++){
+    var P=mesh.p(v), np;
+    if(boundary[v]){
+      // 境界規則: (m1 + m2 + 6P)/8
+      var nb=bAdj[v]||[], s=[0,0,0];
+      nb.slice(0,2).forEach(function(w){ var q=mesh.p(w); s[0]+=(P[0]+q[0])/2; s[1]+=(P[1]+q[1])/2; s[2]+=(P[2]+q[2])/2; });
+      np=[(s[0]+6*P[0])/8,(s[1]+6*P[1])/8,(s[2]+6*P[2])/8];
+    } else {
+      var fs=adj[v]||[], nn=fs.length;
+      if(!nn){ np=P; }
+      else{
+        var F=[0,0,0];
+        fs.forEach(function(f){ F[0]+=facePt[f][0]; F[1]+=facePt[f][1]; F[2]+=facePt[f][2]; });
+        F=[F[0]/nn,F[1]/nn,F[2]/nn];
+        var R=[0,0,0], rc=0;
+        edgeList.forEach(function(e){
+          if(e[0]!==v && e[1]!==v) return;
+          var w=(e[0]===v)? e[1] : e[0], q=mesh.p(w);
+          R[0]+=(P[0]+q[0])/2; R[1]+=(P[1]+q[1])/2; R[2]+=(P[2]+q[2])/2; rc++;
+        });
+        if(rc){ R=[R[0]/rc,R[1]/rc,R[2]/rc]; } else R=P;
+        np=[(F[0]+2*R[0]+(nn-3)*P[0])/nn,(F[1]+2*R[1]+(nn-3)*P[1])/nn,(F[2]+2*R[2]+(nn-3)*P[2])/nn];
+      }
+    }
+    vertIdx.push(out.pos.length/3); out.pos.push(np[0],np[1],np[2]);
+  }
+  mesh.faces.forEach(function(f,fi){
+    for(var i=0;i<f.length;i++){
+      var v=f[i], vn=f[(i+1)%f.length], vp=f[(i-1+f.length)%f.length];
+      out.faces.push([vertIdx[v], edgeIdx[ekey(v,vn)], faceIdx[fi], edgeIdx[ekey(vp,v)]]);
+    }
+  });
+  return out;
+}
+
 /* =========================================================================
    5. 状態
    ========================================================================= */
@@ -723,6 +902,8 @@ var App={
   panelsHidden:false, fingerTool:false,
   soft:{strength:0, radius:1.0},          // ゲージ1 / ゲージ2
   toolOpts:{extrudeDist:.35},
+  cut:{snapStep:0, edgeFlow:false},       // マルチカット: ステップ % スナップ（0 = オフ）、エッジフロー
+  smoothAngle:30,                         // スムージング角度（Maya の既定 30°）
   cam:{focal:35, near:.05, far:500, ortho:false}
 };
 // モードごとのゲージの意味（スカルプト・マテリアルでは中身が置き換わる）
@@ -807,8 +988,9 @@ var fillL=new THREE.DirectionalLight(0x9fb4c6,.28); fillL.position.set(-4,2,-3);
 
 var AXCOL=[0xd8524f,0x6cc94a,0x4f8fe0];
 var MAT={
-  surfSmooth:new THREE.MeshPhongMaterial({color:0x9aa4ad, specular:0x2a3138, shininess:24, side:THREE.DoubleSide, flatShading:false}),
-  surfFlat:new THREE.MeshPhongMaterial({color:0x9aa4ad, specular:0x21272c, shininess:8, side:THREE.DoubleSide, flatShading:true}),
+  surf:new THREE.MeshPhongMaterial({color:0x9aa4ad, specular:0x2a3138, shininess:24, side:THREE.DoubleSide}),
+  cutLine:new THREE.LineBasicMaterial({color:0xffe14a}),
+  cutPt:new THREE.PointsMaterial({color:0xffe14a, size:9, sizeAttenuation:false}),
   wire:new THREE.LineBasicMaterial({color:0x141a1f, transparent:true, opacity:.9}),
   wireSel:new THREE.LineBasicMaterial({color:0x4dff4d}),          // Maya の選択グリーン
   wireComp:new THREE.LineBasicMaterial({color:0x46525d}),         // コンポーネントモード時
@@ -819,17 +1001,38 @@ var MAT={
   softPt:new THREE.PointsMaterial({color:0xd06a2a, size:7, sizeAttenuation:false}),
   pivot:new THREE.LineBasicMaterial({color:0xf2d97a})
 };
-function surfMat(){ return App.display==="smooth" ? MAT.surfSmooth : MAT.surfFlat; }
+// スムージング角度で法線を分ける（Maya のソフト / ハードエッジに相当）。
+// 「シェード」表示は角度 0 = すべてハード、それ以外は App.smoothAngle を使う。
+function surfaceGeometry(mesh, t){
+  var angle = App.display==="shaded" ? 0 : App.smoothAngle;
+  var fn=mesh.faceNormals(), adj=mesh.vertexAdj(), cosA=Math.cos(angle*Math.PI/180)-1e-4;
+  var pos=[], nor=[];
+  for(var k=0;k<t.tri.length;k+=3){
+    var fi=t.triToFace[k/3], base=fn[fi];
+    for(var j=0;j<3;j++){
+      var v=t.tri[k+j];
+      pos.push(mesh.pos[v*3],mesh.pos[v*3+1],mesh.pos[v*3+2]);
+      var n=[0,0,0];
+      (adj[v]||[]).forEach(function(g){
+        var m=fn[g];
+        if(m[0]*base[0]+m[1]*base[1]+m[2]*base[2] >= cosA){ n[0]+=m[0]; n[1]+=m[1]; n[2]+=m[2]; }
+      });
+      var L=Math.hypot(n[0],n[1],n[2])||1;
+      nor.push(n[0]/L,n[1]/L,n[2]/L);
+    }
+  }
+  var g=new THREE.BufferGeometry();
+  g.setAttribute("position",new THREE.Float32BufferAttribute(pos,3));
+  g.setAttribute("normal",new THREE.Float32BufferAttribute(nor,3));
+  return g;
+}
 
 function buildGfx(o){
   if(o.gfx){ root.remove(o.gfx.group); disposeGroup(o.gfx.group); }
   var grp=new THREE.Group();
   grp.position.copy(o.pos); grp.quaternion.copy(o.quat); grp.scale.copy(o.scale);
   var t=o.mesh.triangulate();
-  var g=new THREE.BufferGeometry();
-  g.setAttribute("position",new THREE.Float32BufferAttribute(o.mesh.pos.slice(),3));
-  g.setIndex(t.tri); g.computeVertexNormals();
-  var surf=new THREE.Mesh(g,surfMat()); surf.userData.obj=o; grp.add(surf);
+  var surf=new THREE.Mesh(surfaceGeometry(o.mesh,t),MAT.surf); surf.userData.obj=o; grp.add(surf);
   var ed=o.mesh.edges(), ep=[];
   ed.forEach(function(e){
     ep.push(o.mesh.pos[e[0]*3],o.mesh.pos[e[0]*3+1],o.mesh.pos[e[0]*3+2],
@@ -854,7 +1057,6 @@ function applyDisplay(o){
   if(!o.gfx) return;
   var d=App.display;
   o.gfx.surf.visible = (d!=="wire");
-  o.gfx.surf.material = surfMat();
   o.gfx.wire.visible = (d==="wire" || d==="shadedWire" || (o===App.sel));
   o.gfx.wire.material = (o!==App.sel) ? MAT.wire
                        : (App.compMode==="object" ? MAT.wireSel : MAT.wireComp);
@@ -902,6 +1104,35 @@ function rebuildOverlay(){
     g3.setIndex(idx);
     var mh=new THREE.Mesh(g3,MAT.faceSel); xform(mh,o); mh.renderOrder=4; overlay.add(mh);
   }
+}
+
+/* ---- マルチカットの予測線 ---- */
+var cutPrev=new THREE.Group(); scene.add(cutPrev);
+var cutState=null;   // {edge, t}
+function clearCutPreview(){ cutPrev.children.slice().forEach(function(c){ cutPrev.remove(c); disposeGroup(c); }); cutState=null; }
+function snapCutT(t,e){
+  if(shiftOn(e)) return .5;                                  // Shift で 50% に固定
+  var s=App.cut.snapStep;
+  if(s>0){ var st=s/100; t=Math.round(t/st)*st; }
+  return Math.max(.02,Math.min(.98,t));
+}
+function updateCutPreview(l,e){
+  clearCutPreview();
+  var o=App.sel; if(!o||!o.gfx||App.tool!=="multicut") return;
+  var r=pickEdge(o,l,30); if(r.edge<0) return;
+  var t=snapCutT(r.t,e), ed=o.gfx.edges[r.edge];
+  var pv=loopPreviewPoints(o.mesh,ed[0],ed[1],t,App.cut.edgeFlow);
+  if(!pv) return;
+  cutState={edge:r.edge, t:t, count:pv.count};
+  var flat=[]; pv.pts.forEach(function(p){ flat.push(p[0],p[1],p[2]); });
+  var g=new THREE.BufferGeometry().setAttribute("position",new THREE.Float32BufferAttribute(flat,3));
+  var ln=new THREE.Line(g,MAT.cutLine); xform(ln,o); ln.renderOrder=5; cutPrev.add(ln);
+  var p0=pv.pts[0];
+  var gp=new THREE.BufferGeometry().setAttribute("position",new THREE.Float32BufferAttribute([p0[0],p0[1],p0[2]],3));
+  var pt=new THREE.Points(gp,MAT.cutPt); xform(pt,o); pt.renderOrder=5; cutPrev.add(pt);
+  document.getElementById("hudHint").innerHTML=
+    "エッジループ挿入 <kbd>"+Math.round(t*100)+"%</kbd> · "+pv.count+" 面"+
+    (App.cut.edgeFlow? " · エッジフロー":"")+" · <kbd>Shift</kbd> で 50%";
 }
 
 function resize(){
@@ -1134,16 +1365,24 @@ canvas.addEventListener("pointerdown",function(e){
   var l=localXY(e);
   if(e.pointerType==="mouse"){
     if(altOn(e)){ gesture={mode: e.button===0?"tumble": e.button===1?"pan":"dolly"}; return; }
-    if(e.button===2){ openRadial("selmode",e.clientX,e.clientY); gesture={mode:"marking"}; return; }
+    // 右クリック = マーキングメニュー、Shift + 右クリック = 編集メニュー（Maya と同じ）
+    if(e.button===2){ openRadial(shiftOn(e)?"editmenu":"selmode",e.clientX,e.clientY); gesture={mode:"marking"}; return; }
     if(e.button===1){ gesture={mode:"pan"}; return; }
   }
   if(e.pointerType==="touch" && !App.fingerTool){
-    gesture={mode:"tumble"}; startHold(e.clientX,e.clientY); return;
+    gesture={mode:"tumble"}; startHold(e.clientX,e.clientY,shiftOn(e)); return;
   }
   gesture={mode:"tool", moved:false, sx:l.x, sy:l.y};
-  if(e.pointerType!=="mouse") startHold(e.clientX,e.clientY);
+  if(e.pointerType!=="mouse") startHold(e.clientX,e.clientY,shiftOn(e));
   toolDown(l,e);
 },{passive:false});
+
+// ホバー（マウス / ペン）: マルチカットの予測線
+canvas.addEventListener("pointermove",function(e){
+  if(e.buttons!==0 || pointers.size) return;
+  if(App.tool==="multicut") updateCutPreview(localXY(e),e);
+});
+canvas.addEventListener("pointerleave",function(){ if(!pointers.size) clearCutPreview(); });
 
 canvas.addEventListener("pointermove",function(e){
   var p=pointers.get(e.pointerId); if(!p) return;
@@ -1181,12 +1420,12 @@ canvas.addEventListener("pointercancel",endPointer);
 canvas.addEventListener("wheel",function(e){ e.preventDefault(); dollyCam(1+Math.sign(e.deltaY)*0.09); },{passive:false});
 
 var holdTimer=null, holdSX=0, holdSY=0;
-function startHold(x,y){
+function startHold(x,y,shift){
   holdSX=x; holdSY=y; clearTimeout(holdTimer);
   holdTimer=setTimeout(function(){
     if(pointers.size!==1) return;
-    endMarquee(); drag=null; gesture=null;
-    openRadial("selmode",x,y);
+    endMarquee(); drag=null; gesture=null; clearCutPreview();
+    openRadial(shift?"editmenu":"selmode",x,y);   // SHF ラッチ + 長押し = 編集メニュー
   },400);
 }
 function cancelHold(){ clearTimeout(holdTimer); }
@@ -1256,12 +1495,26 @@ function captureTargets(){
 }
 function toolDown(l,e){
   var o=App.sel;
+  if(App.tool==="multicut"){ updateCutPreview(l,e); return; }   // 押している間は予測線、離して確定
   var h=o? pickHandle(l) : -1;
   if(h>=0){
+    var label={move:"移動",rotate:"回転",scale:"スケール"}[App.tool];
+    var snap0=snapshot();
+    // Shift + 移動 = 押し出してから移動（Maya と同じ）
+    if(App.tool==="move" && App.compMode!=="object" && App.comp.size && shiftOn(e)){
+      var done=false;
+      if(App.compMode==="face"){
+        var rf=extrudeFaces(o.mesh,App.comp,0);
+        if(rf){ o.mesh=rf.mesh; buildGfx(o); done=true; }
+      } else if(App.compMode==="edge"){
+        done=!!doExtrudeEdges(0);
+      } else toast("頂点の押し出しは未対応です（そのまま移動します）");
+      if(done){ makeEditable(o,"押し出し"); rebuildOverlay(); label="押し出し"; }
+    }
     var c=pivotWorld();
     raycaster.setFromCamera(ndc(l.x,l.y),camera);
     var sc=toScreen(c);
-    drag={tool:App.tool, handle:h, pivot:c.clone(), snap:snapshot(), orig:captureTargets(),
+    drag={tool:App.tool, label:label, handle:h, pivot:c.clone(), snap:snap0, orig:captureTargets(),
           sx:l.x, sy:l.y, scr:sc, t0: h<3? rayAxisT(raycaster.ray,c,AXES[h]) : 0,
           a0: Math.atan2(l.y-sc.y, l.x-sc.x),
           plane:new THREE.Plane().setFromNormalAndCoplanarPoint(
@@ -1269,10 +1522,11 @@ function toolDown(l,e){
     if(h===3){ var p0=new THREE.Vector3(); if(raycaster.ray.intersectPlane(drag.plane,p0)) drag.start=p0; }
     hotHandle=h; return;
   }
-  if(App.tool!=="multicut") startMarquee(l);
+  startMarquee(l);
 }
 function toolMove(l,e){
   if(marq){ updateMarquee(l); return; }
+  if(App.tool==="multicut"){ updateCutPreview(l,e); return; }
   if(!drag) return;
   var o=App.sel; if(!o) return;
   raycaster.setFromCamera(ndc(l.x,l.y),camera);
@@ -1339,10 +1593,11 @@ function applyDelta(o,dg,fn,obj){
 function toolUp(l,e,moved){
   if(marq){ finishMarquee(l,e); hotHandle=-1; releaseLatches(); refreshUI(); return; }
   if(drag){
-    if(moved) commitUndo({move:"移動",rotate:"回転",scale:"スケール"}[drag.tool], drag.snap);
+    if(moved || drag.label==="押し出し") commitUndo(drag.label, drag.snap);
     drag=null; hotHandle=-1; releaseLatches(); refreshUI(); return;
   }
-  if(!moved){ if(App.tool==="multicut") doMultiCut(l); else clickSelect(l,e); }
+  if(App.tool==="multicut"){ doMultiCut(l,e); releaseLatches(); return; }   // 離した位置で確定
+  if(!moved) clickSelect(l,e);
   releaseLatches();
 }
 function startMarquee(l){ marq={x0:l.x,y0:l.y,x1:l.x,y1:l.y}; marqEl.style.display="block"; updateMarquee(l); }
@@ -1407,16 +1662,90 @@ function clickSelect(l,e){
   rebuildOverlay(); refreshUI();
 }
 function makeEditable(o,r){ if(o.parametric){ o.parametric=false; toast(r+" — "+o.name+" は編集可能メッシュになりました"); } }
-function doMultiCut(l){
+function doMultiCut(l,e){
   var o=App.sel;
   if(!o){ toast("先にオブジェクトを選択してください"); return; }
-  var r=pickEdge(o,l,26);
-  if(r.edge<0){ toast("エッジの近くをタップしてください"); return; }
-  var e=o.gfx.edges[r.edge], res=insertEdgeLoop(o.mesh,e[0],e[1],r.t);
+  if(!cutState) updateCutPreview(l,e);
+  if(!cutState){ toast("エッジの近くをタップしてください"); clearCutPreview(); return; }
+  var ed=o.gfx.edges[cutState.edge], t=cutState.t;
+  var res=insertEdgeLoop(o.mesh,ed[0],ed[1],t,App.cut.edgeFlow);
+  clearCutPreview();
   if(!res){ toast("この位置にはループを挿入できません"); return; }
   pushUndo("エッジループ挿入"); makeEditable(o,"トポロジを変更");
   o.mesh=res.mesh; App.comp.clear(); buildGfx(o); rebuildOverlay(); refreshUI();
-  toast("エッジループを挿入 — "+res.count+" 面を分割");
+  toast("エッジループを挿入 "+Math.round(t*100)+"% — "+res.count+" 面を分割");
+}
+function doSmooth(){
+  var o=App.sel; if(!o){ toast("オブジェクトを選択してください"); return; }
+  if(o.mesh.faces.length*4 > 60000){ toast("面数が多すぎます（プロトタイプの上限）"); return; }
+  pushUndo("スムース"); makeEditable(o,"スムース");
+  o.mesh=catmullClark(o.mesh); App.comp.clear();
+  buildGfx(o); rebuildOverlay(); refreshUI();
+  toast("スムース — "+o.mesh.faces.length+" 面");
+}
+function doExtrudeEdges(dist){
+  var o=App.sel;
+  if(!o||App.compMode!=="edge"||!App.comp.size){ toast("エッジモードでエッジを選択してから実行してください"); return null; }
+  var res=extrudeEdges(o.mesh,App.comp,o.gfx.edges, dist!==undefined? dist : App.toolOpts.extrudeDist);
+  if(!res) return null;
+  o.mesh=res.mesh; buildGfx(o);
+  // 新しいエッジを選択し直す
+  var keyIdx={}; o.gfx.edges.forEach(function(ed,i){ keyIdx[ekey(ed[0],ed[1])]=i; });
+  App.comp.clear();
+  res.newEdges.forEach(function(ed){ var i=keyIdx[ekey(ed[0],ed[1])]; if(i!==undefined) App.comp.add(i); });
+  rebuildOverlay();
+  return res;
+}
+function doCollapseFaces(){
+  var o=App.sel;
+  if(!o||App.compMode!=="face"||!App.comp.size){ toast("フェースを選択してください"); return; }
+  pushUndo("コラプス"); makeEditable(o,"トポロジを変更");
+  var groups=[]; App.comp.forEach(function(fi){ if(o.mesh.faces[fi]) groups.push(o.mesh.faces[fi].slice()); });
+  o.mesh=weldVerts(o.mesh,groups); App.comp.clear();
+  buildGfx(o); rebuildOverlay(); refreshUI(); toast("フェースをコラプス");
+}
+function doMergeVerts(){
+  var o=App.sel;
+  if(!o||App.compMode!=="vertex"||App.comp.size<2){ toast("頂点を 2 つ以上選択してください"); return; }
+  pushUndo("頂点をマージ"); makeEditable(o,"トポロジを変更");
+  o.mesh=weldVerts(o.mesh,[Array.from(App.comp)]); App.comp.clear();
+  buildGfx(o); rebuildOverlay(); refreshUI(); toast("頂点をマージ");
+}
+// 共有エッジ (u,v) をまたいで面 A と B を 1 枚に結合する
+function mergeFacesAcrossEdge(A,B,u,v){
+  var i=-1,p,q;
+  for(var k=0;k<A.length;k++){
+    var a=A[k], b=A[(k+1)%A.length];
+    if((a===u&&b===v)||(a===v&&b===u)){ i=k; p=a; q=b; break; }
+  }
+  if(i<0) return null;
+  var Ar=[]; for(var k2=0;k2<A.length;k2++) Ar.push(A[(i+1+k2)%A.length]);   // q ... p
+  var j=-1;
+  for(var k3=0;k3<B.length;k3++) if(B[k3]===q && B[(k3+1)%B.length]===p){ j=k3; break; }
+  if(j<0){
+    var rev=B.slice().reverse();
+    for(var k4=0;k4<rev.length;k4++) if(rev[k4]===q && rev[(k4+1)%rev.length]===p){ j=k4; B=rev; break; }
+    if(j<0) return null;
+  }
+  var Br=[]; for(var k5=0;k5<B.length;k5++) Br.push(B[(j+1+k5)%B.length]);   // p ... q
+  return Ar.concat(Br.slice(1,Br.length-1));
+}
+function doDeleteEdges(){
+  var o=App.sel;
+  if(!o||App.compMode!=="edge"||!App.comp.size){ toast("エッジを選択してください"); return; }
+  var m=o.mesh.clone(), merged=0;
+  var targets=[]; App.comp.forEach(function(ei){ var ed=o.gfx.edges[ei]; if(ed) targets.push(ed); });
+  targets.forEach(function(ed){
+    var ef=m.edgeFaceMap(), fs=ef[ekey(ed[0],ed[1])]||[];
+    if(fs.length!==2) return;
+    var r=mergeFacesAcrossEdge(m.faces[fs[0]], m.faces[fs[1]], ed[0], ed[1]);
+    if(!r || r.length<3) return;
+    m.faces[fs[0]]=r; m.faces.splice(fs[1],1); merged++;
+  });
+  if(!merged){ toast("結合できるエッジがありません（境界エッジは削除できません）"); return; }
+  pushUndo("エッジを削除"); makeEditable(o,"トポロジを変更");
+  o.mesh=m; App.comp.clear(); buildGfx(o); rebuildOverlay(); refreshUI();
+  toast("エッジを削除 — "+merged+" 面を結合");
 }
 function doExtrude(){
   var o=App.sel;
@@ -1495,6 +1824,50 @@ var RADIALS={
       c[DIRS[i]]={label:PRIM[k].label, sub:PRIM[k].en, icon:PRIM[k].icon, act:function(){ addPrimitive(k); }};
     }); return c;
   })()},
+  // Shift + 右クリック（PC）/ SHF + 長押し（タブレット）の編集メニュー。選択モードで内容が変わる
+  editmenu: function(){
+    var m=App.compMode;
+    if(m==="face") return {compass:{
+      N: {label:"押し出し", sub:"Extrude", icon:I.extrude, act:doExtrude},
+      NE:{label:"ベベル", sub:"Bevel", icon:I.scale, act:todo("ベベル")},
+      E: {label:"ブリッジ", sub:"Bridge", icon:I.vEdge, act:todo("ブリッジ")},
+      SE:{label:"複製", sub:"Duplicate", icon:I.dup, act:todo("フェースの複製")},
+      S: {label:"削除", sub:"Delete", icon:I.del, act:doDelete},
+      SW:{label:"コラプス", sub:"Collapse", icon:I.vVert, act:doCollapseFaces},
+      W: {label:"スムース", sub:"Smooth", icon:I.smooth, act:doSmooth},
+      NW:{label:"抽出", sub:"Extract", icon:I.vFace, act:todo("抽出")}
+    }};
+    if(m==="edge") return {compass:{
+      N: {label:"押し出し", sub:"Extrude", icon:I.extrude, act:function(){ if(doExtrudeEdges()){ pushUndo("エッジを押し出し"); makeEditable(App.sel,"押し出し"); refreshUI(); } }},
+      NE:{label:"ベベル", sub:"Bevel", icon:I.scale, act:todo("ベベル")},
+      E: {label:"ブリッジ", sub:"Bridge", icon:I.vEdge, act:todo("ブリッジ")},
+      SE:{label:"エッジループ挿入", sub:"Insert Loop", icon:I.multicut, act:function(){ App.tool="multicut"; manipSig=""; refreshUI(); }},
+      S: {label:"削除", sub:"Delete", icon:I.del, act:doDeleteEdges},
+      SW:{label:"スピン", sub:"Spin", icon:I.rotate, act:todo("スピンエッジ")},
+      W: {label:"接続", sub:"Connect", icon:I.vMulti, act:todo("接続")},
+      NW:{label:"分離", sub:"Detach", icon:I.vVertFace, act:todo("分離")}
+    }};
+    if(m==="vertex") return {compass:{
+      N: {label:"マージ", sub:"Merge", icon:I.vVert, act:doMergeVerts},
+      NE:{label:"中心にマージ", sub:"To Center", icon:I.vObj, act:doMergeVerts},
+      E: {label:"面取り", sub:"Chamfer", icon:I.scale, act:todo("面取り")},
+      SE:{label:"接続", sub:"Connect", icon:I.vMulti, act:todo("接続")},
+      S: {label:"削除", sub:"Delete", icon:I.del, act:todo("頂点の削除")},
+      SW:{label:"平均化", sub:"Average", icon:I.smooth, act:todo("平均化")},
+      W: {label:"分離", sub:"Detach", icon:I.vVertFace, act:todo("分離")},
+      NW:{label:"押し出し", sub:"Extrude", icon:I.extrude, act:todo("頂点の押し出し")}
+    }};
+    return {compass:{
+      N: {label:"スムース", sub:"Smooth", icon:I.smooth, act:doSmooth},
+      NE:{label:"結合", sub:"Combine", icon:I.vMulti, act:todo("結合")},
+      E: {label:"分離", sub:"Separate", icon:I.vVertFace, act:todo("分離")},
+      SE:{label:"複製", sub:"Duplicate", icon:I.dup, act:doDuplicate},
+      S: {label:"削除", sub:"Delete", icon:I.del, act:doDelete},
+      SW:{label:"ミラー", sub:"Mirror", icon:I.sym, act:todo("ミラー")},
+      W: {label:"ブーリアン", sub:"Boolean", icon:I.pCube, act:todo("ブーリアン")},
+      NW:{label:"フリーズ", sub:"Freeze", icon:I.vObj, act:todo("トランスフォームのフリーズ")}
+    }};
+  },
   outliner:{ compass:{
     N:{label:"名前変更", sub:"Rename", icon:I.rename, act:function(){ startRename(radialTarget); }},
     E:{label:"複製", sub:"Duplicate", icon:I.dup, act:function(){ App.sel=radialTarget; doDuplicate(); }},
@@ -1511,8 +1884,9 @@ function attachRadialButton(b,def){
     e.preventDefault(); closePop();
     pid=e.pointerId; sx=e.clientX; sy=e.clientY; opened=false;
     if(def.before) def.before();
-    if(e.pointerType==="mouse" && e.button===2 && def.radial){ opened=true; openRadial(def.radial,sx,sy); }
-    else if(def.radial) timer=setTimeout(function(){ opened=true; openRadial(def.radial,sx,sy); },200);
+    var key = typeof def.radial==="function" ? def.radial(e) : def.radial;
+    if(e.pointerType==="mouse" && e.button===2 && key){ opened=true; openRadial(key,sx,sy); }
+    else if(key) timer=setTimeout(function(){ opened=true; openRadial(key,sx,sy); },200);
     window.addEventListener("pointermove",onMove);
     window.addEventListener("pointerup",onUp);
   });
@@ -1520,7 +1894,8 @@ function attachRadialButton(b,def){
   function onMove(e){
     if(e.pointerId!==pid) return;
     if(!opened && def.radial && Math.hypot(e.clientX-sx,e.clientY-sy)>12){
-      clearTimeout(timer); opened=true; openRadial(def.radial,sx,sy);
+      clearTimeout(timer); opened=true;
+      openRadial(typeof def.radial==="function" ? def.radial(e) : def.radial, sx, sy);
     }
   }
   function onUp(e){
@@ -1534,8 +1909,9 @@ function attachRadialButton(b,def){
   }
 }
 function openRadial(key,cx,cy){
-  closeRadial();
-  var def=RADIALS[key]; if(!def) return;
+  closeRadial(); clearCutPreview();
+  var def=RADIALS[key]; if(typeof def==="function") def=def();
+  if(!def) return;
   var ringOuter=132, ringInner=40;
   cx=Math.max(ringOuter+16,Math.min(window.innerWidth-ringOuter-16,cx));
   cy=Math.max(ringOuter+16,Math.min(window.innerHeight-ringOuter-16,cy));
@@ -1764,7 +2140,19 @@ function renderOptions(body){
   // 1. ツールのオプション
   var ts=sect("ツール オプション", TOOLNAME[App.tool]||App.tool);
   if(App.tool==="multicut"){
-    ts.appendChild(el("div","hint","エッジをタップするとエッジループが挿入されます。タップ位置がループの分割比になります。\n四角形のストリップだけをたどります。"));
+    ts.appendChild(el("div","hint","ホバーで予測線を表示、タップまたは離した位置で挿入。\nShift で 50% に固定。"));
+    paramRow(ts,"ステップ % スナップ",App.cut.snapStep,0,50,5,
+      function(v){ return v? Math.round(v)+"%" : "オフ"; },
+      function(v){ App.cut.snapStep=v; });
+    paramRow(ts,"スムージング角度",App.smoothAngle,0,180,1,
+      function(v){ return Math.round(v)+"°"; },
+      function(v){ App.smoothAngle=v; },
+      function(){ sliderSnap=null; rebuildAllGfx(); });
+    var fl=el("button","chk"); fl.innerHTML='<i></i><span>エッジフロー</span>';
+    fl.setAttribute("aria-pressed",App.cut.edgeFlow?"true":"false");
+    fl.onclick=function(){ App.cut.edgeFlow=!App.cut.edgeFlow; fl.setAttribute("aria-pressed",App.cut.edgeFlow?"true":"false"); };
+    ts.appendChild(fl);
+    ts.appendChild(el("div","hint","エッジフロー: 新しいループを周囲のサーフェスの曲率に沿わせます（頂点法線による三次補間）。"));
   } else if(App.tool==="select"){
     paramRow(ts,"ソフト選択 強度",App.soft.strength,0,1,.01,function(v){return v.toFixed(2);},
       function(v){ App.soft.strength=v; syncGauges(); rebuildOverlay(); });
@@ -2016,11 +2404,14 @@ function setMode(id){
   if(isModel) setTimeout(resize,0);
 }
 function setDisplay(d){
-  App.display=d; applyDisplayAll();
+  var needNormals = (d==="shaded") !== (App.display==="shaded");
+  App.display=d;
+  if(needNormals) rebuildAllGfx(); else applyDisplayAll();
   toast({wire:"ワイヤーフレーム",shaded:"シェード",shadedWire:"シェード + ワイヤーフレーム",smooth:"スムースシェード"}[d]);
 }
 attachRadialButton(document.getElementById("modeBtn"), {radial:"modes", action:function(){}});
-attachRadialButton(document.getElementById("btnFrame"), {radial:"selmode", action:frameSelected});
+attachRadialButton(document.getElementById("btnFrame"),
+  {radial:function(e){ return shiftOn(e)? "editmenu" : "selmode"; }, action:frameSelected});
 
 function cycleMod(name,btn){
   var s=App.mods[name];
@@ -2101,6 +2492,7 @@ function refreshUI(){
   var o=findPanel("options"); if(o) renderOptions(o.querySelector(".pbody"));
   var l=findPanel("outliner"); if(l) renderOutliner(l.querySelector(".pbody"));
   applyDisplayAll(); refreshStats(); syncGauges(); rebuildManip();
+  if(App.tool!=="multicut") clearCutPreview();
 }
 
 /* =========================================================================
