@@ -233,6 +233,11 @@ button{font-family:inherit; font-size:inherit; color:inherit; background:none; b
     <button class="modebtn" id="modeBtn" data-radial="modes">
       <span id="modeIcon"></span><span id="modeLabel">モデリング</span><span class="caret">▼</span>
     </button>
+    <button class="topbtn" id="fileBtn" title="新規 / OBJ 読み込み / OBJ 書き出し / 復元">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M6 3h8l5 5v13H6z"/><path d="M14 3v5h5"/></svg>
+      ファイル <span class="caret" style="color:var(--text-faint);font-size:9px">▼</span>
+    </button>
+    <input type="file" id="objFile" accept=".obj,text/plain" hidden>
     <div class="topspacer"></div>
     <button class="topbtn" id="btnPanels" aria-pressed="false">
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="1"/><path d="M9 4v16"/></svg>
@@ -451,6 +456,9 @@ var I={
   shaded:'<rect x="4" y="4" width="16" height="16" rx="1" fill="currentColor" fill-opacity=".5"/>',
   shadedWire:'<rect x="4" y="4" width="16" height="16" rx="1" fill="currentColor" fill-opacity=".3"/><path d="M4 12h16M12 4v16"/>',
   smooth:'<circle cx="12" cy="12" r="8.6" fill="currentColor" fill-opacity=".5"/><path d="M8 15.4a6 6 0 0 1 5-6.6"/>',
+  sym:'<path d="M12 3v18" stroke-dasharray="2.4 2.4"/><path d="M9.4 7 4.5 12l4.9 5zM14.6 7l4.9 5-4.9 5z"/>',
+  xform:'<path d="M12 3v18M3 12h18"/><circle cx="12" cy="12" r="6.5"/><rect x="16.6" y="16.6" width="4.2" height="4.2"/><path d="M12 3l-2 2M12 3l2 2M3 12l2-2M3 12l2 2"/>',
+  file:'<path d="M6 3h8l5 5v13H6z"/><path d="M14 3v5h5"/>',
   rename:'<path d="M4 20h16"/><path d="M15.4 4.6 19 8.2 8.6 18.6 4.4 19.6l1-4.2z"/>',
   dup:'<rect x="3.6" y="3.6" width="12" height="12" rx="1"/><path d="M8.4 20.4h12v-12"/>',
   del:'<path d="M4 6.6h16M9.4 6.6V4.4h5.2v2.2M6.4 6.6l1 13.2a1 1 0 0 0 1 .9h7.2a1 1 0 0 0 1-.9l1-13.2"/>',
@@ -897,6 +905,8 @@ SceneObject.prototype.rebuild=function(){ if(this.parametric) this.mesh=PRIM[thi
 var App={
   objects:[], sel:null,
   compMode:"object", tool:"select",
+  manip:"all",        // マニピュレータ: all（ユニバーサル）/ move / rotate / scale
+  symX:false,         // 対称編集（ローカル X）
   comp:new Set(),
   undo:[], redo:[],
   mods:{shift:"off",ctrl:"off",alt:"off"},
@@ -945,19 +955,19 @@ function pushUndo(l){ commitUndo(l, snapshot()); }
 function commitUndo(label,snap){
   App.undo.push({label:label, snap:snap});
   if(App.undo.length>40) App.undo.shift();
-  App.redo.length=0; updateHistoryButtons();
+  App.redo.length=0; updateHistoryButtons(); scheduleSave();
 }
 function doUndo(){
   if(!App.undo.length) return;
   var e=App.undo.pop();
   App.redo.push({label:e.label, snap:snapshot()});
-  restore(e.snap); updateHistoryButtons(); toast("元に戻す: "+e.label);
+  restore(e.snap); updateHistoryButtons(); scheduleSave(); toast("元に戻す: "+e.label);
 }
 function doRedo(){
   if(!App.redo.length) return;
   var e=App.redo.pop();
   App.undo.push({label:e.label, snap:snapshot()});
-  restore(e.snap); updateHistoryButtons(); toast("やり直す: "+e.label);
+  restore(e.snap); updateHistoryButtons(); scheduleSave(); toast("やり直す: "+e.label);
 }
 function updateHistoryButtons(){
   document.getElementById("btnUndo").disabled=!App.undo.length;
@@ -1186,65 +1196,68 @@ function bboxCenter(m){
   for(var i=0;i<m.pos.length;i+=3) for(var k=0;k<3;k++){ mn[k]=Math.min(mn[k],m.pos[i+k]); mx[k]=Math.max(mx[k],m.pos[i+k]); }
   return new THREE.Vector3((mn[0]+mx[0])/2,(mn[1]+mx[1])/2,(mn[2]+mx[2])/2);
 }
+function bboxOf(o,vs){
+  var mn=[1e9,1e9,1e9],mx=[-1e9,-1e9,-1e9];
+  vs.forEach(function(v){ for(var k=0;k<3;k++){ var x=o.mesh.pos[v*3+k]; if(x<mn[k])mn[k]=x; if(x>mx[k])mx[k]=x; } });
+  return new THREE.Vector3((mn[0]+mx[0])/2,(mn[1]+mx[1])/2,(mn[2]+mx[2])/2);
+}
+// Maya と同じ: オブジェクトはトランスフォームの原点、コンポーネントは選択のバウンディングボックス中心
 function pivotWorld(){
   var o=App.sel; if(!o||!o.gfx) return null;
   o.gfx.group.updateMatrixWorld();
-  if(App.compMode==="object") return bboxCenter(o.mesh).applyMatrix4(o.gfx.group.matrixWorld);
+  if(App.compMode==="object") return o.pos.clone();
   if(!App.comp.size) return null;
   var vs=componentVerts(); if(!vs.length) return null;
-  var c=new THREE.Vector3();
-  vs.forEach(function(v){ c.add(new THREE.Vector3(o.mesh.pos[v*3],o.mesh.pos[v*3+1],o.mesh.pos[v*3+2])); });
-  return c.multiplyScalar(1/vs.length).applyMatrix4(o.gfx.group.matrixWorld);
+  return bboxOf(o,vs).applyMatrix4(o.gfx.group.matrixWorld);
 }
 function manipScale(c){
   if(App.cam.ortho) return cam.dist*0.09;
-  return camera.position.distanceTo(c)*0.14;
+  return camera.position.distanceTo(c)*0.15;
 }
+/* ハンドル ID:  0-2 移動 XYZ / 3 自由移動(中心) / 10-12 回転 XYZ / 13 ビュー軸回転
+                20-22 スケール XYZ / 23 均等スケール(中心) / 30 選択コンポーネント直接ドラッグ */
 var hotHandle=-1, manipSig="";
 function clearManip(){ manip.children.slice().forEach(function(c){ manip.remove(c); disposeGroup(c); }); }
+function manipVisible(){ return App.tool==="select"; }
+function manipLayout(){
+  var m=App.manip;
+  return { move:(m==="all"||m==="move"), rot:(m==="all"||m==="rotate"), scl:(m==="all"||m==="scale"),
+           arrow:1.0, ring:(m==="all"? 0.68 : 1.0), cube:(m==="all"? 1.3 : 1.0) };
+}
+function hot(id){ return hotHandle===id; }
 function rebuildManip(){
-  var c=pivotWorld();
+  var c= manipVisible()? pivotWorld() : null;
   if(!c){ if(manipSig){ clearManip(); manipSig=""; } return; }
-  var s=manipScale(c), t=App.tool;
-  var sig=[t,hotHandle,App.compMode,App.sel?App.sel.id:-1,App.comp.size,
+  var s=manipScale(c), m=App.manip, L=manipLayout();
+  var sig=[m,hotHandle,App.compMode,App.sel?App.sel.id:-1,App.comp.size,
            c.x.toFixed(3),c.y.toFixed(3),c.z.toFixed(3),s.toFixed(3)].join("|");
   if(sig===manipSig) return;
   manipSig=sig; clearManip();
-
-  if(t==="select"||t==="multicut"){
-    var pl=[];
-    for(var a=0;a<3;a++){
-      var d=AXES[a].clone().multiplyScalar(s*0.45);
-      pl.push(c.x-d.x,c.y-d.y,c.z-d.z, c.x+d.x,c.y+d.y,c.z+d.z);
+  for(var a=0;a<3;a++){
+    var ax=AXES[a];
+    if(L.move||L.scl){
+      var end=ax.clone().multiplyScalar((L.scl? L.cube : L.arrow)*s).add(c);
+      var lcol=(hot(a)||hot(20+a))? 0xffe680 : AXCOL[a];
+      var g=new THREE.BufferGeometry().setAttribute("position",new THREE.Float32BufferAttribute([c.x,c.y,c.z,end.x,end.y,end.z],3));
+      var ln=new THREE.Line(g,new THREE.LineBasicMaterial({color:lcol})); ln.renderOrder=6; manip.add(ln);
     }
-    var gp=new THREE.BufferGeometry().setAttribute("position",new THREE.Float32BufferAttribute(pl,3));
-    var lx=new THREE.LineSegments(gp,MAT.pivot); lx.renderOrder=6; manip.add(lx);
-    manip.add(ring(c,new THREE.Vector3(0,1,0),s*0.28,MAT.pivot,32));
-    return;
+    if(L.move){
+      var cone=new THREE.Mesh(new THREE.ConeGeometry(s*.075,s*.22,10), new THREE.MeshBasicMaterial({color:hot(a)?0xffe680:AXCOL[a]}));
+      cone.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0),ax);
+      cone.position.copy(ax.clone().multiplyScalar(L.arrow*s).add(c)); cone.renderOrder=6; manip.add(cone);
+    }
+    if(L.scl){
+      var cube=new THREE.Mesh(new THREE.BoxGeometry(s*.12,s*.12,s*.12), new THREE.MeshBasicMaterial({color:hot(20+a)?0xffe680:AXCOL[a]}));
+      cube.position.copy(ax.clone().multiplyScalar(L.cube*s).add(c)); cube.renderOrder=6; manip.add(cube);
+    }
+    if(L.rot) manip.add(ring(c,ax,L.ring*s,new THREE.LineBasicMaterial({color:hot(10+a)?0xffe680:AXCOL[a]}),64));
   }
-  if(t==="rotate"){
-    for(var a2=0;a2<3;a2++)
-      manip.add(ring(c,AXES[a2],s,new THREE.LineBasicMaterial({color:hotHandle===a2?0xffe680:AXCOL[a2]}),64));
+  if(m==="rotate")
     manip.add(ring(c,new THREE.Vector3().subVectors(camera.position,c).normalize(),s*1.18,
-      new THREE.LineBasicMaterial({color:hotHandle===3?0xffe680:0xb9c3cb}),64));
-    return;
-  }
-  for(var a3=0;a3<3;a3++){
-    var col=hotHandle===a3?0xffe680:AXCOL[a3];
-    var e=AXES[a3].clone().multiplyScalar(s).add(c);
-    var g=new THREE.BufferGeometry().setAttribute("position",
-      new THREE.Float32BufferAttribute([c.x,c.y,c.z,e.x,e.y,e.z],3));
-    var ln=new THREE.Line(g,new THREE.LineBasicMaterial({color:col})); ln.renderOrder=6; manip.add(ln);
-    var tip;
-    if(t==="scale") tip=new THREE.Mesh(new THREE.BoxGeometry(s*.13,s*.13,s*.13), new THREE.MeshBasicMaterial({color:col}));
-    else{
-      tip=new THREE.Mesh(new THREE.ConeGeometry(s*.075,s*.22,10), new THREE.MeshBasicMaterial({color:col}));
-      tip.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0),AXES[a3]);
-    }
-    tip.position.copy(e); tip.renderOrder=6; manip.add(tip);
-  }
-  var ctr=new THREE.Mesh(new THREE.SphereGeometry(s*.085,12,10),
-    new THREE.MeshBasicMaterial({color:hotHandle===3?0xffe680:0xe2c860}));
+      new THREE.LineBasicMaterial({color:hot(13)?0xffe680:0xb9c3cb}),64));
+  var ctr = (m==="scale")
+    ? new THREE.Mesh(new THREE.BoxGeometry(s*.14,s*.14,s*.14), new THREE.MeshBasicMaterial({color:hot(23)?0xffe680:0xe2c860}))
+    : new THREE.Mesh(new THREE.SphereGeometry(s*.085,12,10), new THREE.MeshBasicMaterial({color:(hot(3)||hot(30))?0xffe680:0xe2c860}));
   ctr.position.copy(c); ctr.renderOrder=6; manip.add(ctr);
 }
 function ring(c,axis,r,mat,seg){
@@ -1266,25 +1279,35 @@ function segDist(px,py,a,b){
   var t=L2? Math.max(0,Math.min(1,((px-a.x)*dx+(py-a.y)*dy)/L2)) : 0;
   return Math.hypot(a.x+dx*t-px, a.y+dy*t-py);
 }
+function ringDist(l,c,axis,r){
+  var d=1e9, q=new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0,0,1),axis.clone().normalize());
+  for(var i=0;i<64;i++){
+    var ang=i/64*Math.PI*2;
+    var ss=toScreen(new THREE.Vector3(Math.cos(ang)*r,Math.sin(ang)*r,0).applyQuaternion(q).add(c));
+    d=Math.min(d, Math.hypot(ss.x-l.x, ss.y-l.y));
+  }
+  return d;
+}
+// 優先順位: 中心 > スケールの箱 > 移動の矢印 > 回転のリング（重なりの多い順に狭い判定）
 function pickHandle(l){
+  if(!manipVisible()) return -1;
   var c=pivotWorld(); if(!c) return -1;
-  if(App.tool!=="move"&&App.tool!=="rotate"&&App.tool!=="scale") return -1;
-  var s=manipScale(c), sc=toScreen(c);
-  if(Math.hypot(sc.x-l.x, sc.y-l.y) < 15) return 3;
-  var best=-1, bd=15;
+  var s=manipScale(c), sc=toScreen(c), m=App.manip, L=manipLayout();
+  if(Math.hypot(sc.x-l.x, sc.y-l.y) < 16) return m==="scale"? 23 : 3;
+  var best=-1, bd=1e9;
+  function consider(id,d,th){ if(d<th && d<bd){ bd=d; best=id; } }
   for(var a=0;a<3;a++){
-    var d;
-    if(App.tool==="rotate"){
-      d=1e9;
-      var q=new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0,0,1),AXES[a]);
-      for(var i=0;i<48;i++){
-        var ang=i/48*Math.PI*2;
-        var w=new THREE.Vector3(Math.cos(ang)*s,Math.sin(ang)*s,0).applyQuaternion(q).add(c);
-        var ss=toScreen(w);
-        d=Math.min(d, Math.hypot(ss.x-l.x, ss.y-l.y));
-      }
-    } else d=segDist(l.x,l.y,sc,toScreen(AXES[a].clone().multiplyScalar(s).add(c)));
-    if(d<bd){ bd=d; best=a; }
+    var ax=AXES[a];
+    if(L.scl){ var cs=toScreen(ax.clone().multiplyScalar(L.cube*s).add(c)); consider(20+a, Math.hypot(cs.x-l.x,cs.y-l.y), 16); }
+    if(L.move){
+      var p0=toScreen(ax.clone().multiplyScalar(0.3*s).add(c)), p1=toScreen(ax.clone().multiplyScalar(L.arrow*s).add(c));
+      consider(a, segDist(l.x,l.y,p0,p1), 14);
+    }
+  }
+  if(best>=0) return best;
+  if(L.rot){
+    for(var a2=0;a2<3;a2++) consider(10+a2, ringDist(l,c,AXES[a2],L.ring*s), 12);
+    if(m==="rotate") consider(13, ringDist(l,c,new THREE.Vector3().subVectors(camera.position,c).normalize(),s*1.18), 12);
   }
   return best;
 }
@@ -1565,18 +1588,45 @@ function captureTargets(){
     return new THREE.Vector3(o.mesh.pos[v*3],o.mesh.pos[v*3+1],o.mesh.pos[v*3+2])
       .applyMatrix4(o.gfx.group.matrixWorld);
   });
-  return {kind:"comp", verts:verts, weights:weights, world:world,
-          inv:new THREE.Matrix4().copy(o.gfx.group.matrixWorld).invert()};
+  var out={kind:"comp", verts:verts, weights:weights, world:world,
+           inv:new THREE.Matrix4().copy(o.gfx.group.matrixWorld).invert()};
+  if(App.symX){
+    // ローカル X の鏡映位置にある頂点を相手にする。相手自身も動く側なら自分のデルタに任せる
+    var moving={}; verts.forEach(function(v){ moving[v]=1; });
+    var hash={}, m=o.mesh;
+    for(var i=0;i<m.vcount();i++) hash[m.pos[i*3].toFixed(3)+","+m.pos[i*3+1].toFixed(3)+","+m.pos[i*3+2].toFixed(3)]=i;
+    var pairs=[];
+    verts.forEach(function(v){
+      var key=(-m.pos[v*3]).toFixed(3)+","+m.pos[v*3+1].toFixed(3)+","+m.pos[v*3+2].toFixed(3);
+      if(key==="-0.000,"+m.pos[v*3+1].toFixed(3)+","+m.pos[v*3+2].toFixed(3)) key="0.000,"+m.pos[v*3+1].toFixed(3)+","+m.pos[v*3+2].toFixed(3);
+      var pv=hash[key];
+      if(pv!==undefined && pv!==v && !moving[pv]) pairs.push([v,pv]);
+    });
+    out.mirror=pairs;
+  }
+  return out;
+}
+function handleKind(h){ return h<0? null : (h===30||h<10)? "move" : h<20? "rotate" : "scale"; }
+function hitSelectedComponent(o,l){
+  if(App.compMode==="face"){
+    var hit=pickSurface(l); if(!hit||hit.object.userData.obj!==o) return false;
+    return App.comp.has(o.gfx.tri.triToFace[hit.faceIndex]);
+  }
+  if(App.compMode==="vertex"){ var v=pickVertex(o,l,22); return v>=0 && App.comp.has(v); }
+  if(App.compMode==="edge"){ var r=pickEdge(o,l,16); return r.edge>=0 && App.comp.has(r.edge); }
+  return false;
 }
 function toolDown(l,e){
   var o=App.sel;
   if(App.tool==="multicut"){ updateCutPreview(l,e); return; }   // 押している間は予測線、離して確定
   var h=o? pickHandle(l) : -1;
+  // 選択中のコンポーネントを直接ドラッグ = ビュー平面で移動（Maya のツイークに相当）
+  if(h<0 && o && App.compMode!=="object" && App.comp.size && hitSelectedComponent(o,l)) h=30;
   if(h>=0){
-    var label={move:"移動",rotate:"回転",scale:"スケール"}[App.tool];
+    var kind=handleKind(h), label={move:"移動",rotate:"回転",scale:"スケール"}[kind];
     var snap0=snapshot();
     // Shift + 移動 = 押し出してから移動（Maya と同じ）
-    if(App.tool==="move" && App.compMode!=="object" && App.comp.size && shiftOn(e)){
+    if(kind==="move" && App.compMode!=="object" && App.comp.size && shiftOn(e)){
       var done=false;
       if(App.compMode==="face"){
         var rf=extrudeFaces(o.mesh,App.comp,0);
@@ -1589,12 +1639,13 @@ function toolDown(l,e){
     var c=pivotWorld();
     raycaster.setFromCamera(ndc(l.x,l.y),camera);
     var sc=toScreen(c);
-    drag={tool:App.tool, label:label, handle:h, pivot:c.clone(), snap:snap0, orig:captureTargets(),
-          sx:l.x, sy:l.y, scr:sc, t0: h<3? rayAxisT(raycaster.ray,c,AXES[h]) : 0,
+    var axis=(h!==30 && h%10<3)? h%10 : -1;
+    drag={kind:kind, label:label, handle:h, axis:axis, pivot:c.clone(), snap:snap0, orig:captureTargets(),
+          sx:l.x, sy:l.y, scr:sc, t0: axis>=0? rayAxisT(raycaster.ray,c,AXES[axis]) : 0,
           a0: Math.atan2(l.y-sc.y, l.x-sc.x),
           plane:new THREE.Plane().setFromNormalAndCoplanarPoint(
             new THREE.Vector3().subVectors(camera.position,c).normalize(), c)};
-    if(h===3){ var p0=new THREE.Vector3(); if(raycaster.ray.intersectPlane(drag.plane,p0)) drag.start=p0; }
+    if(axis<0){ var p0=new THREE.Vector3(); if(raycaster.ray.intersectPlane(drag.plane,p0)) drag.start=p0; }
     hotHandle=h; return;
   }
   startMarquee(l);
@@ -1605,31 +1656,31 @@ function toolMove(l,e){
   if(!drag) return;
   var o=App.sel; if(!o) return;
   raycaster.setFromCamera(ndc(l.x,l.y),camera);
-  if(drag.tool==="move"){
+  if(drag.kind==="move"){
     var d;
-    if(drag.handle===3){
+    if(drag.axis<0){
       var hp=new THREE.Vector3();
       if(!drag.start || !raycaster.ray.intersectPlane(drag.plane,hp)) return;
       d=new THREE.Vector3().subVectors(hp,drag.start);
-    } else d=AXES[drag.handle].clone().multiplyScalar(rayAxisT(raycaster.ray,drag.pivot,AXES[drag.handle])-drag.t0);
+    } else d=AXES[drag.axis].clone().multiplyScalar(rayAxisT(raycaster.ray,drag.pivot,AXES[drag.axis])-drag.t0);
     applyDelta(o,drag,function(w,wt){ return w.clone().addScaledVector(d,wt); },{pos:d});
-  } else if(drag.tool==="rotate"){
+  } else if(drag.kind==="rotate"){
     var da=Math.atan2(l.y-drag.scr.y, l.x-drag.scr.x)-drag.a0;
-    var axis=drag.handle===3
+    var axisV=drag.axis<0
       ? new THREE.Vector3().subVectors(camera.position,drag.pivot).normalize()
-      : AXES[drag.handle].clone();
-    if(drag.handle<3 && axis.dot(new THREE.Vector3().subVectors(camera.position,drag.pivot))<0) da=-da;
+      : AXES[drag.axis].clone();
+    if(drag.axis>=0 && axisV.dot(new THREE.Vector3().subVectors(camera.position,drag.pivot))<0) da=-da;
     applyDelta(o,drag,function(w,wt){
-      var q=new THREE.Quaternion().setFromAxisAngle(axis,-da*wt);
+      var q=new THREE.Quaternion().setFromAxisAngle(axisV,-da*wt);
       return w.clone().sub(drag.pivot).applyQuaternion(q).add(drag.pivot);
-    },{quat:new THREE.Quaternion().setFromAxisAngle(axis,-da)});
+    },{quat:new THREE.Quaternion().setFromAxisAngle(axisV,-da)});
   } else {
     var f;
-    if(drag.handle===3) f=new THREE.Vector3(1,1,1).multiplyScalar(Math.max(.02,1+(l.x-drag.sx)*.008));
+    if(drag.axis<0) f=new THREE.Vector3(1,1,1).multiplyScalar(Math.max(.02,1+(l.x-drag.sx)*.008));
     else{
-      var tt=rayAxisT(raycaster.ray,drag.pivot,AXES[drag.handle]);
+      var tt=rayAxisT(raycaster.ray,drag.pivot,AXES[drag.axis]);
       var k=Math.max(.02, 1+(tt-drag.t0)/Math.max(1e-4,Math.abs(drag.t0))*0.6);
-      f=new THREE.Vector3(1,1,1); f.setComponent(drag.handle,k);
+      f=new THREE.Vector3(1,1,1); f.setComponent(drag.axis,k);
     }
     applyDelta(o,drag,function(w,wt){
       var r=w.clone().sub(drag.pivot);
@@ -1664,10 +1715,19 @@ function applyDelta(o,dg,fn,obj){
     var w=fn(dg.orig.world[i], dg.orig.weights[i]).applyMatrix4(dg.orig.inv);
     o.mesh.setP(v,w.x,w.y,w.z);
   });
+  // 対称編集: 相手側の頂点をローカル X で鏡映した位置に置く
+  if(dg.orig.mirror){
+    dg.orig.mirror.forEach(function(pr){
+      var p=o.mesh.p(pr[0]); o.mesh.setP(pr[1],-p[0],p[1],p[2]);
+    });
+  }
 }
 function toolUp(l,e,moved){
   if(marq){ finishMarquee(l,e); hotHandle=-1; releaseLatches(); refreshUI(); return; }
   if(drag){
+    if(drag.handle===30 && !moved){   // 選択コンポーネントをタップしただけ → 通常の選択処理
+      drag=null; hotHandle=-1; clickSelect(l,e); releaseLatches(); refreshUI(); return;
+    }
     if(moved || drag.label==="押し出し") commitUndo(drag.label, drag.snap);
     drag=null; hotHandle=-1; releaseLatches(); refreshUI(); return;
   }
@@ -1888,6 +1948,18 @@ var RADIALS={
     S: {label:MODES[2].label, sub:MODES[2].sub, icon:MODES[2].icon, act:function(){setMode("sculpt");}},
     W: {label:MODES[3].label, sub:MODES[3].sub, icon:MODES[3].icon, act:function(){setMode("material");}}
   }},
+  manipkind:{ compass:{
+    N: {label:"ユニバーサル", sub:"All  T", icon:I.xform, act:function(){ setManip("all"); }},
+    E: {label:"移動", sub:"Move  W", icon:I.move, act:function(){ setManip("move"); }},
+    S: {label:"回転", sub:"Rotate  E", icon:I.rotate, act:function(){ setManip("rotate"); }},
+    W: {label:"スケール", sub:"Scale  R", icon:I.scale, act:function(){ setManip("scale"); }}
+  }},
+  file:{ compass:{
+    N: {label:"新規シーン", sub:"New", icon:I.pPlane, act:newScene},
+    E: {label:"OBJ 読み込み", sub:"Import", icon:I.file, act:importOBJ},
+    S: {label:"OBJ 書き出し", sub:"Export", icon:I.file, act:exportOBJ},
+    W: {label:"保存を復元", sub:"Restore", icon:I.dup, act:function(){ restoreScene(true); }}
+  }},
   shading:{ compass:{
     N: {label:"ワイヤーフレーム", sub:"4", icon:I.wire, act:function(){setDisplay("wire");}},
     E: {label:"シェード", sub:"5", icon:I.shaded, act:function(){setDisplay("shaded");}},
@@ -1934,13 +2006,13 @@ var RADIALS={
     }};
     return {compass:{
       N: {label:"スムース", sub:"Smooth", icon:I.smooth, act:doSmooth},
-      NE:{label:"結合", sub:"Combine", icon:I.vMulti, act:todo("結合")},
+      NE:{label:"中心にピボット", sub:"Center Pivot", icon:I.vObj, act:doCenterPivot},
       E: {label:"分離", sub:"Separate", icon:I.vVertFace, act:todo("分離")},
       SE:{label:"複製", sub:"Duplicate", icon:I.dup, act:doDuplicate},
       S: {label:"削除", sub:"Delete", icon:I.del, act:doDelete},
       SW:{label:"ミラー", sub:"Mirror", icon:I.sym, act:todo("ミラー")},
       W: {label:"ブーリアン", sub:"Boolean", icon:I.pCube, act:todo("ブーリアン")},
-      NW:{label:"フリーズ", sub:"Freeze", icon:I.vObj, act:todo("トランスフォームのフリーズ")}
+      NW:{label:"フリーズ", sub:"Freeze", icon:I.vObj, act:doFreeze}
     }};
   },
   outliner:{ compass:{
@@ -2123,6 +2195,142 @@ function openCameraPop(anchor){
 }
 
 /* =========================================================================
+   13b. ファイル入出力 / 自動保存 / ピボット操作
+   ========================================================================= */
+function meshToOBJ(){
+  var lines=["# macbeth prototype"], base=1;
+  App.objects.forEach(function(o){
+    if(!o.gfx) buildGfx(o);
+    o.gfx.group.updateMatrixWorld();
+    lines.push("o "+o.name.replace(/\s+/g,"_"));
+    var m=o.mesh, M=o.gfx.group.matrixWorld, v=new THREE.Vector3();
+    for(var i=0;i<m.vcount();i++){
+      v.set(m.pos[i*3],m.pos[i*3+1],m.pos[i*3+2]).applyMatrix4(M);
+      lines.push("v "+v.x.toFixed(6)+" "+v.y.toFixed(6)+" "+v.z.toFixed(6));
+    }
+    m.faces.forEach(function(f){ lines.push("f "+f.map(function(i){ return i+base; }).join(" ")); });
+    base+=m.vcount();
+  });
+  return lines.join("\n")+"\n";
+}
+function parseOBJ(text){
+  var objs=[], cur=null, verts=[];
+  function start(name){ cur={name:name, mesh:new Mesh(), map:{}}; objs.push(cur); }
+  text.split(/\r?\n/).forEach(function(line){
+    var t=line.trim(); if(!t||t[0]==="#") return;
+    var a=t.split(/\s+/);
+    if(a[0]==="v"){ verts.push([parseFloat(a[1]),parseFloat(a[2]),parseFloat(a[3])]); }
+    else if(a[0]==="o"||a[0]==="g"){ if(!cur||cur.mesh.faces.length) start(a.slice(1).join("_")||"mesh"); else cur.name=a.slice(1).join("_")||cur.name; }
+    else if(a[0]==="f"){
+      if(!cur) start("mesh");
+      var f=[];
+      for(var i=1;i<a.length;i++){
+        var gi=parseInt(a[i].split("/")[0],10); if(isNaN(gi)) continue;
+        if(gi<0) gi=verts.length+gi+1;
+        var li=cur.map[gi];
+        if(li===undefined){ var vv=verts[gi-1]; if(!vv) continue; li=cur.mesh.pos.length/3; cur.mesh.pos.push(vv[0],vv[1],vv[2]); cur.map[gi]=li; }
+        if(f.indexOf(li)<0) f.push(li);
+      }
+      if(f.length>=3) cur.mesh.faces.push(f);
+    }
+  });
+  return objs.filter(function(o){ return o.mesh.faces.length; });
+}
+function exportOBJ(){
+  if(!App.objects.length){ toast("書き出すオブジェクトがありません"); return; }
+  var text=meshToOBJ(), name="macbeth_"+new Date().toISOString().slice(0,19).replace(/[:T]/g,"-")+".obj";
+  var file=null;
+  try{ file=new File([text],name,{type:"text/plain"}); }catch(_){}
+  if(file && navigator.canShare && navigator.canShare({files:[file]})){
+    navigator.share({files:[file], title:name}).then(function(){ toast("OBJ を共有しました"); })
+      .catch(function(){ downloadText(text,name); });
+    return;
+  }
+  downloadText(text,name);
+}
+function downloadText(text,name){
+  var a=document.createElement("a");
+  a.href=URL.createObjectURL(new Blob([text],{type:"text/plain"})); a.download=name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(function(){ URL.revokeObjectURL(a.href); },2000);
+  toast("OBJ を書き出しました — "+name+"（アーティファクト画面内では保存が止められることがあります。GitHub Pages で開いてください）");
+}
+function importOBJ(){ document.getElementById("objFile").click(); }
+document.getElementById("objFile").addEventListener("change",function(){
+  var f=this.files&&this.files[0]; this.value=""; if(!f) return;
+  var rd=new FileReader();
+  rd.onload=function(){
+    var objs=parseOBJ(String(rd.result));
+    if(!objs.length){ toast("読み込めるメッシュがありません"); return; }
+    pushUndo("OBJ 読み込み");
+    objs.forEach(function(d){
+      var o=new SceneObject("mesh"); o.parametric=false; o.name=d.name; o.mesh=d.mesh;
+      App.objects.push(o); App.sel=o;
+    });
+    App.comp.clear(); rebuildAllGfx(); refreshUI(); frameSelected();
+    toast("OBJ を読み込みました — "+objs.length+" オブジェクト");
+  };
+  rd.readAsText(f);
+});
+function newScene(){
+  pushUndo("新規シーン");
+  App.objects=[]; App.sel=null; App.comp.clear(); rebuildAllGfx(); refreshUI();
+  try{ localStorage.removeItem("macbeth.scene"); }catch(_){}
+  toast("新規シーン");
+}
+// --- 自動保存（この端末のブラウザ内。共有はされない） ---
+var saveTimer=null;
+function sceneJSON(){
+  return JSON.stringify({v:1, cam:{t:[cam.target.x,cam.target.y,cam.target.z],th:cam.theta,ph:cam.phi,d:cam.dist},
+    objects:App.objects.map(function(o){ return {kind:o.kind,name:o.name,parametric:o.parametric,params:o.params,
+      pos:[o.pos.x,o.pos.y,o.pos.z],quat:[o.quat.x,o.quat.y,o.quat.z,o.quat.w],scale:[o.scale.x,o.scale.y,o.scale.z],
+      pos3:o.mesh.pos,faces:o.mesh.faces}; })});
+}
+function scheduleSave(){
+  clearTimeout(saveTimer);
+  saveTimer=setTimeout(function(){ try{ localStorage.setItem("macbeth.scene",sceneJSON()); }catch(_){ } },600);
+}
+function restoreScene(explicit){
+  var raw=null; try{ raw=localStorage.getItem("macbeth.scene"); }catch(_){}
+  if(!raw){ if(explicit) toast("保存がありません"); return false; }
+  try{
+    var d=JSON.parse(raw);
+    if(explicit) pushUndo("保存を復元");
+    App.objects=d.objects.map(function(x){
+      var o=Object.create(SceneObject.prototype);
+      o.id=uid++; o.kind=x.kind; o.name=x.name; o.parametric=!!x.parametric && !!PRIM[x.kind];
+      o.params=x.params||{}; o.pos=new THREE.Vector3().fromArray(x.pos);
+      o.quat=new THREE.Quaternion(x.quat[0],x.quat[1],x.quat[2],x.quat[3]); o.scale=new THREE.Vector3().fromArray(x.scale);
+      o.mesh=new Mesh(); o.mesh.pos=x.pos3; o.mesh.faces=x.faces; o.gfx=null; return o;
+    });
+    if(d.cam){ cam.target.fromArray(d.cam.t); cam.theta=d.cam.th; cam.phi=d.cam.ph; cam.dist=d.cam.d; applyCam(); }
+    App.sel=App.objects[0]||null; App.comp.clear(); rebuildAllGfx(); refreshUI();
+    toast("前回の作業を復元しました — "+App.objects.length+" オブジェクト");
+    return true;
+  }catch(err){ if(explicit) toast("復元に失敗しました"); return false; }
+}
+document.addEventListener("visibilitychange",function(){ if(document.hidden){ clearTimeout(saveTimer); try{ localStorage.setItem("macbeth.scene",sceneJSON()); }catch(_){ } } });
+
+// --- ピボット操作（Maya の Center Pivot / Freeze Transformations） ---
+function doCenterPivot(){
+  var o=App.sel; if(!o) return;
+  pushUndo("中心にピボット");
+  var c=bboxCenter(o.mesh);
+  for(var i=0;i<o.mesh.vcount();i++) o.mesh.setP(i,o.mesh.pos[i*3]-c.x,o.mesh.pos[i*3+1]-c.y,o.mesh.pos[i*3+2]-c.z);
+  o.pos.add(c.multiply(o.scale).applyQuaternion(o.quat));
+  buildGfx(o); rebuildOverlay(); manipSig=""; refreshUI(); toast("ピボットをバウンディングボックスの中心へ");
+}
+function doFreeze(){
+  var o=App.sel; if(!o) return;
+  pushUndo("トランスフォームのフリーズ"); makeEditable(o,"フリーズ");
+  o.gfx.group.updateMatrixWorld();
+  var M=o.gfx.group.matrixWorld, v=new THREE.Vector3();
+  for(var i=0;i<o.mesh.vcount();i++){ v.set(o.mesh.pos[i*3],o.mesh.pos[i*3+1],o.mesh.pos[i*3+2]).applyMatrix4(M); o.mesh.setP(i,v.x,v.y,v.z); }
+  o.pos.set(0,0,0); o.quat.identity(); o.scale.set(1,1,1);
+  buildGfx(o); rebuildOverlay(); manipSig=""; refreshUI(); toast("トランスフォームをフリーズ（ピボットは原点）");
+}
+
+/* =========================================================================
    14. パネル
    ========================================================================= */
 var PANELS={
@@ -2133,10 +2341,7 @@ var PANELS={
 function el(tag,cls,txt){ var e=document.createElement(tag); if(cls)e.className=cls; if(txt!=null)e.textContent=txt; return e; }
 
 var TOOLS=[
-  {id:"select", label:"選択 (Q)", icon:I.select, radial:"selmode"},
-  {id:"move", label:"移動 (W)", icon:I.move},
-  {id:"rotate", label:"回転 (E)", icon:I.rotate},
-  {id:"scale", label:"スケール (R)", icon:I.scale},
+  {id:"select", label:"選択・変形 (Q) — 長押しでマニピュレータの種類", icon:I.xform, radial:"manipkind"},
   {sep:true},
   {id:"multicut", label:"マルチカット (X)", icon:I.multicut},
   {id:"extrude", label:"押し出し (D)", icon:I.extrude, action:doExtrude},
@@ -2179,7 +2384,8 @@ function renderTools(body){
   body.appendChild(grid);
   body.appendChild(el("div","minilbl","編集"));
   var grid2=el("div","igrid");
-  [["finger","指はカメラ専用（オフ = メッシュ上でツール）",I.finger,function(){ App.fingerCam=!App.fingerCam; defaultHint(); },function(){return App.fingerCam;}],
+  [["sym","対称編集 X（ローカル）",I.sym,function(){ App.symX=!App.symX; toast(App.symX?"対称編集 X: オン":"対称編集 X: オフ"); },function(){return App.symX;}],
+   ["finger","指はカメラ専用（オフ = メッシュ上でツール）",I.finger,function(){ App.fingerCam=!App.fingerCam; defaultHint(); },function(){return App.fingerCam;}],
    ["dup","複製",I.dup,doDuplicate,null],
    ["del","削除 (Del)",I.del,doDelete,null]].forEach(function(t){
     var b=el("button","ibtn"); b.title=t[1]; b.innerHTML=ico(t[2],17);
@@ -2210,7 +2416,9 @@ function paramRow(parent,label,val,min,max,step,fmt,oninput,onchange){
   return {lab:lab, num:num};
 }
 var sliderSnap=null;
-var TOOLNAME={select:"選択",move:"移動",rotate:"回転",scale:"スケール",multicut:"マルチカット"};
+var TOOLNAME={select:"選択・変形",multicut:"マルチカット"};
+var MANIPNAME={all:"ユニバーサル",move:"移動",rotate:"回転",scale:"スケール"};
+function setManip(m){ App.manip=m; manipSig=""; refreshUI(); toast("マニピュレータ: "+MANIPNAME[m]); }
 function renderOptions(body){
   body.innerHTML="";
   var o=App.sel;
@@ -2232,6 +2440,11 @@ function renderOptions(body){
     ts.appendChild(fl);
     ts.appendChild(el("div","hint","エッジフロー: 新しいループを周囲のサーフェスの曲率に沿わせます（頂点法線による三次補間）。"));
   } else if(App.tool==="select"){
+    ts.appendChild(el("div","hint","マニピュレータ: "+MANIPNAME[App.manip]+"（ツールボタン長押し、または Q / W / E / R）\n選択中のコンポーネントを直接ドラッグするとビュー平面で移動。SHF を押しながらで押し出し。"));
+    var sy=el("button","chk"); sy.innerHTML='<i></i><span>対称編集 X（ローカル）</span>';
+    sy.setAttribute("aria-pressed",App.symX?"true":"false");
+    sy.onclick=function(){ App.symX=!App.symX; sy.setAttribute("aria-pressed",App.symX?"true":"false"); refreshStats(); };
+    ts.appendChild(sy);
     paramRow(ts,"ソフト選択 強度",App.soft.strength,0,1,.01,function(v){return v.toFixed(2);},
       function(v){ App.soft.strength=v; syncGauges(); rebuildOverlay(); });
     paramRow(ts,"ソフト選択 範囲",App.soft.radius,.05,6,.05,function(v){return v.toFixed(2);},
@@ -2496,6 +2709,10 @@ function setDisplay(d){
   toast({wire:"ワイヤーフレーム",shaded:"シェード",shadedWire:"シェード + ワイヤーフレーム",smooth:"スムースシェード"}[d]);
 }
 attachRadialButton(document.getElementById("modeBtn"), {radial:"modes", action:function(){}});
+attachRadialButton(document.getElementById("fileBtn"), {radial:"file", action:function(){
+  var r=document.getElementById("fileBtn").getBoundingClientRect();
+  openRadial("file", r.left+r.width/2, r.bottom+140);
+}});
 // F ボタン: タップ = フレーム。押している間は右手の修飾（1 本指 = 矩形選択、ピンチ = 選択中心へズーム）
 var fHeld=false, fChord=false, fDownT=0;
 (function(){
@@ -2543,8 +2760,11 @@ window.addEventListener("keydown",function(e){
   if(e.target.tagName==="INPUT") return;
   var k=e.key.toLowerCase();
   if((e.ctrlKey||e.metaKey)&&k==="z"){ e.preventDefault(); e.shiftKey?doRedo():doUndo(); return; }
-  var map={q:"select",w:"move",e:"rotate",r:"scale",x:"multicut"};
-  if(map[k]){ App.tool=map[k]; manipSig=""; refreshUI(); return; }
+  if(k==="q"||k==="t"){ App.tool="select"; setManip("all"); return; }
+  if(k==="w"){ App.tool="select"; setManip("move"); return; }
+  if(k==="e"){ App.tool="select"; setManip("rotate"); return; }
+  if(k==="r"){ App.tool="select"; setManip("scale"); return; }
+  if(k==="x"){ App.tool="multicut"; manipSig=""; refreshUI(); return; }
   if(k==="d"){ doExtrude(); return; }
   if(k==="f"){ frameSelected(); return; }
   // 選択モードは Maya と同じ F8–F11
@@ -2575,7 +2795,7 @@ function refreshStats(){
   var mn={object:"オブジェクト",vertex:"頂点",edge:"エッジ",face:"フェース"}[App.compMode];
   var dn={wire:"WIRE",shaded:"SHADED",shadedWire:"SHADED+WIRE",smooth:"SMOOTH"}[App.display];
   document.getElementById("hudMode").innerHTML=
-    (TOOLNAME[App.tool]||App.tool)+" · <b>"+mn+"</b>"+(App.comp.size? " · "+App.comp.size:"")+
+    (TOOLNAME[App.tool]||App.tool)+(App.tool==="select"? " · "+MANIPNAME[App.manip] : "")+(App.symX?" · 対称X":"")+" · <b>"+mn+"</b>"+(App.comp.size? " · "+App.comp.size:"")+
     "<br>"+dn+(App.cam.ortho?" · ORTHO":"")+(App.sel? " · "+App.sel.name : "");
 }
 var toastTimer=null;
@@ -2587,7 +2807,7 @@ function defaultHint(){
   clearTimeout(toastTimer);
   document.getElementById("hudHint").innerHTML=
     (App.fingerCam? "指1本 <kbd>タンブル</kbd> · ペン <kbd>ツール</kbd>" : "指1本 メッシュ上 <kbd>ツール</kbd> / 外 <kbd>タンブル</kbd> · ペン <kbd>ツール</kbd>")+
-    " · 指2本 <kbd>パン / ズーム</kbd> · 指2本ダブルタップ <kbd>戻る</kbd> · 指3本 <kbd>進む</kbd> · 長押し <kbd>メニュー</kbd><br><kbd>F</kbd> + ドラッグ <kbd>矩形選択</kbd> · <kbd>F</kbd> + ピンチ <kbd>選択中心へズーム</kbd>"+
+    " · 指2本 <kbd>パン / ズーム</kbd> · 指2本ダブルタップ <kbd>戻る</kbd> · 指3本 <kbd>進む</kbd> · 長押し <kbd>メニュー</kbd><br><kbd>F</kbd> + ドラッグ <kbd>矩形選択</kbd> · <kbd>F</kbd> + ピンチ <kbd>選択中心へズーム</kbd> · 選択したものを直接ドラッグ <kbd>移動</kbd>"+
     "<br>マウス <kbd>Alt+左 タンブル</kbd> <kbd>Alt+中 パン</kbd> <kbd>Alt+右 ズーム</kbd> <kbd>右 マーキングメニュー</kbd>";
 }
 function refreshUI(){
@@ -2605,11 +2825,11 @@ mountPanels();
 paintG1=setupGauge("gauge1","g1","g1lbl","g1val");
 paintG2=setupGauge("gauge2","g2","g2lbl","g2val");
 setMode("model");
-(function seed(){
-  var c=new SceneObject("cube");
-  c.params.sdW=c.params.sdH=c.params.sdD=2; c.rebuild();
-  App.objects.push(c); App.sel=c;
-})();
+if(!restoreScene(false)){
+  var seedCube=new SceneObject("cube");
+  seedCube.params.sdW=seedCube.params.sdH=seedCube.params.sdD=2; seedCube.rebuild();
+  App.objects.push(seedCube); App.sel=seedCube;
+}
 rebuildAllGfx(); applyCam(); resize(); refreshUI(); defaultHint(); updateHistoryButtons();
 (function loop(){
   requestAnimationFrame(loop);
