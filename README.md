@@ -75,9 +75,15 @@ npm run smoke      # ビルド後、実際のブラウザで通し確認（要 n
 | `https://nekohachi.github.io/macbethUnity/` | プロトタイプ（これまでどおり） |
 | `https://nekohachi.github.io/macbethUnity/app/` | **新しいシェル。**ホーム画面に追加すると全画面・オフラインで動きます |
 
-`app/` はビルド済みのものをリポジトリに置いています（`sh scripts/publish.sh` で更新）。
-Pages の Source を **「GitHub Actions」に切り替える**と `.github/workflows/pages.yml` が
-push のたびに自動で出すようになるので、この手動公開は要らなくなります。
+`app/` はビルド済みのものです。**push のたびに `.github/workflows/publish.yml` が
+自動でビルドし直して書き戻す**ので、Pages の設定は今のまま（Deploy from a branch）で
+最新が出ます。出す前に実際の Chromium で通し確認を走らせ、落ちたらコミットしません。
+
+手元で先に `sh scripts/publish.sh` を実行して `app/` ごとコミットしておけば、
+ワークフローは差分なしで何もしません（余計なコミットが増えない）。
+
+Pages の Source を「GitHub Actions」に切り替えたい場合は、`pages.yml` の
+`on:` を `push:` に戻せば、ブランチに `app/` を置く必要はなくなります。
 
 **タブレットで開く（プロトタイプ）:** GitHub の Settings → Pages で Branch をこのブランチ、Folder を `/ (root)` にすると、`https://nekohachi.github.io/macbethUnity/` で開けます（ログイン不要、ホーム画面に追加で全画面）。
 

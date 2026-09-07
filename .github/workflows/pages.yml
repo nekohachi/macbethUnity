@@ -1,10 +1,10 @@
 name: Deploy to GitHub Pages
 
-# タブレットで常に最新を開けるように、push のたびに Pages へ出す。
-# 手動の prototype/make-pages.sh はこれに置き換わる。
+# Pages の Source が「GitHub Actions」のときだけ動くもの。
+# 今は「Deploy from a branch」なので configure-pages で必ず失敗する。
+# 自動更新は publish.yml（app/ をブランチへ書き戻す）が担っているため、
+# ここは手動起動だけにしてある。Source を切り替えたら push トリガに戻す。
 on:
-  push:
-    branches: ["claude/tablet-3d-modeling-app-f6b1x5", "main"]
   workflow_dispatch:
 
 permissions:

@@ -1,0 +1,71 @@
+name: 公開用のビルドを更新する
+
+# Pages の Source が「Deploy from a branch」のままでも自動で最新になるように、
+# push のたびにビルドして app/ をこのブランチへ書き戻す。
+#
+# 手元で `sh scripts/publish.sh` を実行して app/ ごとコミットしていれば、
+# ここでは差分が出ないので何もコミットしない。忘れたときの受け皿。
+#
+# GITHUB_TOKEN によるコミットは workflow を再度起動しないので、回り続けることはない。
+on:
+  push:
+    branches: ["claude/tablet-3d-modeling-app-f6b1x5", "main"]
+    paths-ignore:
+      - "app/**"
+      - "docs/**"
+      - "README.md"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+
+      - name: テスト
+        run: npm test
+
+      - name: ビルドして app/ に置く
+        env:
+          MACBETH_PAGES_PATH: /${{ github.event.repository.name }}/app/
+        run: sh scripts/publish.sh
+
+      - name: ブラウザを入れる
+        run: npx playwright install --with-deps chromium
+
+      - name: 壊れていないか通しで確かめる
+        # 出す前に、実際の Chromium で描画・選択・取り消し・自動保存まで通す。
+        # ここで落ちたらコミットしない（タブレットに壊れたものを出さないため）
+        run: npm run smoke
+
+      - name: 変わっていたらコミットする
+        run: |
+          if [ -z "$(git status --porcelain app)" ]; then
+            echo "app/ に変化なし。何もしません"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app
+          git commit -m "publish: rebuild app/ from ${GITHUB_SHA:0:7}"
+          git push origin HEAD:${GITHUB_REF_NAME}
+
+      - name: 画面の写真を残す
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: publish-screenshot
+          path: smoke.png
+          if-no-files-found: ignore
