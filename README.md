@@ -33,6 +33,7 @@ Maya のポリゴン編集精度、ZBrush のスカルプト、Substance Painter
 | [08-codex-task-01.md](docs/08-codex-task-01.md) | **コーディングエージェント向け作業指示書 #01。** マルチ解像度ジオメトリコアの実装と検証 |
 | [09-direction-review.md](docs/09-direction-review.md) | **方向性レビュー。** プロトタイプ 4 ラウンド後のズレと修正案。実装担当はこれを `04` `05` より優先して読む |
 | [10-next-phase.md](docs/10-next-phase.md) | **次のフェーズの依頼書。** 土台の作り直し、選択の Maya 互換、残りのモデリング機能、FBX、マルチ解像度検証、配布 |
+| [11-data-architecture.md](docs/11-data-architecture.md) | **データ設計。** 作業形式 `.mbz`、PC とタブレットの受け渡し、Maya / ZBrush / Substance との経路、非破壊の層構造、UV の置き場所 |
 
 ## プロトタイプ
 
