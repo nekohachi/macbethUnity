@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { PRIMITIVES } from "../src/core/primitives.js";
+import { PRIMITIVES, defaultParams } from "../src/core/primitives.js";
 import { edgeKey } from "../src/core/mesh.js";
 import {
+  collapseFaces,
+  compact,
+  deleteFaces,
   dissolveEdges,
   extrudeEdges,
   extrudeFaces,
@@ -124,5 +127,34 @@ describe("統合と削除", () => {
     const plane = PRIMITIVES.plane.build({ width: 2, height: 2, sdW: 1, sdH: 1 });
     const [a, b] = plane.edges()[0];
     expect(dissolveEdges(plane, [[a, b]])).toBeNull();
+  });
+});
+
+describe("deleteFaces / collapseFaces", () => {
+  it("面を消すと面数が減り、残りの UV は保たれる", () => {
+    const cube = PRIMITIVES.cube.build(defaultParams("cube"));
+    const before = cube.stats().faces;
+    const r = deleteFaces(cube, [0]);
+    expect(r).not.toBeNull();
+    expect(r!.removed).toBe(1);
+    expect(r!.mesh.stats().faces).toBe(before - 1);
+    // UV セットが消えていない
+    expect(r!.mesh.uvSets.size).toBe(cube.uvSets.size);
+    // 頂点はそのまま残る。詰めるのは compact の仕事
+    expect(r!.mesh.vertexCount).toBe(cube.vertexCount);
+    expect(compact(r!.mesh).vertexCount).toBeLessThanOrEqual(cube.vertexCount);
+  });
+
+  it("消す面が無ければ null", () => {
+    const cube = PRIMITIVES.cube.build(defaultParams("cube"));
+    expect(deleteFaces(cube, [])).toBeNull();
+  });
+
+  it("コラプスすると面が潰れて頂点が減る", () => {
+    const cube = PRIMITIVES.cube.build(defaultParams("cube"));
+    const out = collapseFaces(cube, [0]);
+    expect(out).not.toBeNull();
+    // 4 頂点が 1 点にまとまる
+    expect(compact(out!).vertexCount).toBeLessThan(cube.vertexCount);
   });
 });

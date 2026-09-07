@@ -250,7 +250,49 @@ const outliner = await page.evaluate(() => document.querySelectorAll("#dockRight
 const sliders = await page.evaluate(() => document.querySelectorAll("#dockRightTop .slider").length);
 check("アウトライナとオプションが出る", outliner >= 1 && sliders >= 1, `行 ${outliner} / スライダー ${sliders}`);
 
-/* 14. 例外が出ていない */
+/* 14. 編集メニューの操作が効く（面の押し出しと削除） */
+await page.keyboard.press("F11");
+await page.mouse.click(ON_MESH.x, ON_MESH.y);
+await page.waitForTimeout(450);
+const f0 = await page.evaluate(() => window.macbeth.state.selected.mesh.faceCount);
+// Shift + 右クリックで編集メニュー → 北（押し出し）
+await page.mouse.move(ON_MESH.x, ON_MESH.y);
+await page.keyboard.down("Shift");
+await page.mouse.down({ button: "right" });
+await page.mouse.move(ON_MESH.x, ON_MESH.y - 90, { steps: 5 });
+await page.mouse.up({ button: "right" });
+await page.keyboard.up("Shift");
+const f1 = await page.evaluate(() => window.macbeth.state.selected.mesh.faceCount);
+check("編集メニューから押し出せる", f1 > f0, `${f0} → ${f1}面`);
+
+/* 15. シェーディングを切り替えられる */
+await page.keyboard.press("4");
+const wire = await page.evaluate(() => window.macbeth.state.display);
+await page.keyboard.press("6");
+const back = await page.evaluate(() => window.macbeth.state.display);
+check("シェーディングを切り替えられる", wire === "wire" && back === "shadedWire", `${wire} → ${back}`);
+
+/* 16. パネルをドラッグして置き場所を変えられる */
+const headBox = await page.evaluate(() => {
+  const h = document.querySelector('.panel[data-panel="outliner"] .phead');
+  const r = h.getBoundingClientRect();
+  return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+});
+await page.mouse.move(headBox.x, headBox.y);
+await page.mouse.down();
+// 左の落とし場所へ運ぶ
+const stage = await page.evaluate(() => {
+  const r = document.getElementById("stage").getBoundingClientRect();
+  return { x: r.x, y: r.y, h: r.height };
+});
+await page.mouse.move(stage.x + 150, stage.y + stage.h / 2, { steps: 10 });
+await page.mouse.up();
+const dockedLeft = await page.evaluate(
+  () => !!document.querySelector('#dockLeft .panel[data-panel="outliner"]'),
+);
+check("パネルを別の場所へドッキングできる", dockedLeft);
+
+/* 17. 例外が出ていない */
 check("例外なし", errors.length === 0, errors.join(" / "));
 
 await page.screenshot({ path: SHOT });

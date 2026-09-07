@@ -520,6 +520,52 @@ export function dissolveEdges(mesh: Mesh, edges: Array<[number, number]>): { mes
   return { mesh: b.build(), merged };
 }
 
+/**
+ * 面を消す。頂点はそのまま残すので、消したあとに compact を呼ぶと詰められる。
+ * UV とクリースは残った面のぶんを持ち越す。
+ */
+export function deleteFaces(mesh: Mesh, faces: Iterable<number>): { mesh: Mesh; removed: number } | null {
+  const remove = new Set(faces);
+  if (!remove.size) return null;
+  const b = new MeshBuilder({ weld: false });
+  for (let v = 0; v < mesh.vertexCount; v++) {
+    const p = mesh.getPosition(v);
+    b.vertex(p[0], p[1], p[2]);
+  }
+  let removed = 0;
+  for (let f = 0; f < mesh.faceCount; f++) {
+    if (remove.has(f)) {
+      removed++;
+      continue;
+    }
+    b.face(mesh.faceVerts(f), {
+      uv: faceUvs(mesh, f) ?? undefined,
+      polygroup: mesh.polygroup[f],
+      materialId: mesh.materialId[f],
+    });
+  }
+  if (!removed) return null;
+  const out = b.build();
+  for (const [key, value] of mesh.crease) {
+    const [a, bb] = key.split("_").map(Number);
+    out.setCrease(a, bb, value);
+  }
+  return { mesh: out, removed };
+}
+
+/**
+ * 選んだ面をそれぞれ 1 点に潰す（コラプス）。
+ * 面ごとに頂点をまとめて溶接するので、面は消えて周りが繋がる。
+ */
+export function collapseFaces(mesh: Mesh, faces: Iterable<number>): Mesh | null {
+  const groups: number[][] = [];
+  for (const f of faces) {
+    if (f < mesh.faceCount) groups.push(mesh.faceVerts(f));
+  }
+  if (!groups.length) return null;
+  return weldVertices(mesh, groups);
+}
+
 /** 使われていない頂点を取り除き、インデックスを詰める。 */
 export function compact(mesh: Mesh): Mesh {
   const used = new Set<number>();

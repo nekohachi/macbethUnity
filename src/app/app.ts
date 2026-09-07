@@ -9,8 +9,13 @@ import {
   PRIMITIVES,
   PRIMITIVE_ORDER,
   cloneTransform,
+  collapseFaces,
+  compact,
+  deleteFaces,
+  dissolveEdges,
   extrudeEdges,
   extrudeFaces,
+  weldVertices,
   parseObj,
   subdivide,
   writeObj,
@@ -29,6 +34,7 @@ import { Selector } from "./tools/select.js";
 import { mirrorPairs, softWeights } from "./tools/softSelect.js";
 import { beginDrag, updateDrag, type DragState, type DragTarget } from "./tools/transform.js";
 import { applyTransform } from "./render/meshView.js";
+import { Docking, type Zone } from "./ui/docking.js";
 import { byId, el } from "./ui/dom.js";
 import { Gauge } from "./ui/gauges.js";
 import { Hud } from "./ui/hud.js";
@@ -78,6 +84,9 @@ export class App {
   private router: GestureRouter;
   private manipulator: Manipulator;
   private multicut: MultiCut;
+  private docking: Docking;
+  /** パネルの置き場所。移したら覚えて、次に開いたときに戻す。 */
+  private zones: Record<string, Zone> = { tools: "left", options: "rightTop", outliner: "rightBottom" };
   private optionsBody: HTMLElement | null = null;
   private outlinerBody: HTMLElement | null = null;
   /** スライダーを触り始めたときの状態。離したときに履歴へ積む。 */
@@ -134,6 +143,20 @@ export class App {
 
     this.router = new GestureRouter(canvas, (e) => this.picker.local(e), this.gestureHandlers());
     this.router.attach();
+    this.docking = new Docking(byId("stage"), {
+      onZoneChange: (key, zone) => {
+        this.zones[key] = zone;
+        localStorage.setItem("macbeth.panelZones", JSON.stringify(this.zones));
+      },
+      onMessage: (text) => this.hud.toast(text),
+      onLayoutChange: () => this.viewport.resize(),
+    });
+    try {
+      const saved = localStorage.getItem("macbeth.panelZones");
+      if (saved) this.zones = { ...this.zones, ...(JSON.parse(saved) as Record<string, Zone>) };
+    } catch {
+      /* 保存が壊れていても既定の配置で始める */
+    }
     this.buildToolDock();
     this.buildPanels();
     this.buildGauges();
@@ -477,6 +500,88 @@ export class App {
     this.hud.defaultHint();
   }
 
+  setDisplay(display: Display): void {
+    this.state.display = display;
+    // 「シェード」はすべてハードエッジなので、法線を作り直す必要がある
+    this.viewport.syncAll();
+    this.refresh();
+    this.hud.toast(
+      { wire: "ワイヤーフレーム", shaded: "シェード", shadedWire: "シェード + ワイヤー", smooth: "スムースシェード" }[
+        display
+      ],
+    );
+  }
+
+  private cycleDisplay(): void {
+    const order: Display[] = ["wire", "shaded", "shadedWire", "smooth"];
+    this.setDisplay(order[(order.indexOf(this.state.display) + 1) % order.length]);
+  }
+
+  /** カメラ設定。Maya のカメラアトリビュートに合わせてある。 */
+  private openCameraPopup(anchor: HTMLElement): void {
+    this.closePopup();
+    const r = anchor.getBoundingClientRect();
+    const pop = el("div", "panel floating");
+    pop.style.left = `${r.right + 6}px`;
+    pop.style.top = `${r.top}px`;
+    const body = el("div", "pbody");
+
+    const aov = el("div", "hint");
+    const updateAov = () => {
+      // 35mm アカデミーのフィルムゲート幅 24mm から画角を出す
+      const deg = (2 * Math.atan(24 / (2 * this.state.camOpts.focal)) * 180) / Math.PI;
+      aov.textContent = `アングル オブ ビュー  ${deg.toFixed(2)}°\nフィルム ゲート  35mm アカデミー`;
+    };
+
+    const row = (label: string, key: "focal" | "near" | "far", min: number, max: number, step: number) => {
+      const wrap = el("div", "row");
+      wrap.appendChild(el("label", undefined, label));
+      const num = el("input", "num") as HTMLInputElement;
+      num.type = "text";
+      num.readOnly = true;
+      num.value = String(this.state.camOpts[key]);
+      wrap.appendChild(num);
+      const slider = el("input", "slider") as HTMLInputElement;
+      slider.type = "range";
+      slider.min = String(min);
+      slider.max = String(max);
+      slider.step = String(step);
+      slider.value = String(this.state.camOpts[key]);
+      slider.addEventListener("input", () => {
+        const v = Number(slider.value);
+        this.state.camOpts[key] = v;
+        num.value = String(v);
+        this.viewport.applyCamera();
+        updateAov();
+        this.refreshManipulator();
+      });
+      wrap.appendChild(slider);
+      body.appendChild(wrap);
+    };
+
+    row("焦点距離", "focal", 10, 200, 1);
+    row("ニア クリップ", "near", 0.01, 1, 0.01);
+    row("ファー クリップ", "far", 50, 2000, 10);
+    updateAov();
+    body.appendChild(aov);
+
+    const ortho = el("button", "chk");
+    ortho.setAttribute("aria-pressed", String(this.state.camOpts.ortho));
+    ortho.appendChild(el("i"));
+    ortho.appendChild(el("span", undefined, "平行投影"));
+    ortho.addEventListener("click", () => {
+      this.state.camOpts.ortho = !this.state.camOpts.ortho;
+      ortho.setAttribute("aria-pressed", String(this.state.camOpts.ortho));
+      this.viewport.applyCamera();
+      this.refresh();
+    });
+    body.appendChild(ortho);
+
+    pop.appendChild(body);
+    document.body.appendChild(pop);
+    this.popup = pop;
+  }
+
   setManip(manip: Manip): void {
     this.state.manip = manip;
     this.manipulator.clear();
@@ -561,6 +666,15 @@ export class App {
     };
   }
 
+  private shadingMenu(): RadialMenu {
+    return {
+      N: { label: "ワイヤーフレーム", sub: "4", icon: ICONS.wire, run: () => this.setDisplay("wire") },
+      E: { label: "シェード", sub: "5", icon: ICONS.shaded, run: () => this.setDisplay("shaded") },
+      S: { label: "シェード + ワイヤー", sub: "6", icon: ICONS.shadedWire, run: () => this.setDisplay("shadedWire") },
+      W: { label: "スムースシェード", sub: "7", icon: ICONS.smooth, run: () => this.setDisplay("smooth") },
+    };
+  }
+
   private selectModeMenu(): RadialMenu {
     const todo = (name: string) => () => this.hud.toast(`${name} は未実装です`);
     return {
@@ -579,19 +693,19 @@ export class App {
     const todo = (name: string) => () => this.hud.toast(`${name} は未実装です`);
     if (this.state.compMode === "face") {
       return {
-        N: { label: "押し出し", sub: "Extrude", icon: ICONS.extrude, run: todo("押し出し") },
+        N: { label: "押し出し", sub: "Extrude", icon: ICONS.extrude, run: () => this.doExtrudeFaces() },
         NE: { label: "ベベル", sub: "Bevel", icon: ICONS.scale, run: todo("ベベル") },
         E: { label: "ブリッジ", sub: "Bridge", icon: ICONS.vEdge, run: todo("ブリッジ") },
         SE: { label: "複製", sub: "Duplicate", icon: ICONS.dup, run: todo("フェースの複製") },
-        S: { label: "削除", sub: "Delete", icon: ICONS.del, run: todo("削除") },
-        SW: { label: "コラプス", sub: "Collapse", icon: ICONS.vVert, run: todo("コラプス") },
+        S: { label: "削除", sub: "Delete", icon: ICONS.del, run: () => this.doDeleteFaces() },
+        SW: { label: "コラプス", sub: "Collapse", icon: ICONS.vVert, run: () => this.doCollapseFaces() },
         W: { label: "スムース", sub: "Smooth", icon: ICONS.smooth, run: () => this.doSmooth() },
         NW: { label: "抽出", sub: "Extract", icon: ICONS.vFace, run: todo("抽出") },
       };
     }
     if (this.state.compMode === "edge") {
       return {
-        N: { label: "押し出し", sub: "Extrude", icon: ICONS.extrude, run: todo("押し出し") },
+        N: { label: "押し出し", sub: "Extrude", icon: ICONS.extrude, run: () => this.doExtrudeEdgesMenu() },
         NE: { label: "ベベル", sub: "Bevel", icon: ICONS.scale, run: todo("ベベル") },
         E: { label: "ブリッジ", sub: "Bridge", icon: ICONS.vEdge, run: todo("ブリッジ") },
         SE: {
@@ -600,7 +714,7 @@ export class App {
           icon: ICONS.multicut,
           run: () => this.setTool("multicut"),
         },
-        S: { label: "削除", sub: "Delete", icon: ICONS.del, run: todo("エッジの削除") },
+        S: { label: "削除", sub: "Delete", icon: ICONS.del, run: () => this.doDeleteEdges() },
         SW: { label: "スピン", sub: "Spin", icon: ICONS.rotate, run: todo("スピンエッジ") },
         W: { label: "接続", sub: "Connect", icon: ICONS.vMulti, run: todo("接続") },
         NW: { label: "分離", sub: "Detach", icon: ICONS.vVertFace, run: todo("分離") },
@@ -608,8 +722,8 @@ export class App {
     }
     if (this.state.compMode === "vertex") {
       return {
-        N: { label: "マージ", sub: "Merge", icon: ICONS.vVert, run: todo("マージ") },
-        NE: { label: "中心にマージ", sub: "To Center", icon: ICONS.vObj, run: todo("中心にマージ") },
+        N: { label: "マージ", sub: "Merge", icon: ICONS.vVert, run: () => this.doMergeVertices() },
+        NE: { label: "中心にマージ", sub: "To Center", icon: ICONS.vObj, run: () => this.doMergeVertices() },
         E: { label: "面取り", sub: "Chamfer", icon: ICONS.scale, run: todo("面取り") },
         SE: { label: "接続", sub: "Connect", icon: ICONS.vMulti, run: todo("接続") },
         S: { label: "削除", sub: "Delete", icon: ICONS.del, run: todo("頂点の削除") },
@@ -620,13 +734,13 @@ export class App {
     }
     return {
       N: { label: "スムース", sub: "Smooth", icon: ICONS.smooth, run: () => this.doSmooth() },
-      NE: { label: "中心にピボット", sub: "Center Pivot", icon: ICONS.vObj, run: todo("中心にピボット") },
+      NE: { label: "中心にピボット", sub: "Center Pivot", icon: ICONS.vObj, run: () => this.doCenterPivot() },
       E: { label: "分離", sub: "Separate", icon: ICONS.vVertFace, run: todo("分離") },
       SE: { label: "複製", sub: "Duplicate", icon: ICONS.dup, run: () => this.doDuplicate() },
       S: { label: "削除", sub: "Delete", icon: ICONS.del, run: () => this.doDelete() },
       SW: { label: "ミラー", sub: "Mirror", icon: ICONS.sym, run: todo("ミラー") },
       W: { label: "ブーリアン", sub: "Boolean", icon: ICONS.pCube, run: todo("ブーリアン") },
-      NW: { label: "フリーズ", sub: "Freeze", icon: ICONS.vObj, run: todo("フリーズ") },
+      NW: { label: "フリーズ", sub: "Freeze", icon: ICONS.vObj, run: () => this.doFreeze() },
     };
   }
 
@@ -644,6 +758,199 @@ export class App {
     this.viewport.rebuildOverlay();
     this.refresh();
     this.hud.toast(`スムース — ${o.mesh.faceCount} 面`);
+  }
+
+  /**
+   * トポロジを変える操作の共通処理。
+   * パラメトリックなら通常メッシュに落とし、上位レベルも破棄する（docs/03）。
+   */
+  private applyTopologyChange(
+    o: SceneObject,
+    label: string,
+    change: () => boolean,
+    message: (o: SceneObject) => string,
+  ): void {
+    const snapshot = this.history.snapshot();
+    if (!change()) return;
+    const dropped = o.markTopologyChanged();
+    this.state.comp.clear();
+    this.history.commit(label, snapshot);
+    this.viewport.rebuildObject(o);
+    this.viewport.rebuildOverlay();
+    this.refresh();
+    let note = message(o);
+    if (dropped.droppedLevels || dropped.droppedLayers) {
+      note += ` · 上位レベル ${dropped.droppedLevels} とレイヤー ${dropped.droppedLayers} を破棄`;
+    }
+    this.hud.toast(note);
+  }
+
+  /** 対象を確かめる。合っていなければ理由を出して null。 */
+  private requireComponents(mode: CompMode, least = 1): SceneObject | null {
+    const o = this.state.selected;
+    const name = { object: "オブジェクト", vertex: "頂点", edge: "エッジ", face: "フェース" }[mode];
+    if (!o || this.state.compMode !== mode || this.state.comp.size < least) {
+      this.hud.toast(`${name}モードで${least > 1 ? `${least} つ以上` : ""}選択してから実行してください`);
+      return null;
+    }
+    return o;
+  }
+
+  private doExtrudeFaces(): void {
+    const o = this.requireComponents("face");
+    if (!o) return;
+    let count = 0;
+    this.applyTopologyChange(
+      o,
+      "押し出し",
+      () => {
+        const r = extrudeFaces(o.mesh, this.state.comp, this.state.toolOpts.extrudeDist);
+        if (!r) return false;
+        o.mesh = r.mesh;
+        count = r.faceCount;
+        return true;
+      },
+      () => `面を押し出し — ${count} 面`,
+    );
+  }
+
+  private doExtrudeEdgesMenu(): void {
+    const o = this.requireComponents("edge");
+    if (!o) return;
+    const view = this.viewport.viewOf(o);
+    if (!view) return;
+    const edges = [...this.state.comp].map((i) => view.edges[i]).filter(Boolean);
+    let count = 0;
+    this.applyTopologyChange(
+      o,
+      "エッジを押し出し",
+      () => {
+        const r = extrudeEdges(o.mesh, edges, this.state.toolOpts.extrudeDist);
+        if (!r) return false;
+        o.mesh = r.mesh;
+        count = r.faceCount;
+        return true;
+      },
+      () => `エッジを押し出し — ${count} 面`,
+    );
+  }
+
+  private doDeleteFaces(): void {
+    const o = this.requireComponents("face");
+    if (!o) return;
+    let removed = 0;
+    this.applyTopologyChange(
+      o,
+      "面を削除",
+      () => {
+        const r = deleteFaces(o.mesh, this.state.comp);
+        if (!r) return false;
+        // 使われなくなった頂点はここで詰める
+        o.mesh = compact(r.mesh);
+        removed = r.removed;
+        return true;
+      },
+      () => `${removed} 面を削除`,
+    );
+  }
+
+  private doCollapseFaces(): void {
+    const o = this.requireComponents("face");
+    if (!o) return;
+    this.applyTopologyChange(
+      o,
+      "コラプス",
+      () => {
+        const m = collapseFaces(o.mesh, this.state.comp);
+        if (!m) return false;
+        o.mesh = compact(m);
+        return true;
+      },
+      () => "フェースをコラプス",
+    );
+  }
+
+  private doMergeVertices(): void {
+    const o = this.requireComponents("vertex", 2);
+    if (!o) return;
+    this.applyTopologyChange(
+      o,
+      "頂点をマージ",
+      () => {
+        o.mesh = compact(weldVertices(o.mesh, [[...this.state.comp]]));
+        return true;
+      },
+      () => "頂点をマージ",
+    );
+  }
+
+  private doDeleteEdges(): void {
+    const o = this.requireComponents("edge");
+    if (!o) return;
+    const view = this.viewport.viewOf(o);
+    if (!view) return;
+    const edges = [...this.state.comp].map((i) => view.edges[i]).filter(Boolean);
+    let merged = 0;
+    const r = dissolveEdges(o.mesh, edges);
+    if (!r) {
+      this.hud.toast("結合できるエッジがありません（境界エッジは削除できません）");
+      return;
+    }
+    this.applyTopologyChange(
+      o,
+      "エッジを削除",
+      () => {
+        o.mesh = r.mesh;
+        merged = r.merged;
+        return true;
+      },
+      () => `エッジを削除 — ${merged} 面を結合`,
+    );
+  }
+
+  /** ピボットをメッシュの中心へ。座標はそのままで、原点だけ動かす。 */
+  private doCenterPivot(): void {
+    const o = this.state.selected;
+    if (!o) return;
+    this.history.push("中心にピボット");
+    const c = o.mesh.boundsCenter();
+    for (let v = 0; v < o.mesh.vertexCount; v++) {
+      const p = o.mesh.getPosition(v);
+      o.mesh.setPosition(v, p[0] - c[0], p[1] - c[1], p[2] - c[2]);
+    }
+    // 見た目が動かないよう、引いたぶんをトランスフォームへ戻す
+    o.transform.position = [
+      o.transform.position[0] + c[0] * o.transform.scale[0],
+      o.transform.position[1] + c[1] * o.transform.scale[1],
+      o.transform.position[2] + c[2] * o.transform.scale[2],
+    ];
+    o.parametric = false;
+    this.viewport.rebuildObject(o);
+    this.viewport.rebuildOverlay();
+    this.refresh();
+    this.hud.toast("ピボットを中心へ");
+  }
+
+  /** トランスフォームを頂点に焼き込んで、位置と回転とスケールを初期値に戻す。 */
+  private doFreeze(): void {
+    const o = this.state.selected;
+    if (!o) return;
+    const view = this.viewport.viewOf(o);
+    if (!view) return;
+    this.history.push("フリーズ");
+    view.group.updateMatrixWorld();
+    const m = view.group.matrixWorld;
+    for (let v = 0; v < o.mesh.vertexCount; v++) {
+      const p = o.mesh.getPosition(v);
+      const w = new Vector3(p[0], p[1], p[2]).applyMatrix4(m);
+      o.mesh.setPosition(v, w.x, w.y, w.z);
+    }
+    o.transform = { position: [0, 0, 0], rotation: [0, 0, 0, 1], scale: [1, 1, 1] };
+    o.parametric = false;
+    this.viewport.rebuildObject(o);
+    this.viewport.rebuildOverlay();
+    this.refresh();
+    this.hud.toast("トランスフォームをフリーズ");
   }
 
   private doDuplicate(): void {
@@ -697,13 +1004,8 @@ export class App {
   /* ---- ツール列 -------------------------------------------------------- */
 
   private buildToolDock(): void {
-    const dock = byId("dockLeft");
-    dock.textContent = "";
-    const panel = el("div", "panel");
-    panel.dataset.panel = "tools";
-    const head = el("div", "phead");
-    head.appendChild(el("span", undefined, "ツール"));
-    const body = el("div", "pbody");
+    byId("dockLeft").textContent = "";
+    const { panel, body } = panelShell("tools", "ツール");
     const col = el("div", "toolcol");
 
     // 「選択・変形」1 つ。長押しで移動 / 回転 / スケールの単独モードを選ぶ
@@ -745,6 +1047,22 @@ export class App {
     }
 
     col.appendChild(el("div", "tool-sep"));
+    col.appendChild(el("div", "minilbl", "表示"));
+
+    const shade = el("button", "ibtn");
+    shade.innerHTML = iconSvg(ICONS.shade);
+    shade.dataset.radial = "shading";
+    shade.title = "シェーディング（長押しで切り替え。4–7）";
+    attachRadialButton(shade, () => this.shadingMenu(), () => this.cycleDisplay());
+    col.appendChild(shade);
+
+    const camera = el("button", "ibtn");
+    camera.innerHTML = iconSvg(ICONS.camera);
+    camera.title = "カメラ設定";
+    camera.addEventListener("click", (e) => this.openCameraPopup(e.currentTarget as HTMLElement));
+    col.appendChild(camera);
+
+    col.appendChild(el("div", "tool-sep"));
     col.appendChild(el("div", "minilbl", "追加"));
     for (const id of PRIMITIVE_ORDER) {
       const def = PRIMITIVES[id];
@@ -756,21 +1074,25 @@ export class App {
     }
 
     body.appendChild(col);
-    panel.append(head, body);
-    dock.appendChild(panel);
+    this.docking.attach(panel);
+    this.docking.place(panel, this.zones.tools ?? "left");
   }
 
   /* ---- 右のパネル ------------------------------------------------------ */
 
   private buildPanels(): void {
     const options = panelShell("options", "オプション");
-    byId("dockRightTop").appendChild(options.panel);
+    this.docking.attach(options.panel);
+    this.docking.place(options.panel, this.zones.options ?? "rightTop");
     this.optionsBody = options.body;
 
     const outliner = panelShell("outliner", "アウトライナ");
-    byId("dockRightBottom").appendChild(outliner.panel);
+    this.docking.attach(outliner.panel);
+    this.docking.place(outliner.panel, this.zones.outliner ?? "rightBottom");
     this.outlinerBody = outliner.body;
     this.renderPanels();
+
+    this.viewport.resize();
   }
 
   private panelHost(): PanelHost {
@@ -973,9 +1295,7 @@ export class App {
       }
       const display = DISPLAY_KEYS[e.key];
       if (display) {
-        this.state.display = display;
-        this.viewport.syncAll();
-        this.refresh();
+        this.setDisplay(display);
         return;
       }
       if (e.key === "f" || e.key === "F") {

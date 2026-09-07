@@ -48,7 +48,7 @@ npm run smoke      # ビルド後、実際のブラウザで通し確認（要 n
 | `src/app/tools/multicut.ts` | エッジループ挿入（予測線つき） |
 | `src/app/tools/softSelect.ts` | ソフト選択の減衰と対称編集 |
 | `src/app/storage/` | IndexedDB、自動保存、ファイルの読み書き |
-| `src/app/ui/` | マーキングメニュー、ゲージ、HUD、アイコン |
+| `src/app/ui/` | マーキングメニュー、ゲージ、HUD、パネル、ドッキング、アイコン |
 
 ## 技術スタック
 ## ドキュメント
