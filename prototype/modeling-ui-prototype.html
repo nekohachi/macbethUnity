@@ -1364,12 +1364,18 @@ document.addEventListener("selectstart",function(e){ if(e.target.tagName!=="INPU
 canvas.addEventListener("pointerdown",function(e){
   closePop();
   canvas.setPointerCapture(e.pointerId);
-  pointers.set(e.pointerId,{x:e.clientX,y:e.clientY,type:e.pointerType});
+  pointers.set(e.pointerId,{x:e.clientX,y:e.clientY,x0:e.clientX,y0:e.clientY,type:e.pointerType});
+  tapDown(e);
   if(pointers.size>=2){
-    endMarquee(); drag=null; cancelHold();
-    var a=Array.from(pointers.values());
-    gesture={mode:"twofinger", d:Math.hypot(a[0].x-a[1].x,a[0].y-a[1].y),
-             cx:(a[0].x+a[1].x)/2, cy:(a[0].y+a[1].y)/2};
+    endMarquee(); drag=null; cancelHold(); clearCutPreview();
+    if(pointers.size===2){
+      // 2 本指: パン / ズーム候補。デッドゾーンを越えるまでカメラは動かさない
+      var a=Array.from(pointers.values());
+      gesture={mode:"twofinger", live:false, acc:0, d:Math.hypot(a[0].x-a[1].x,a[0].y-a[1].y),
+               cx:(a[0].x+a[1].x)/2, cy:(a[0].y+a[1].y)/2};
+    } else {
+      gesture={mode:"idle"};   // 3 本以上はカメラにしない（3 本ダブルタップ = 進む）
+    }
     return;
   }
   var l=localXY(e);
@@ -1382,7 +1388,7 @@ canvas.addEventListener("pointerdown",function(e){
   if(e.pointerType==="touch"){
     // 指はヒットテストで決める（Nomad 方式）: メッシュかマニピュレータの上ならツール、外ならタンブル
     var onMesh = !App.fingerCam && (pickHandle(l)>=0 || !!pickSurface(l));
-    if(!onMesh){ gesture={mode:"tumble"}; startHold(e.clientX,e.clientY,shiftOn(e)); return; }
+    if(!onMesh){ gesture={mode:"tumble", live:false, acc:0}; startHold(e.clientX,e.clientY,shiftOn(e)); return; }
   }
   gesture={mode:"tool", moved:false, sx:l.x, sy:l.y};
   if(e.pointerType!=="mouse") startHold(e.clientX,e.clientY,shiftOn(e));
@@ -1400,14 +1406,31 @@ canvas.addEventListener("pointermove",function(e){
   var p=pointers.get(e.pointerId); if(!p) return;
   var px=p.x, py=p.y; p.x=e.clientX; p.y=e.clientY;
   if(Math.hypot(e.clientX-holdSX,e.clientY-holdSY)>12) cancelHold();
+  if(Math.hypot(e.clientX-p.x0,e.clientY-p.y0)>12) mtap.moved=true;   // 動いたらタップではない
   if(!gesture) return;
-  if(gesture.mode==="tumble") tumbleCam(e.clientX-px, e.clientY-py);
+  if(gesture.mode==="tumble"){
+    // 指を置いた直後のブレでは回さない（マウスは即時）
+    if(!gesture.live && e.pointerType==="touch"){
+      gesture.acc+=Math.hypot(e.clientX-px,e.clientY-py);
+      if(gesture.acc<5) return;
+      gesture.live=true;
+    }
+    tumbleCam(e.clientX-px, e.clientY-py);
+  }
   else if(gesture.mode==="pan") panCam(e.clientX-px, e.clientY-py);
   else if(gesture.mode==="dolly") dollyCam(1+((e.clientX-px)+(e.clientY-py))*0.006);
   else if(gesture.mode==="twofinger"){
     var a=Array.from(pointers.values()); if(a.length<2) return;
     var nd=Math.hypot(a[0].x-a[1].x,a[0].y-a[1].y);
     var ncx=(a[0].x+a[1].x)/2, ncy=(a[0].y+a[1].y)/2;
+    if(!gesture.live){
+      // デッドゾーン: 中心の移動と指間距離の変化の合計が 10px を越えたらカメラ操作として確定
+      gesture.acc+=Math.hypot(ncx-gesture.cx,ncy-gesture.cy)+Math.abs(nd-gesture.d);
+      if(gesture.acc<10) return;
+      gesture.live=true; mtap.moved=true;
+      gesture.d=nd; gesture.cx=ncx; gesture.cy=ncy;   // 確定時点を基準にして飛びを防ぐ
+      return;
+    }
     if(gesture.d>0 && nd>0) dollyCam(gesture.d/nd);
     panCam(ncx-gesture.cx, ncy-gesture.cy);
     gesture.d=nd; gesture.cx=ncx; gesture.cy=ncy;
@@ -1424,11 +1447,38 @@ function endPointer(e){
   var wasTool=gesture&&gesture.mode==="tool", moved=wasTool&&gesture.moved;
   pointers.delete(e.pointerId);
   if(wasTool) toolUp(localXY(e),e,moved);
-  if(pointers.size===0) gesture=null;
-  else if(pointers.size===1) gesture={mode:"tumble"};
+  if(pointers.size===0){ gesture=null; tapUp(e); }
+  else gesture={mode:"idle"};   // 複数指から指が減っても、残った指でカメラを動かさない（離す途中の誤動作防止）
 }
 canvas.addEventListener("pointerup",endPointer);
-canvas.addEventListener("pointercancel",endPointer);
+canvas.addEventListener("pointercancel",function(e){
+  // OS に奪われた場合は何も確定させずに片付ける
+  pointers.delete(e.pointerId); cancelHold(); drag=null; hotHandle=-1; endMarquee(); clearCutPreview();
+  if(!pointers.size){ gesture=null; mtap.lastN=0; } else gesture={mode:"idle"};
+});
+
+/* ---- 複数指のダブルタップ: 2 本 = 戻る / 3 本 = 進む ----
+   タップ = 全部の指が 120ms 以内に着地し、どれも 12px 動かず、300ms 以内に全部離れる。
+   カメラ操作（パン / ズーム / タンブル）は動いた時点で確定するので、両者は排他になる。 */
+var mtap={t0:0, maxN:0, moved:false, stagger:false, lastN:0, lastT:0};
+function touchCount(){ var n=0; pointers.forEach(function(p){ if(p.type==="touch") n++; }); return n; }
+function tapDown(e){
+  if(e.pointerType!=="touch") return;
+  var now=performance.now(), n=touchCount();
+  if(n===1){ mtap.t0=now; mtap.maxN=1; mtap.moved=false; mtap.stagger=false; }
+  else { mtap.maxN=Math.max(mtap.maxN,n); if(now-mtap.t0>120) mtap.stagger=true; }
+}
+function tapUp(e){
+  if(e.pointerType!=="touch") return;
+  var now=performance.now(), dur=now-mtap.t0;
+  var isTap = !mtap.moved && !mtap.stagger && dur<300 && mtap.maxN>=2;
+  if(!isTap){ mtap.lastN=0; return; }
+  if(mtap.lastN===mtap.maxN && now-mtap.lastT<400){
+    mtap.lastN=0;
+    if(mtap.maxN===2) doUndo(); else if(mtap.maxN>=3) doRedo();
+    if(navigator.vibrate) navigator.vibrate(8);
+  } else { mtap.lastN=mtap.maxN; mtap.lastT=now; }
+}
 canvas.addEventListener("wheel",function(e){ e.preventDefault(); dollyCam(1+Math.sign(e.deltaY)*0.09); },{passive:false});
 
 var holdTimer=null, holdSX=0, holdSY=0;
@@ -2507,7 +2557,7 @@ function defaultHint(){
   clearTimeout(toastTimer);
   document.getElementById("hudHint").innerHTML=
     (App.fingerCam? "指1本 <kbd>タンブル</kbd> · ペン <kbd>ツール</kbd>" : "指1本 メッシュ上 <kbd>ツール</kbd> / 外 <kbd>タンブル</kbd> · ペン <kbd>ツール</kbd>")+
-    " · 指2本 <kbd>パン / ズーム</kbd> · <kbd>F</kbd> ボタン長押し <kbd>マーキングメニュー</kbd>"+
+    " · 指2本 <kbd>パン / ズーム</kbd> · 指2本ダブルタップ <kbd>戻る</kbd> · 指3本ダブルタップ <kbd>進む</kbd> · <kbd>F</kbd> 長押し <kbd>メニュー</kbd>"+
     "<br>マウス <kbd>Alt+左 タンブル</kbd> <kbd>Alt+中 パン</kbd> <kbd>Alt+右 ズーム</kbd> <kbd>右 マーキングメニュー</kbd>";
 }
 function refreshUI(){
