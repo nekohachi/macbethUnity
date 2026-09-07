@@ -830,6 +830,78 @@ function weldVerts(mesh, groups){
   return out;
 }
 
+/* ---- 選択のためのトポロジ走査（Maya のダブルクリック選択） ---- */
+function vertexNeighbors(mesh){
+  var nb={};
+  mesh.edges().forEach(function(e){ (nb[e[0]]||(nb[e[0]]=[])).push(e[1]); (nb[e[1]]||(nb[e[1]]=[])).push(e[0]); });
+  return nb;
+}
+// エッジループ: 価数 4 の頂点で「面を共有しない向かいのエッジ」へ進む。極や境界で止まる
+function edgeLoopFrom(mesh,a,b){
+  var nb=vertexNeighbors(mesh), ef=mesh.edgeFaceMap(), seen={};
+  function next(prev,v){
+    var ns=nb[v]; if(!ns||ns.length!==4) return -1;
+    var fs=ef[ekey(prev,v)]||[];
+    for(var i=0;i<ns.length;i++){
+      var w=ns[i]; if(w===prev) continue;
+      var g=ef[ekey(v,w)]||[], shares=false;
+      for(var j=0;j<g.length;j++) if(fs.indexOf(g[j])>=0){ shares=true; break; }
+      if(!shares) return w;
+    }
+    return -1;
+  }
+  function walk(u,v,out,push,skipFirst){
+    var guard=0, first=true;
+    while(guard++<100000){
+      var k=ekey(u,v);
+      if(seen[k] && !first) return true;   // 一周した
+      if(!(first && skipFirst)){ seen[k]=1; if(push) out.push([u,v]); else out.unshift([v,u]); }
+      first=false;
+      var w=next(u,v); if(w<0) return false;
+      u=v; v=w;
+    }
+    return false;
+  }
+  var edges=[];
+  var closed=walk(a,b,edges,true,false);
+  if(!closed) walk(b,a,edges,false,true);   // 逆方向。開始エッジは登録済みなので飛ばす
+  return {edges:edges, closed:closed};
+}
+// エッジリング: 四角形をまたいで平行なエッジをたどる（マルチカットのストリップと同じ）
+function edgeRingFrom(mesh,a,b){
+  var strip=loopStrip(mesh,a,b,0.5);
+  if(!strip.length) return {edges:[[a,b]], closed:false};
+  var edges=[[strip[0].a,strip[0].b]];
+  strip.forEach(function(r){ edges.push([r.d,r.c]); });
+  var last=edges[edges.length-1], closed=(ekey(last[0],last[1])===ekey(edges[0][0],edges[0][1]));
+  if(closed) edges.pop();
+  return {edges:edges, closed:closed};
+}
+// 順序付きエッジ列の中で e1 と e2 の間の区間（閉じていれば短い方）
+function arcBetween(list,closed,k1,k2){
+  var keys=list.map(function(e){ return ekey(e[0],e[1]); });
+  var i=keys.indexOf(k1), j=keys.indexOf(k2);
+  if(i<0||j<0) return null;
+  if(i>j){ var t=i; i=j; j=t; }
+  var inner=list.slice(i,j+1);
+  if(!closed) return inner;
+  var outer=list.slice(j).concat(list.slice(0,i+1));
+  return outer.length<inner.length? outer : inner;
+}
+// 面のシェル（エッジ共有で繋がった面すべて）
+function shellFaces(mesh,f0){
+  var ef=mesh.edgeFaceMap(), seen={}, stack=[f0], out=[];
+  seen[f0]=1;
+  while(stack.length){
+    var f=stack.pop(); out.push(f);
+    var v=mesh.faces[f];
+    for(var i=0;i<v.length;i++){
+      (ef[ekey(v[i],v[(i+1)%v.length])]||[]).forEach(function(g){ if(!seen[g]){ seen[g]=1; stack.push(g); } });
+    }
+  }
+  return out;
+}
+
 // Catmull-Clark 細分割（Maya の Smooth / 本アプリのディバイドに相当）
 function catmullClark(mesh){
   var out=new Mesh();
@@ -1785,15 +1857,21 @@ function finishMarquee(l,e){
   }
   rebuildOverlay(); refreshUI();
 }
+var lastClick=null;
 function clickSelect(l,e){
   var add=shiftOn(e), sub=ctrlOn(e);
   if(App.compMode==="object"){
     var hit=pickSurface(l);
     App.sel=hit? hit.object.userData.obj : null;
-    App.comp.clear(); rebuildAllGfx(); refreshUI(); return;
+    App.comp.clear(); rebuildAllGfx(); refreshUI(); lastClick=null; return;
   }
   var o=App.sel;
   if(!o){ var h2=pickSurface(l); if(h2){ App.sel=h2.object.userData.obj; rebuildAllGfx(); refreshUI(); } return; }
+  var now=performance.now(), before=new Set(App.comp);
+  var dbl = lastClick && now-lastClick.t<380 && Math.hypot(l.x-lastClick.x,l.y-lastClick.y)<14
+            && lastClick.mode===App.compMode && lastClick.obj===o.id;
+  if(dbl){ lastClick=null; doubleSelect(l,e,lastClick_before); return; }
+  lastClick_before=before;
   if(!add&&!sub) App.comp.clear();
   if(App.compMode==="vertex"){ var v=pickVertex(o,l,22); if(v>=0) sub?App.comp.delete(v):App.comp.add(v); }
   else if(App.compMode==="edge"){ var r=pickEdge(o,l,16); if(r.edge>=0) sub?App.comp.delete(r.edge):App.comp.add(r.edge); }
@@ -1804,7 +1882,72 @@ function clickSelect(l,e){
       if(fi!==undefined) sub?App.comp.delete(fi):App.comp.add(fi);
     }
   }
+  lastClick={t:now,x:l.x,y:l.y,mode:App.compMode,obj:o.id};
   rebuildOverlay(); refreshUI();
+}
+var lastClick_before=null;
+// ダブルクリック: エッジ = ループ / フェース = シェル / 頂点 = シェル。
+// Shift + ダブルクリックは選択済みのものと結ぶ（部分ループ、部分リング、フェースループ）。Ctrl は除外。
+function doubleSelect(l,e,before){
+  var o=App.sel, add=shiftOn(e), sub=ctrlOn(e), m=o.mesh;
+  before=before||new Set();
+  var keyIdx={}; o.gfx.edges.forEach(function(ed,i){ keyIdx[ekey(ed[0],ed[1])]=i; });
+  function edgeIdxList(edges){ return edges.map(function(ed){ return keyIdx[ekey(ed[0],ed[1])]; }).filter(function(i){ return i!==undefined; }); }
+  function apply(items,label){
+    if(sub){ items.forEach(function(i){ App.comp.delete(i); }); }
+    else if(add){ App.comp=new Set(before); items.forEach(function(i){ App.comp.add(i); }); }
+    else { App.comp=new Set(items); }
+    rebuildOverlay(); refreshUI(); toast(label+" — "+items.length);
+  }
+  if(App.compMode==="edge"){
+    var r=pickEdge(o,l,16); if(r.edge<0) return;
+    var ed=o.gfx.edges[r.edge], k2=ekey(ed[0],ed[1]);
+    if(add && before.size){
+      var anchor=o.gfx.edges[Array.from(before)[0]], k1=ekey(anchor[0],anchor[1]);
+      var lp=edgeLoopFrom(m,ed[0],ed[1]), arc=arcBetween(lp.edges,lp.closed,k1,k2);
+      if(arc){ apply(edgeIdxList(arc),"エッジループ（部分）"); return; }
+      var rg=edgeRingFrom(m,ed[0],ed[1]), arc2=arcBetween(rg.edges,rg.closed,k1,k2);
+      if(arc2){ apply(edgeIdxList(arc2),"エッジリング（部分）"); return; }
+    }
+    apply(edgeIdxList(edgeLoopFrom(m,ed[0],ed[1]).edges),"エッジループ"); return;
+  }
+  if(App.compMode==="face"){
+    var hit=pickSurface(l); if(!hit||hit.object.userData.obj!==o) return;
+    var fi=o.gfx.tri.triToFace[hit.faceIndex]; if(fi===undefined) return;
+    if(add && before.size){
+      // 選択済みの面と辺を共有していればフェースループ
+      var ef=m.edgeFaceMap(), fv=m.faces[fi];
+      for(var i=0;i<fv.length;i++){
+        var a=fv[i], b=fv[(i+1)%fv.length], fs=ef[ekey(a,b)]||[];
+        var other=fs.filter(function(g){ return g!==fi && before.has(g); })[0];
+        if(other!==undefined){
+          var strip=loopStrip(m,a,b,0.5);
+          apply(strip.map(function(rr){ return rr.face; }),"フェースループ"); return;
+        }
+      }
+    }
+    apply(shellFaces(m,fi),"シェル"); return;
+  }
+  if(App.compMode==="vertex"){
+    var v=pickVertex(o,l,22); if(v<0) return;
+    if(add && before.size){
+      var anchorV=Array.from(before)[0], nb=vertexNeighbors(m)[v]||[];
+      for(var j=0;j<nb.length;j++){
+        var lp2=edgeLoopFrom(m,v,nb[j]);
+        var verts=[]; lp2.edges.forEach(function(ed2){ if(verts.indexOf(ed2[0])<0) verts.push(ed2[0]); if(verts.indexOf(ed2[1])<0) verts.push(ed2[1]); });
+        var ia=verts.indexOf(anchorV), ib=verts.indexOf(v);
+        if(ia>=0&&ib>=0){
+          var lo=Math.min(ia,ib), hi=Math.max(ia,ib), inner=verts.slice(lo,hi+1);
+          var outer=lp2.closed? verts.slice(hi).concat(verts.slice(0,lo+1)) : null;
+          apply((outer&&outer.length<inner.length)? outer : inner,"頂点ループ（部分）"); return;
+        }
+      }
+    }
+    var adj=m.vertexAdj(), f0=(adj[v]||[])[0];
+    if(f0===undefined) return;
+    var sv=new Set(); shellFaces(m,f0).forEach(function(f){ m.faces[f].forEach(function(x){ sv.add(x); }); });
+    apply(Array.from(sv),"シェルの頂点"); return;
+  }
 }
 function makeEditable(o,r){ if(o.parametric){ o.parametric=false; toast(r+" — "+o.name+" は編集可能メッシュになりました"); } }
 function doMultiCut(l,e){
