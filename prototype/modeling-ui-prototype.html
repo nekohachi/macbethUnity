@@ -15,10 +15,10 @@
   --text-faint:#646d77;
   --accent:#4f9fd1;
   --accent-dim:#2f5f7d;
-  --sel:#7ad25e;
-  --comp:#ffc94d;
+  --sel:#4dff4d;          /* Maya の選択グリーン */
+  --comp:#ff9e00;         /* Maya のコンポーネントオレンジ */
   --warn:#e08a4c;
-  --rail:52px;
+  --rail:64px;
   --radius:3px;
 }
 *{box-sizing:border-box}
@@ -34,171 +34,168 @@ body{
 }
 button{font-family:inherit; font-size:inherit; color:inherit; background:none; border:0; padding:0; cursor:pointer}
 :focus-visible{outline:2px solid var(--accent); outline-offset:1px}
-
-/* ---------- header ---------- */
-.topbar{
-  display:flex; align-items:stretch; gap:1px; flex:0 0 auto;
-  background:var(--line); border-bottom:1px solid var(--line);
-}
-.brand{
-  display:flex; align-items:center; gap:8px; padding:0 13px;
-  background:var(--panel-lo); color:var(--text-dim);
-  font-weight:600; letter-spacing:.08em; text-transform:uppercase; font-size:9px;
-}
-.brand b{color:var(--text); letter-spacing:.02em; text-transform:none; font-size:12px}
-.modebtn{
-  display:flex; align-items:center; gap:8px; padding:0 16px;
-  background:var(--panel); color:var(--text); font-weight:500;
-  border-bottom:2px solid var(--accent); touch-action:none; position:relative;
-}
-.modebtn:hover{background:var(--panel-hi)}
-.modebtn .caret{color:var(--text-faint); font-size:9px; margin-left:2px}
-.topspacer{flex:1; background:var(--panel-lo)}
-.topnote{
-  display:flex; align-items:center; padding:0 13px; background:var(--panel-lo);
-  color:var(--text-faint); font-size:10px; letter-spacing:.03em;
-}
-
-.stage{flex:1; display:flex; min-height:0; position:relative; background:var(--line)}
 .app{display:flex; flex-direction:column; height:100vh}
 
-/* ---------- fixed rail ---------- */
-.rail{
-  flex:0 0 var(--rail); background:var(--panel-lo);
-  border-right:1px solid var(--line);
-  display:flex; flex-direction:column; align-items:center;
-  padding:7px 0; gap:5px; z-index:6;
+/* ---------- header ---------- */
+.topbar{display:flex; align-items:stretch; gap:1px; flex:0 0 auto; background:var(--line); border-bottom:1px solid var(--line)}
+.brand{display:flex; align-items:center; gap:8px; padding:0 13px; background:var(--panel-lo);
+  color:var(--text-dim); font-weight:600; letter-spacing:.08em; text-transform:uppercase; font-size:9px}
+.brand b{color:var(--text); letter-spacing:.02em; text-transform:none; font-size:12px}
+.modebtn{display:flex; align-items:center; gap:8px; padding:0 16px; background:var(--panel); color:var(--text);
+  font-weight:500; border-bottom:2px solid var(--accent); touch-action:none}
+.modebtn:hover{background:var(--panel-hi)}
+.modebtn .caret{color:var(--text-faint); font-size:9px}
+.topspacer{flex:1; background:var(--panel-lo)}
+.topbtn{display:flex; align-items:center; gap:7px; padding:0 14px; background:var(--panel-lo); color:var(--text-dim); font-size:11px}
+.topbtn:hover{background:var(--panel-hi); color:var(--text)}
+.topbtn[aria-pressed="true"]{background:var(--accent-dim); color:#eaf4fb}
+.topnote{display:flex; align-items:center; padding:0 13px; background:var(--panel-lo);
+  color:var(--text-faint); font-size:10px; letter-spacing:.03em}
+
+.stage{flex:1; display:flex; min-height:0; position:relative; background:var(--line)}
+
+/* ---------- left rail: ゲージ + Undo/Redo ---------- */
+.rail{flex:0 0 var(--rail); background:var(--panel-lo); border-right:1px solid var(--line);
+  display:flex; flex-direction:column; align-items:center; padding:8px 0; gap:8px; z-index:6}
+.gwrap{display:flex; flex-direction:column; align-items:center; gap:4px; flex:1 1 0; min-height:0; width:100%}
+.glabel{font-size:9px; white-space:nowrap; letter-spacing:.06em; text-transform:uppercase; color:var(--text-faint); text-align:center; line-height:1.3}
+.gval{font-family:"IBM Plex Mono",monospace; font-size:10px; color:var(--text); font-variant-numeric:tabular-nums}
+.gauge{
+  position:relative; width:36px; flex:1 1 0; min-height:60px;
+  background:var(--panel-lo); border:1px solid var(--line); border-radius:var(--radius);
+  overflow:hidden; touch-action:none; cursor:ns-resize;
 }
-.rail-lbl{font-size:8px; color:var(--text-faint); letter-spacing:.08em; text-transform:uppercase}
-.rail-sep{width:24px; height:1px; background:var(--line-soft); margin:3px 0}
-.rbtn{
-  width:38px; height:32px; display:grid; place-items:center;
-  background:var(--panel); border:1px solid var(--line); border-radius:var(--radius);
-  color:var(--text-dim);
-}
-.rbtn:hover{background:var(--panel-hi); color:var(--text)}
-.rbtn:disabled{opacity:.32}
-.mod{height:30px; font-weight:600; font-size:10px; letter-spacing:.03em}
-.mod[data-state="latch"]{background:var(--accent-dim); border-color:var(--accent); color:#fff}
-.mod[data-state="lock"]{background:var(--accent); border-color:var(--accent); color:#0f1418; box-shadow:inset 0 0 0 1px rgba(255,255,255,.35)}
+.gauge .fill{position:absolute; left:0; right:0; bottom:0; background:linear-gradient(180deg,var(--accent) 0%,var(--accent-dim) 100%)}
+.gauge .knob{position:absolute; left:-1px; right:-1px; height:3px; background:#dfe8ef}
+.gauge[data-off="true"]{opacity:.35}
+.hbtns{display:flex; flex-direction:column; gap:5px; width:100%; align-items:center; flex:0 0 auto}
+.bigbtn{width:52px; height:44px; display:grid; place-items:center; background:var(--panel);
+  border:1px solid var(--line); border-radius:var(--radius); color:var(--text-dim)}
+.bigbtn:hover{background:var(--panel-hi); color:var(--text)}
+.bigbtn:disabled{opacity:.3}
 
 /* ---------- docks ---------- */
-.dock{
-  background:var(--panel); border-right:1px solid var(--line);
-  flex:0 0 auto; display:flex; flex-direction:column; min-height:0; width:236px;
-}
+.dock{background:var(--panel); border-right:1px solid var(--line); flex:0 0 auto;
+  display:flex; flex-direction:column; min-height:0; width:236px}
 .dock:empty{display:none}
 .dock-right{border-right:0; border-left:1px solid var(--line)}
 .dockcol{display:flex; flex-direction:column; min-height:0; flex:0 0 auto}
 .dockcol .dock:first-child{flex:1 1 62%; border-bottom:1px solid var(--line)}
 .dockcol .dock:last-child{flex:1 1 38%}
-/* ツールパネルはアイコンだけの細い列 */
 .dock:has(.panel[data-panel="tools"]){width:auto}
 .panel[data-panel="tools"] .pbody{padding:5px; width:52px}
 
 .panel{display:flex; flex-direction:column; min-height:0; flex:1}
-.phead{
-  display:flex; align-items:center; gap:5px; padding:6px 7px;
-  background:var(--panel-lo); border-bottom:1px solid var(--line);
-  font-size:9px; font-weight:600; letter-spacing:.09em; text-transform:uppercase;
-  color:var(--text-dim); cursor:grab; touch-action:none; flex:0 0 auto; overflow:hidden;
-}
+.phead{display:flex; align-items:center; gap:5px; padding:6px 7px; background:var(--panel-lo);
+  border-bottom:1px solid var(--line); font-size:9px; font-weight:600; letter-spacing:.09em;
+  text-transform:uppercase; color:var(--text-dim); cursor:grab; touch-action:none; flex:0 0 auto; overflow:hidden}
 .panel[data-panel="tools"] .phead{justify-content:center; padding:6px 2px}
 .panel[data-panel="tools"] .phead span{display:none}
 .phead:active{cursor:grabbing}
 .grip{width:8px; height:12px; opacity:.5; flex:0 0 auto}
 .pbody{overflow:auto; padding:8px; flex:1; min-height:0; -webkit-overflow-scrolling:touch}
-
-.panel.floating{
-  position:absolute; z-index:20; max-height:70%;
-  border:1px solid var(--line); border-radius:var(--radius);
-  box-shadow:0 12px 32px rgba(0,0,0,.5); background:var(--panel);
-}
+.panel.floating{position:absolute; z-index:20; max-height:70%; border:1px solid var(--line);
+  border-radius:var(--radius); box-shadow:0 12px 32px rgba(0,0,0,.5); background:var(--panel)}
 .panel.floating[data-panel="tools"]{width:auto}
 .panel.floating:not([data-panel="tools"]){width:250px}
 
 /* ---------- icon tool column ---------- */
 .toolcol{display:flex; flex-direction:column; gap:3px; align-items:center}
-.ibtn{
-  width:40px; height:36px; display:grid; place-items:center; position:relative;
+.ibtn{width:40px; height:36px; display:grid; place-items:center; position:relative;
   background:var(--panel-lo); border:1px solid var(--line); border-radius:var(--radius);
-  color:var(--text-dim); touch-action:none;
-}
+  color:var(--text-dim); touch-action:none}
 .ibtn:hover{background:var(--panel-hi); color:var(--text)}
 .ibtn[aria-pressed="true"]{background:var(--accent-dim); border-color:var(--accent); color:#eaf4fb}
-.ibtn[data-radial]::after{
-  content:""; position:absolute; right:2px; bottom:2px;
-  border-left:5px solid transparent; border-bottom:5px solid var(--text-faint);
-}
+.ibtn[data-radial]::after{content:""; position:absolute; right:2px; bottom:2px;
+  border-left:5px solid transparent; border-bottom:5px solid var(--text-faint)}
 .tool-sep{width:30px; height:1px; background:var(--line-soft); margin:4px 0}
 .igrid{display:flex; flex-direction:column; gap:3px; align-items:center}
 .minilbl{font-size:8px; letter-spacing:.06em; text-transform:uppercase; color:var(--text-faint); margin:8px 0 4px; text-align:center}
 
-/* ---------- attribute editor ---------- */
-.attr-title{
-  font-family:"IBM Plex Mono",monospace; font-size:12px; color:var(--text);
-  padding:2px 2px 8px; border-bottom:1px solid var(--line-soft); margin-bottom:9px;
-  display:flex; align-items:baseline; gap:7px;
-}
-.attr-title span{font-family:"IBM Plex Sans",sans-serif; font-size:9px; letter-spacing:.08em; text-transform:uppercase; color:var(--text-faint)}
+/* ---------- options ---------- */
+.sect{margin-bottom:12px}
+.sect-h{display:flex; align-items:baseline; gap:7px; font-size:9px; letter-spacing:.09em;
+  text-transform:uppercase; color:var(--text-faint); padding-bottom:5px; margin-bottom:7px;
+  border-bottom:1px solid var(--line-soft)}
+.sect-h b{color:var(--accent); font-weight:600}
+.attr-title{font-family:"IBM Plex Mono",monospace; font-size:13px; color:var(--text);
+  padding:1px 2px 8px; display:flex; align-items:baseline; gap:7px}
+.attr-title span{font-family:"IBM Plex Sans",sans-serif; font-size:9px; letter-spacing:.08em;
+  text-transform:uppercase; color:var(--text-faint)}
 .row{display:grid; grid-template-columns:1fr 54px; gap:6px; align-items:center; margin-bottom:7px}
 .row label{color:var(--text-dim); font-size:11px}
-.row .num{
-  font-family:"IBM Plex Mono",monospace; font-variant-numeric:tabular-nums; font-size:11px;
+.row .num{font-family:"IBM Plex Mono",monospace; font-variant-numeric:tabular-nums; font-size:11px;
   background:var(--panel-lo); border:1px solid var(--line); border-radius:var(--radius);
-  padding:3px 5px; text-align:right; color:var(--text); width:100%;
-}
-.slider{
-  grid-column:1/-1; -webkit-appearance:none; appearance:none;
-  width:100%; height:20px; background:transparent; touch-action:none; margin:-3px 0 3px;
-}
+  padding:3px 5px; text-align:right; color:var(--text); width:100%}
+.slider{grid-column:1/-1; -webkit-appearance:none; appearance:none; width:100%; height:20px;
+  background:transparent; touch-action:none; margin:-3px 0 3px}
 .slider::-webkit-slider-runnable-track{height:3px; background:var(--panel-lo); border:1px solid var(--line); border-radius:2px}
 .slider::-moz-range-track{height:3px; background:var(--panel-lo); border:1px solid var(--line); border-radius:2px}
-.slider::-webkit-slider-thumb{
-  -webkit-appearance:none; width:16px; height:16px; margin-top:-7px; border-radius:50%;
-  background:var(--accent); border:1px solid #16324a;
-}
+.slider::-webkit-slider-thumb{-webkit-appearance:none; width:16px; height:16px; margin-top:-7px;
+  border-radius:50%; background:var(--accent); border:1px solid #16324a}
 .slider::-moz-range-thumb{width:16px; height:16px; border-radius:50%; background:var(--accent); border:1px solid #16324a}
 .hint{color:var(--text-faint); font-size:10px; line-height:1.55; padding:2px; white-space:pre-line}
-.notice{
-  background:var(--panel-lo); border-left:2px solid var(--warn); border-radius:0 var(--radius) var(--radius) 0;
-  padding:7px 9px; color:var(--text-dim); font-size:10px; line-height:1.55; margin-bottom:9px;
-}
-.grouplbl{font-size:9px; letter-spacing:.09em; text-transform:uppercase; color:var(--text-faint); margin:12px 2px 5px}
+.notice{background:var(--panel-lo); border-left:2px solid var(--warn); border-radius:0 var(--radius) var(--radius) 0;
+  padding:7px 9px; color:var(--text-dim); font-size:10px; line-height:1.55; margin-bottom:9px}
+.act{display:block; width:100%; padding:7px; margin-top:4px; background:var(--panel-lo);
+  border:1px solid var(--line-soft); border-radius:var(--radius); color:var(--text); font-size:11px}
+.act:hover{background:var(--accent-dim); border-color:var(--accent)}
+.chk{display:flex; align-items:center; gap:8px; padding:5px 2px; color:var(--text-dim); font-size:11px; width:100%}
+.chk i{width:14px; height:14px; border:1px solid var(--line-soft); border-radius:2px; background:var(--panel-lo); flex:0 0 auto}
+.chk[aria-pressed="true"] i{background:var(--accent); border-color:var(--accent)}
+.chk[aria-pressed="true"]{color:var(--text)}
 
 /* ---------- outliner ---------- */
-.olrow{
-  display:flex; align-items:center; gap:7px; padding:5px 6px; border-radius:var(--radius);
-  color:var(--text-dim); width:100%; text-align:left;
-}
+.olrow{display:flex; align-items:center; gap:7px; padding:6px; border-radius:var(--radius);
+  color:var(--text-dim); width:100%; text-align:left; touch-action:none}
 .olrow:hover{background:var(--panel-hi)}
 .olrow[aria-selected="true"]{background:var(--accent-dim); color:#eaf4fb}
 .olrow .nm{font-family:"IBM Plex Mono",monospace; font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
 .olrow .ty{margin-left:auto; font-size:9px; letter-spacing:.06em; text-transform:uppercase; color:var(--text-faint); flex:0 0 auto}
 .olrow[aria-selected="true"] .ty{color:#a9cde6}
-.dot{width:6px; height:6px; border-radius:50%; background:var(--sel); flex:0 0 auto; opacity:.4}
+.dot{width:7px; height:7px; border-radius:50%; background:var(--sel); flex:0 0 auto; opacity:.35}
 .olrow[aria-selected="true"] .dot{opacity:1}
+.olinput{font-family:"IBM Plex Mono",monospace; font-size:11px; background:var(--panel-lo);
+  border:1px solid var(--accent); border-radius:2px; color:var(--text); padding:3px 5px; width:100%}
 .empty{color:var(--text-faint); font-size:10px; padding:10px 4px; text-align:center; line-height:1.6; white-space:pre-line}
 
 /* ---------- viewport ---------- */
 .vp{flex:1; position:relative; min-width:0; background:linear-gradient(180deg,var(--vp-top) 0%,var(--vp-bot) 78%); overflow:hidden}
 #gl{position:absolute; inset:0; width:100%; height:100%; touch-action:none; display:block}
-.hud{position:absolute; pointer-events:none; font-family:"IBM Plex Mono",monospace; font-size:10px; color:#cdd5dc; text-shadow:0 1px 2px rgba(0,0,0,.65)}
+.hud{position:absolute; pointer-events:none; font-family:"IBM Plex Mono",monospace; font-size:10px;
+  color:#cdd5dc; text-shadow:0 1px 2px rgba(0,0,0,.65)}
 .hud-stats{top:8px; left:10px; display:grid; grid-template-columns:auto auto; gap:0 10px; font-variant-numeric:tabular-nums}
 .hud-stats i{font-style:normal; color:#93a0ab}
 .hud-mode{top:8px; right:12px; text-align:right}
 .hud-mode b{color:var(--comp); font-weight:500}
-.hud-hint{bottom:10px; left:10px; color:#a7b2bc; max-width:74%; line-height:1.7}
-.hud-hint kbd{
-  font-family:inherit; background:rgba(0,0,0,.35); border:1px solid rgba(255,255,255,.14);
-  border-radius:2px; padding:0 3px; color:#dbe2e8;
-}
-.marquee{
-  position:absolute; border:1px solid #cfd8de; background:rgba(207,216,222,.12);
-  pointer-events:none; display:none;
-}
+.hud-hint{bottom:12px; left:150px; right:12px; color:#a7b2bc; line-height:1.7}
+.hud-hint kbd{font-family:inherit; background:rgba(0,0,0,.35); border:1px solid rgba(255,255,255,.14);
+  border-radius:2px; padding:0 3px; color:#dbe2e8}
+.marquee{position:absolute; border:1px solid #e8eef2; background:rgba(232,238,242,.14); pointer-events:none; display:none}
 
-/* ---------- radial menu ---------- */
+/* 左下のタッチ用クラスタ */
+.cluster{position:absolute; left:12px; bottom:12px; display:flex; flex-direction:column; align-items:center; gap:6px; z-index:8}
+.cluster .mods{display:flex; gap:6px}
+.cmod{width:42px; height:34px; border-radius:var(--radius); font-weight:600; font-size:10px; letter-spacing:.03em;
+  background:rgba(37,42,48,.9); border:1px solid var(--line); color:var(--text-dim); backdrop-filter:blur(4px)}
+.cmod[data-state="latch"]{background:var(--accent-dim); border-color:var(--accent); color:#fff}
+.cmod[data-state="lock"]{background:var(--accent); border-color:var(--accent); color:#0f1418;
+  box-shadow:inset 0 0 0 1px rgba(255,255,255,.4)}
+.cframe{width:64px; height:56px; border-radius:8px; display:grid; place-items:center; position:relative;
+  background:rgba(37,42,48,.92); border:1px solid var(--line-soft); color:var(--text); backdrop-filter:blur(4px);
+  box-shadow:0 4px 14px rgba(0,0,0,.4); touch-action:none}
+.cframe:hover{background:var(--panel-hi)}
+.cframe::after{content:""; position:absolute; right:4px; bottom:4px;
+  border-left:6px solid transparent; border-bottom:6px solid var(--text-faint)}
+.cframe small{position:absolute; bottom:3px; left:6px; font-size:8px; color:var(--text-faint); letter-spacing:.06em}
+
+/* ---------- popover (カメラ設定) ---------- */
+.pop{position:absolute; z-index:40; width:250px; background:var(--panel); border:1px solid var(--line-soft);
+  border-radius:var(--radius); box-shadow:0 16px 40px rgba(0,0,0,.55); padding:10px}
+.pop h4{margin:0 0 9px; font-size:9px; letter-spacing:.1em; text-transform:uppercase; color:var(--text-faint);
+  border-bottom:1px solid var(--line-soft); padding-bottom:6px}
+
+/* ---------- radial ---------- */
 .radial{position:fixed; inset:0; z-index:60; touch-action:none}
 .radial svg{position:absolute; inset:0; width:100%; height:100%}
 .radial text{font-family:"IBM Plex Sans",sans-serif; font-size:10.5px; fill:#dfe5ea; pointer-events:none}
@@ -208,12 +205,14 @@ button{font-family:inherit; font-size:inherit; color:inherit; background:none; b
   @keyframes pop{from{opacity:0}to{opacity:1}}
 }
 
-/* ---------- dock drop zones ---------- */
-.dropz{position:absolute; z-index:50; border:1px dashed var(--accent); background:rgba(79,159,209,.13); pointer-events:none; display:grid; place-items:center}
-.dropz span{font-size:10px; letter-spacing:.08em; text-transform:uppercase; color:#bfe0f4; background:rgba(0,0,0,.4); padding:3px 8px; border-radius:2px}
+/* ---------- drop zones ---------- */
+.dropz{position:absolute; z-index:50; border:1px dashed var(--accent); background:rgba(79,159,209,.13);
+  pointer-events:none; display:grid; place-items:center}
+.dropz span{font-size:10px; letter-spacing:.08em; text-transform:uppercase; color:#bfe0f4;
+  background:rgba(0,0,0,.4); padding:3px 8px; border-radius:2px}
 .dropz.hot{background:rgba(79,159,209,.3); border-style:solid}
 
-/* ---------- placeholder modes ---------- */
+/* ---------- stubs ---------- */
 .stub{flex:1; display:grid; place-items:center; padding:32px; background:var(--ground); overflow:auto}
 .stub-in{max-width:520px}
 .stub h2{font-size:19px; font-weight:600; margin:0 0 3px; letter-spacing:-.01em; text-wrap:balance}
@@ -233,31 +232,33 @@ button{font-family:inherit; font-size:inherit; color:inherit; background:none; b
       <span id="modeIcon"></span><span id="modeLabel">モデリング</span><span class="caret">▼</span>
     </button>
     <div class="topspacer"></div>
+    <button class="topbtn" id="btnPanels" aria-pressed="false">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="1"/><path d="M9 4v16"/></svg>
+      パネル
+    </button>
     <div class="topnote">操作感の検証用プロトタイプ · 製品実装は C++</div>
   </div>
 
   <div class="stage" id="stage">
     <div class="rail">
-      <div class="rail-lbl">履歴</div>
-      <button class="rbtn" id="btnUndo" title="一つ前に戻る (Ctrl+Z)" disabled>
-        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14 4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-4"/></svg>
-      </button>
-      <button class="rbtn" id="btnRedo" title="一つ先に進む (Ctrl+Shift+Z)" disabled>
-        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m15 14 5-5-5-5"/><path d="M20 9H9a5 5 0 0 0 0 10h4"/></svg>
-      </button>
-      <div class="rail-sep"></div>
-      <div class="rail-lbl">修飾</div>
-      <button class="rbtn mod" id="modShift" data-state="off" title="Shift">SHF</button>
-      <button class="rbtn mod" id="modCtrl" data-state="off" title="Ctrl">CTL</button>
-      <button class="rbtn mod" id="modAlt" data-state="off" title="Alt — カメラ操作">ALT</button>
-      <div class="rail-sep"></div>
-      <div class="rail-lbl">視点</div>
-      <button class="rbtn" id="btnFrame" title="選択をフレーム (F)">
-        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3"/><circle cx="12" cy="12" r="3"/></svg>
-      </button>
-      <button class="rbtn" id="btnPanels" title="パネルの表示 / 非表示">
-        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="1"/><path d="M9 4v16"/></svg>
-      </button>
+      <div class="gwrap">
+        <div class="glabel" id="g1lbl">強度</div>
+        <div class="gauge" id="gauge1"><div class="fill"></div><div class="knob"></div></div>
+        <div class="gval" id="g1val">0.00</div>
+      </div>
+      <div class="hbtns">
+        <button class="bigbtn" id="btnUndo" title="一つ前に戻る (Ctrl+Z)" disabled>
+          <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14 4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-4"/></svg>
+        </button>
+        <button class="bigbtn" id="btnRedo" title="一つ先に進む (Ctrl+Shift+Z)" disabled>
+          <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="m15 14 5-5-5-5"/><path d="M20 9H9a5 5 0 0 0 0 10h4"/></svg>
+        </button>
+      </div>
+      <div class="gwrap">
+        <div class="glabel" id="g2lbl">範囲</div>
+        <div class="gauge" id="gauge2"><div class="fill"></div><div class="knob"></div></div>
+        <div class="gval" id="g2val">1.00</div>
+      </div>
     </div>
 
     <div class="dock" id="dockLeft" data-zone="left"></div>
@@ -268,6 +269,17 @@ button{font-family:inherit; font-size:inherit; color:inherit; background:none; b
       <div class="hud hud-stats" id="hudStats"></div>
       <div class="hud hud-mode" id="hudMode"></div>
       <div class="hud hud-hint" id="hudHint"></div>
+      <div class="cluster">
+        <div class="mods">
+          <button class="cmod" id="modShift" data-state="off">SHF</button>
+          <button class="cmod" id="modCtrl" data-state="off">CTL</button>
+          <button class="cmod" id="modAlt" data-state="off">ALT</button>
+        </div>
+        <button class="cframe" id="btnFrame" data-radial="selmode" title="選択をフレーム (F) — 長押しでマーキングメニュー">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3"/><circle cx="12" cy="12" r="3"/></svg>
+          <small>F</small>
+        </button>
+      </div>
     </div>
 
     <div class="dockcol" id="dockColRight">
@@ -290,12 +302,11 @@ button{font-family:inherit; font-size:inherit; color:inherit; background:none; b
       </ul>
     </div>
   </div>
-
   <div class="stub" id="stubSculpt" hidden>
     <div class="stub-in">
       <div class="kicker">未実装 — v1.0 の中核</div>
       <h2>スカルプト</h2>
-      <p>モデリングモードで作ったローモデルを、クリースとディバイドでハイメッシュ化します。ディバイドスライダーを下げてモデリングに戻り頂点を編集すると、ハイメッシュのディテールを保ったままローモデルを調整できます。ここが本アプリの差別化の核です。</p>
+      <p>モデリングモードで作ったローモデルを、クリースとディバイドでハイメッシュ化します。ディバイドスライダーを下げてモデリングに戻り頂点を編集すると、ハイメッシュのディテールを保ったままローモデルを調整できます。左のゲージはそのまま「ブラシ強度」と「ブラシサイズ」に置き換わります。</p>
       <ul>
         <li><b>ブラシ</b><span>Standard / Clay / Move / Smooth / Pinch / Inflate / Flatten / Trim / Polish</span><em>11 種</em></li>
         <li><b>サブディビジョン</b><span>接空間デルタによるマルチ解像度スタック</span><em>OpenSubdiv</em></li>
@@ -305,12 +316,11 @@ button{font-family:inherit; font-size:inherit; color:inherit; background:none; b
       </ul>
     </div>
   </div>
-
   <div class="stub" id="stubMaterial" hidden>
     <div class="stub-in">
       <div class="kicker">未実装 — v2.0 予定</div>
       <h2>マテリアル</h2>
-      <p>2D ビュー（UV 空間）と 3D ビューを同時に表示し、両方で同期してペイントします。Substance のファイル形式は非公開のため直接は読めません。Substance Painter から書き出したテクスチャセットを命名規則で自動認識する方式で対応します。</p>
+      <p>2D ビュー（UV 空間）と 3D ビューを同時に表示し、両方で同期してペイントします。Substance のファイル形式は非公開のため直接は読めません。書き出したテクスチャセットを命名規則で自動認識する方式で対応します。左のゲージは「不透明度」と「ブラシサイズ」に置き換わります。</p>
       <ul>
         <li><b>チャンネル</b><span>BaseColor / Roughness / Metallic / Normal / Height / AO / Emissive</span><em>7 種</em></li>
         <li><b>レイヤー</b><span>塗り、ペイント、マスク、フォルダ、ブレンドモード</span><em>自前実装</em></li>
@@ -328,7 +338,7 @@ button{font-family:inherit; font-size:inherit; color:inherit; background:none; b
 "use strict";
 
 /* =========================================================================
-   1. メッシュ（設計ドキュメント 02 章の構造）
+   1. メッシュ
    ========================================================================= */
 function Mesh(){ this.pos=[]; this.faces=[]; }
 Mesh.prototype.clone=function(){ var m=new Mesh(); m.pos=this.pos.slice(); m.faces=this.faces.map(function(f){return f.slice();}); return m; };
@@ -385,11 +395,9 @@ Mesh.prototype.stats=function(){
   var tris=0; for(var i=0;i<this.faces.length;i++) tris+=this.faces[i].length-2;
   return {v:this.vcount(), e:this.edges().length, f:this.faces.length, t:tris};
 };
-
 function Builder(){ this.pos=[]; this.faces=[]; this.map=new Map(); }
 Builder.prototype.v=function(x,y,z){
-  var k=x.toFixed(5)+","+y.toFixed(5)+","+z.toFixed(5);
-  var i=this.map.get(k);
+  var k=x.toFixed(5)+","+y.toFixed(5)+","+z.toFixed(5), i=this.map.get(k);
   if(i===undefined){ i=this.pos.length/3; this.pos.push(x,y,z); this.map.set(k,i); }
   return i;
 };
@@ -411,15 +419,24 @@ var I={
   multicut:'<circle cx="5.5" cy="5.5" r="2.3"/><circle cx="5.5" cy="18.5" r="2.3"/><path d="M7.4 6.8 20 18M7.4 17.2 20 6"/>',
   extrude:'<path d="M4.5 13.5h8v7h-8z"/><path d="m4.5 13.5 4-4h8v7M12.5 13.5l4-4"/><path d="M20 3v5m0-5-1.8 1.8M20 3l1.8 1.8"/>',
   prim:'<path d="m12 2.6 8.6 4.8v9.2L12 21.4l-8.6-4.8V7.4z"/><path d="M12 12.2 20.6 7.4M12 12.2v9.2M12 12.2 3.4 7.4"/>',
+  camera:'<path d="M3.4 8.4h3.2l1.6-2.4h7.6l1.6 2.4h3.2v9.8a1 1 0 0 1-1 1H4.4a1 1 0 0 1-1-1z"/><circle cx="12" cy="13" r="3.4"/>',
+  shade:'<circle cx="12" cy="12" r="8.8"/><path d="M12 3.2a8.8 8.8 0 0 1 0 17.6z" fill="currentColor" fill-opacity=".5"/>',
   vObj:'<path d="m12 3 8 4.5v9L12 21l-8-4.5v-9z"/>',
   vVert:'<rect x="6" y="6" width="12" height="12"/><circle cx="6" cy="6" r="2" fill="currentColor"/><circle cx="18" cy="6" r="2" fill="currentColor"/><circle cx="6" cy="18" r="2" fill="currentColor"/><circle cx="18" cy="18" r="2" fill="currentColor"/>',
   vEdge:'<rect x="6" y="6" width="12" height="12"/><path d="M6 6h12" stroke-width="3.4"/>',
   vFace:'<rect x="6" y="6" width="12" height="12" fill="currentColor" fill-opacity=".45"/>',
+  vVertFace:'<rect x="6" y="6" width="12" height="12" fill="currentColor" fill-opacity=".2"/><circle cx="8.6" cy="8.6" r="2.1" fill="currentColor"/>',
+  vMulti:'<rect x="6" y="6" width="12" height="12"/><circle cx="6" cy="6" r="1.9" fill="currentColor"/><path d="M6 18h12" stroke-width="3"/>',
+  vUV:'<rect x="4" y="4" width="16" height="16" rx="1"/><path d="M4 12h16M12 4v16" stroke-dasharray="2.4 2"/>',
   wire:'<rect x="4" y="4" width="16" height="16"/><path d="M4 9.3h16M4 14.6h16M9.3 4v16M14.6 4v16"/>',
-  sym:'<path d="M12 3v18" stroke-dasharray="2.4 2.4"/><path d="M9.4 7 4.5 12l4.9 5zM14.6 7l4.9 5-4.9 5z"/>',
-  finger:'<path d="M9 11V5.6a1.6 1.6 0 0 1 3.2 0V11"/><path d="M12.2 11V9.4a1.6 1.6 0 0 1 3.2 0V11"/><path d="M15.4 11.4v-.8a1.6 1.6 0 0 1 3.2 0V15a5.6 5.6 0 0 1-5.6 5.6h-1.3a5 5 0 0 1-3.9-1.9L5 15.5a1.6 1.6 0 0 1 2.4-2.1L9 15"/>',
+  shaded:'<rect x="4" y="4" width="16" height="16" rx="1" fill="currentColor" fill-opacity=".5"/>',
+  shadedWire:'<rect x="4" y="4" width="16" height="16" rx="1" fill="currentColor" fill-opacity=".3"/><path d="M4 12h16M12 4v16"/>',
+  smooth:'<circle cx="12" cy="12" r="8.6" fill="currentColor" fill-opacity=".5"/><path d="M8 15.4a6 6 0 0 1 5-6.6"/>',
+  rename:'<path d="M4 20h16"/><path d="M15.4 4.6 19 8.2 8.6 18.6 4.4 19.6l1-4.2z"/>',
   dup:'<rect x="3.6" y="3.6" width="12" height="12" rx="1"/><path d="M8.4 20.4h12v-12"/>',
   del:'<path d="M4 6.6h16M9.4 6.6V4.4h5.2v2.2M6.4 6.6l1 13.2a1 1 0 0 0 1 .9h7.2a1 1 0 0 0 1-.9l1-13.2"/>',
+  frame:'<path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3"/><circle cx="12" cy="12" r="3"/>',
+  finger:'<path d="M9 11V5.6a1.6 1.6 0 0 1 3.2 0V11"/><path d="M12.2 11V9.4a1.6 1.6 0 0 1 3.2 0V11"/><path d="M15.4 11.4v-.8a1.6 1.6 0 0 1 3.2 0V15a5.6 5.6 0 0 1-5.6 5.6h-1.3a5 5 0 0 1-3.9-1.9L5 15.5a1.6 1.6 0 0 1 2.4-2.1L9 15"/>',
   mModel:'<path d="m12 2.6 8.6 4.8v9.2L12 21.4l-8.6-4.8V7.4z"/><path d="M12 12.2 20.6 7.4M12 12.2v9.2M12 12.2 3.4 7.4"/>',
   mUV:'<rect x="3.4" y="3.4" width="17.2" height="17.2" rx="1"/><path d="M3.4 12h17.2M12 3.4v17.2" stroke-dasharray="2.6 2.2"/>',
   mSculpt:'<path d="M16.4 3.6 20.4 7.6 9.6 18.4l-5.2 1.2 1.2-5.2z"/><path d="m14.4 5.6 4 4"/>',
@@ -438,7 +455,7 @@ function ico(d,sz,sw){
 }
 
 /* =========================================================================
-   3. プリミティブ（パラメータ名と既定値は Maya に合わせている）
+   3. プリミティブ
    ========================================================================= */
 var PRIM = {
   cube:{ label:"キューブ", en:"Cube", icon:I.pCube,
@@ -599,7 +616,6 @@ var PRIM_ORDER=["cube","sphere","cylinder","cone","torus","plane","disk","platon
    4. トポロジ編集
    ========================================================================= */
 function ekey(a,b){ return a<b? a+"_"+b : b+"_"+a; }
-
 function insertEdgeLoop(mesh, ea, eb, t){
   var ef=mesh.edgeFaceMap(), strip=[], seenFace={};
   function walk(a,b,tt,fromFace,forward){
@@ -624,7 +640,6 @@ function insertEdgeLoop(mesh, ea, eb, t){
   walk(ea,eb,t,-1,true);
   walk(eb,ea,1-t, strip.length? strip[0].face : -1, false);
   if(!strip.length) return null;
-
   var out=mesh.clone(), splitOf={};
   function splitVert(a,b,tt){
     var lo=Math.min(a,b), hi=Math.max(a,b), k=lo+"_"+hi;
@@ -637,8 +652,8 @@ function insertEdgeLoop(mesh, ea, eb, t){
   var replace={};
   for(var s=0;s<strip.length;s++){
     var r=strip[s];
-    var m1=splitVert(r.a,r.b,r.t), m2=splitVert(r.d,r.c,r.t);
-    replace[r.face]=[[r.a,m1,m2,r.d],[m1,r.b,r.c,m2]];
+    replace[r.face]=[[r.a,splitVert(r.a,r.b,r.t),splitVert(r.d,r.c,r.t),r.d],
+                     [splitVert(r.a,r.b,r.t),r.b,r.c,splitVert(r.d,r.c,r.t)]];
   }
   var nf=[];
   for(var f2=0;f2<out.faces.length;f2++){
@@ -648,7 +663,6 @@ function insertEdgeLoop(mesh, ea, eb, t){
   out.faces=nf;
   return {mesh:out, count:strip.length};
 }
-
 function extrudeFaces(mesh, faceSet, dist){
   var out=mesh.clone(), sel=Array.from(faceSet);
   if(!sel.length) return null;
@@ -681,7 +695,7 @@ function extrudeFaces(mesh, faceSet, dist){
 }
 
 /* =========================================================================
-   5. シーン
+   5. 状態
    ========================================================================= */
 var uid=1;
 function SceneObject(kind){
@@ -691,8 +705,7 @@ function SceneObject(kind){
   this.params={};
   if(PRIM[kind]) PRIM[kind].params.forEach(function(p){ this.params[p[0]]=p[2]; }, this);
   this.parametric=!!PRIM[kind];
-  // Maya と同じく、プリミティブは常に原点に作られる
-  this.pos=new THREE.Vector3(0,0,0);
+  this.pos=new THREE.Vector3(0,0,0);      // Maya と同じく原点に生成
   this.quat=new THREE.Quaternion();
   this.scale=new THREE.Vector3(1,1,1);
   this.mesh=this.parametric? PRIM[kind].build(this.params) : new Mesh();
@@ -706,9 +719,22 @@ var App={
   comp:new Set(),
   undo:[], redo:[],
   mods:{shift:"off",ctrl:"off",alt:"off"},
-  showWire:true, mode:"model",
-  panelsHidden:false,
-  fingerTool:false
+  mode:"model", display:"shadedWire",
+  panelsHidden:false, fingerTool:false,
+  soft:{strength:0, radius:1.0},          // ゲージ1 / ゲージ2
+  toolOpts:{extrudeDist:.35},
+  cam:{focal:35, near:.05, far:500, ortho:false}
+};
+// モードごとのゲージの意味（スカルプト・マテリアルでは中身が置き換わる）
+var GAUGES={
+  model:    {g1:{label:"強度", full:"ソフト選択 強度", min:0, max:1, step:.01, get:function(){return App.soft.strength;}, set:function(v){App.soft.strength=v;}},
+             g2:{label:"範囲", full:"ソフト選択 範囲", min:.05, max:6, step:.05, get:function(){return App.soft.radius;}, set:function(v){App.soft.radius=v;}}},
+  sculpt:   {g1:{label:"強度", full:"ブラシ強度", min:0, max:1, step:.01, get:function(){return App.soft.strength;}, set:function(v){App.soft.strength=v;}},
+             g2:{label:"サイズ", full:"ブラシサイズ", min:.05, max:6, step:.05, get:function(){return App.soft.radius;}, set:function(v){App.soft.radius=v;}}},
+  material: {g1:{label:"不透明", full:"不透明度", min:0, max:1, step:.01, get:function(){return App.soft.strength;}, set:function(v){App.soft.strength=v;}},
+             g2:{label:"サイズ", full:"ブラシサイズ", min:.05, max:6, step:.05, get:function(){return App.soft.radius;}, set:function(v){App.soft.radius=v;}}},
+  uv:       {g1:{label:"強度", full:"ソフト選択 強度", min:0, max:1, step:.01, get:function(){return App.soft.strength;}, set:function(v){App.soft.strength=v;}},
+             g2:{label:"範囲", full:"ソフト選択 範囲", min:.05, max:6, step:.05, get:function(){return App.soft.radius;}, set:function(v){App.soft.radius=v;}}}
 };
 
 function snapshot(){
@@ -731,11 +757,7 @@ function restore(snap){
   App.comp.clear();
   rebuildAllGfx(); refreshUI();
 }
-function pushUndo(label){
-  App.undo.push({label:label, snap:snapshot()});
-  if(App.undo.length>40) App.undo.shift();
-  App.redo.length=0; updateHistoryButtons();
-}
+function pushUndo(l){ commitUndo(l, snapshot()); }
 function commitUndo(label,snap){
   App.undo.push({label:label, snap:snap});
   if(App.undo.length>40) App.undo.shift();
@@ -765,16 +787,16 @@ var vp=document.getElementById("vp");
 var renderer=new THREE.WebGLRenderer({canvas:document.getElementById("gl"), antialias:true, alpha:true});
 renderer.setClearColor(0x000000,0);
 var scene=new THREE.Scene();
-var camera=new THREE.PerspectiveCamera(45,1,.05,500);
+var persp=new THREE.PerspectiveCamera(45,1,.05,500);
+var ortho=new THREE.OrthographicCamera(-1,1,1,-1,.05,500);
+var camera=persp;
 var root=new THREE.Group(); scene.add(root);
 var overlay=new THREE.Group(); scene.add(overlay);
 var manip=new THREE.Group(); scene.add(manip);
-
 scene.add(new THREE.HemisphereLight(0xbcc7d1,0x33383d,.85));
-var key=new THREE.DirectionalLight(0xffffff,.72); key.position.set(3,6,4); scene.add(key);
-var fill=new THREE.DirectionalLight(0x9fb4c6,.28); fill.position.set(-4,2,-3); scene.add(fill);
-
-(function grid(){
+var keyL=new THREE.DirectionalLight(0xffffff,.72); keyL.position.set(3,6,4); scene.add(keyL);
+var fillL=new THREE.DirectionalLight(0x9fb4c6,.28); fillL.position.set(-4,2,-3); scene.add(fillL);
+(function(){
   var g=new THREE.GridHelper(24,24,0x6d7880,0x4b545c);
   g.material.transparent=true; g.material.opacity=.55; scene.add(g);
   var gx=new THREE.BufferGeometry().setAttribute("position",new THREE.Float32BufferAttribute([-12,0,0,12,0,0],3));
@@ -783,17 +805,21 @@ var fill=new THREE.DirectionalLight(0x9fb4c6,.28); fill.position.set(-4,2,-3); s
   scene.add(new THREE.Line(gz,new THREE.LineBasicMaterial({color:0x6a8ac0})));
 })();
 
-var AXCOL=[0xd8524f,0x6cc94a,0x4f8fe0];   // Maya の X 赤 / Y 緑 / Z 青
+var AXCOL=[0xd8524f,0x6cc94a,0x4f8fe0];
 var MAT={
-  surf:new THREE.MeshPhongMaterial({color:0x9aa4ad, specular:0x2a3138, shininess:22, side:THREE.DoubleSide}),
-  wire:new THREE.LineBasicMaterial({color:0x2a3036, transparent:true, opacity:.85}),
-  wireSel:new THREE.LineBasicMaterial({color:0x7ad25e}),
-  vert:new THREE.PointsMaterial({color:0x3b434b, size:7, sizeAttenuation:false}),
-  vertSel:new THREE.PointsMaterial({color:0xffc94d, size:10, sizeAttenuation:false}),
-  edgeSel:new THREE.LineBasicMaterial({color:0xffc94d}),
-  faceSel:new THREE.MeshBasicMaterial({color:0xffc94d, transparent:true, opacity:.42, side:THREE.DoubleSide, depthWrite:false}),
+  surfSmooth:new THREE.MeshPhongMaterial({color:0x9aa4ad, specular:0x2a3138, shininess:24, side:THREE.DoubleSide, flatShading:false}),
+  surfFlat:new THREE.MeshPhongMaterial({color:0x9aa4ad, specular:0x21272c, shininess:8, side:THREE.DoubleSide, flatShading:true}),
+  wire:new THREE.LineBasicMaterial({color:0x141a1f, transparent:true, opacity:.9}),
+  wireSel:new THREE.LineBasicMaterial({color:0x4dff4d}),          // Maya の選択グリーン
+  wireComp:new THREE.LineBasicMaterial({color:0x46525d}),         // コンポーネントモード時
+  vert:new THREE.PointsMaterial({color:0x8b5fb0, size:6, sizeAttenuation:false}),   // 未選択の頂点
+  vertSel:new THREE.PointsMaterial({color:0xff9e00, size:11, sizeAttenuation:false}),
+  edgeSel:new THREE.LineBasicMaterial({color:0xff9e00}),
+  faceSel:new THREE.MeshBasicMaterial({color:0xff9e00, transparent:true, opacity:.5, side:THREE.DoubleSide, depthWrite:false}),
+  softPt:new THREE.PointsMaterial({color:0xd06a2a, size:7, sizeAttenuation:false}),
   pivot:new THREE.LineBasicMaterial({color:0xf2d97a})
 };
+function surfMat(){ return App.display==="smooth" ? MAT.surfSmooth : MAT.surfFlat; }
 
 function buildGfx(o){
   if(o.gfx){ root.remove(o.gfx.group); disposeGroup(o.gfx.group); }
@@ -803,24 +829,20 @@ function buildGfx(o){
   var g=new THREE.BufferGeometry();
   g.setAttribute("position",new THREE.Float32BufferAttribute(o.mesh.pos.slice(),3));
   g.setIndex(t.tri); g.computeVertexNormals();
-  var surf=new THREE.Mesh(g,MAT.surf); surf.userData.obj=o; grp.add(surf);
-
+  var surf=new THREE.Mesh(g,surfMat()); surf.userData.obj=o; grp.add(surf);
   var ed=o.mesh.edges(), ep=[];
   ed.forEach(function(e){
     ep.push(o.mesh.pos[e[0]*3],o.mesh.pos[e[0]*3+1],o.mesh.pos[e[0]*3+2],
             o.mesh.pos[e[1]*3],o.mesh.pos[e[1]*3+1],o.mesh.pos[e[1]*3+2]);
   });
   var wg=new THREE.BufferGeometry().setAttribute("position",new THREE.Float32BufferAttribute(ep,3));
-  var wire=new THREE.LineSegments(wg, o===App.sel?MAT.wireSel:MAT.wire);
-  wire.visible=App.showWire; grp.add(wire);
-
+  var wire=new THREE.LineSegments(wg, MAT.wire); grp.add(wire);
   var pg=new THREE.BufferGeometry().setAttribute("position",new THREE.Float32BufferAttribute(o.mesh.pos.slice(),3));
-  var pts=new THREE.Points(pg, MAT.vert);
-  pts.visible=(o===App.sel && App.compMode==="vertex"); grp.add(pts);
-
+  var pts=new THREE.Points(pg, MAT.vert); grp.add(pts);
   root.add(grp);
   o.gfx={group:grp, surf:surf, wire:wire, pts:pts, tri:t, edges:ed};
   grp.updateMatrixWorld();
+  applyDisplay(o);
 }
 function disposeGroup(g){ g.traverse(function(c){ if(c.geometry) c.geometry.dispose(); }); }
 function rebuildAllGfx(){
@@ -828,16 +850,36 @@ function rebuildAllGfx(){
   App.objects.forEach(function(o){ o.gfx=null; buildGfx(o); });
   rebuildOverlay();
 }
+function applyDisplay(o){
+  if(!o.gfx) return;
+  var d=App.display;
+  o.gfx.surf.visible = (d!=="wire");
+  o.gfx.surf.material = surfMat();
+  o.gfx.wire.visible = (d==="wire" || d==="shadedWire" || (o===App.sel));
+  o.gfx.wire.material = (o!==App.sel) ? MAT.wire
+                       : (App.compMode==="object" ? MAT.wireSel : MAT.wireComp);
+  o.gfx.pts.visible = (o===App.sel && App.compMode==="vertex");
+}
+function applyDisplayAll(){ App.objects.forEach(applyDisplay); }
 function xform(node,o){ node.position.copy(o.pos); node.quaternion.copy(o.quat); node.scale.copy(o.scale); return node; }
 
 function rebuildOverlay(){
   overlay.children.slice().forEach(function(c){ overlay.remove(c); disposeGroup(c); });
   var o=App.sel; if(!o||!o.gfx) return;
   var m=o.mesh;
+  // ソフト選択の影響範囲を薄いオレンジで表示
+  if(App.soft.strength>0 && App.compMode!=="object" && App.comp.size){
+    var w=softWeights(), sp=[];
+    for(var k in w) if(w[k]>0.02 && w[k]<0.999){ var v=+k; sp.push(m.pos[v*3],m.pos[v*3+1],m.pos[v*3+2]); }
+    if(sp.length){
+      var gs=new THREE.BufferGeometry().setAttribute("position",new THREE.Float32BufferAttribute(sp,3));
+      var ps=new THREE.Points(gs,MAT.softPt); xform(ps,o); ps.renderOrder=2; overlay.add(ps);
+    }
+  }
   if(App.compMode==="vertex" && App.comp.size){
     var p=[]; App.comp.forEach(function(v){ p.push(m.pos[v*3],m.pos[v*3+1],m.pos[v*3+2]); });
     var g=new THREE.BufferGeometry().setAttribute("position",new THREE.Float32BufferAttribute(p,3));
-    var pt=new THREE.Points(g,MAT.vertSel); xform(pt,o); pt.renderOrder=3; overlay.add(pt);
+    var pt=new THREE.Points(g,MAT.vertSel); xform(pt,o); pt.renderOrder=4; overlay.add(pt);
   }
   if(App.compMode==="edge" && App.comp.size){
     var lp=[];
@@ -846,7 +888,7 @@ function rebuildOverlay(){
       lp.push(m.pos[e[0]*3],m.pos[e[0]*3+1],m.pos[e[0]*3+2], m.pos[e[1]*3],m.pos[e[1]*3+1],m.pos[e[1]*3+2]);
     });
     var g2=new THREE.BufferGeometry().setAttribute("position",new THREE.Float32BufferAttribute(lp,3));
-    var ls=new THREE.LineSegments(g2,MAT.edgeSel); xform(ls,o); ls.renderOrder=3; overlay.add(ls);
+    var ls=new THREE.LineSegments(g2,MAT.edgeSel); xform(ls,o); ls.renderOrder=4; overlay.add(ls);
   }
   if(App.compMode==="face" && App.comp.size){
     var fp=[], idx=[];
@@ -858,7 +900,7 @@ function rebuildOverlay(){
     });
     var g3=new THREE.BufferGeometry().setAttribute("position",new THREE.Float32BufferAttribute(fp,3));
     g3.setIndex(idx);
-    var mh=new THREE.Mesh(g3,MAT.faceSel); xform(mh,o); mh.renderOrder=3; overlay.add(mh);
+    var mh=new THREE.Mesh(g3,MAT.faceSel); xform(mh,o); mh.renderOrder=4; overlay.add(mh);
   }
 }
 
@@ -866,14 +908,50 @@ function resize(){
   var w=vp.clientWidth||1, h=vp.clientHeight||1;
   renderer.setPixelRatio(Math.min(window.devicePixelRatio||1,2));
   renderer.setSize(w,h,false);
-  camera.aspect=w/h; camera.updateProjectionMatrix();
+  persp.aspect=w/h; persp.updateProjectionMatrix();
+  applyCam();
 }
 window.addEventListener("resize",resize);
 
 /* =========================================================================
-   7. マニピュレータ（ロケーター）
+   7. ソフト選択
+   ========================================================================= */
+function softWeights(){
+  var o=App.sel, out={};
+  if(!o) return out;
+  var seeds=componentVerts();
+  seeds.forEach(function(v){ out[v]=1; });
+  if(App.soft.strength<=0 || App.compMode==="object") return out;
+  var m=o.mesh;
+  // 素朴な総当たりなので、重い場合はソフト選択を切る（製品では BVH を使う）
+  if(m.vcount()*seeds.length > 400000) return out;
+  var r=App.soft.radius, s=App.soft.strength;
+  for(var i=0;i<m.vcount();i++){
+    if(out[i]===1) continue;
+    var best=1e9;
+    for(var j=0;j<seeds.length;j++){
+      var a=seeds[j];
+      var d=Math.hypot(m.pos[i*3]-m.pos[a*3], m.pos[i*3+1]-m.pos[a*3+1], m.pos[i*3+2]-m.pos[a*3+2]);
+      if(d<best) best=d;
+    }
+    if(best<r){
+      var t=1-best/r;
+      out[i]=s * (t*t*(3-2*t));   // スムーズステップ
+    }
+  }
+  return out;
+}
+
+/* =========================================================================
+   8. マニピュレータ
    ========================================================================= */
 var AXES=[new THREE.Vector3(1,0,0), new THREE.Vector3(0,1,0), new THREE.Vector3(0,0,1)];
+function bboxCenter(m){
+  if(!m.pos.length) return new THREE.Vector3();
+  var mn=[1e9,1e9,1e9],mx=[-1e9,-1e9,-1e9];
+  for(var i=0;i<m.pos.length;i+=3) for(var k=0;k<3;k++){ mn[k]=Math.min(mn[k],m.pos[i+k]); mx[k]=Math.max(mx[k],m.pos[i+k]); }
+  return new THREE.Vector3((mn[0]+mx[0])/2,(mn[1]+mx[1])/2,(mn[2]+mx[2])/2);
+}
 function pivotWorld(){
   var o=App.sel; if(!o||!o.gfx) return null;
   o.gfx.group.updateMatrixWorld();
@@ -884,18 +962,12 @@ function pivotWorld(){
   vs.forEach(function(v){ c.add(new THREE.Vector3(o.mesh.pos[v*3],o.mesh.pos[v*3+1],o.mesh.pos[v*3+2])); });
   return c.multiplyScalar(1/vs.length).applyMatrix4(o.gfx.group.matrixWorld);
 }
-function bboxCenter(m){
-  if(!m.pos.length) return new THREE.Vector3();
-  var mn=[1e9,1e9,1e9],mx=[-1e9,-1e9,-1e9];
-  for(var i=0;i<m.pos.length;i+=3) for(var k=0;k<3;k++){ mn[k]=Math.min(mn[k],m.pos[i+k]); mx[k]=Math.max(mx[k],m.pos[i+k]); }
-  return new THREE.Vector3((mn[0]+mx[0])/2,(mn[1]+mx[1])/2,(mn[2]+mx[2])/2);
+function manipScale(c){
+  if(App.cam.ortho) return cam.dist*0.09;
+  return camera.position.distanceTo(c)*0.14;
 }
-function manipScale(c){ return camera.position.distanceTo(c)*0.14; }
-
-var hotHandle=-1;   // 0,1,2 = X,Y,Z / 3 = 中心
-var manipSig="";
+var hotHandle=-1, manipSig="";
 function clearManip(){ manip.children.slice().forEach(function(c){ manip.remove(c); disposeGroup(c); }); }
-// 毎フレーム呼ばれるので、内容が変わったときだけ作り直す
 function rebuildManip(){
   var c=pivotWorld();
   if(!c){ if(manipSig){ clearManip(); manipSig=""; } return; }
@@ -903,11 +975,9 @@ function rebuildManip(){
   var sig=[t,hotHandle,App.compMode,App.sel?App.sel.id:-1,App.comp.size,
            c.x.toFixed(3),c.y.toFixed(3),c.z.toFixed(3),s.toFixed(3)].join("|");
   if(sig===manipSig) return;
-  manipSig=sig;
-  clearManip();
+  manipSig=sig; clearManip();
 
-  if(t==="select"){
-    // ロケーター（ピボット表示のみ）
+  if(t==="select"||t==="multicut"){
     var pl=[];
     for(var a=0;a<3;a++){
       var d=AXES[a].clone().multiplyScalar(s*0.45);
@@ -919,31 +989,28 @@ function rebuildManip(){
     return;
   }
   if(t==="rotate"){
-    for(var a2=0;a2<3;a2++){
-      var mat=new THREE.LineBasicMaterial({color: hotHandle===a2? 0xffe680 : AXCOL[a2]});
-      manip.add(ring(c,AXES[a2],s,mat,64));
-    }
+    for(var a2=0;a2<3;a2++)
+      manip.add(ring(c,AXES[a2],s,new THREE.LineBasicMaterial({color:hotHandle===a2?0xffe680:AXCOL[a2]}),64));
     manip.add(ring(c,new THREE.Vector3().subVectors(camera.position,c).normalize(),s*1.18,
-      new THREE.LineBasicMaterial({color: hotHandle===3? 0xffe680 : 0xb9c3cb}),64));
+      new THREE.LineBasicMaterial({color:hotHandle===3?0xffe680:0xb9c3cb}),64));
     return;
   }
-  // move / scale / multicut / extrude — 3軸ハンドル
   for(var a3=0;a3<3;a3++){
-    var col= hotHandle===a3 ? 0xffe680 : AXCOL[a3];
+    var col=hotHandle===a3?0xffe680:AXCOL[a3];
     var e=AXES[a3].clone().multiplyScalar(s).add(c);
     var g=new THREE.BufferGeometry().setAttribute("position",
-      new THREE.Float32BufferAttribute([c.x,c.y,c.z, e.x,e.y,e.z],3));
+      new THREE.Float32BufferAttribute([c.x,c.y,c.z,e.x,e.y,e.z],3));
     var ln=new THREE.Line(g,new THREE.LineBasicMaterial({color:col})); ln.renderOrder=6; manip.add(ln);
     var tip;
-    if(t==="scale"){ tip=new THREE.Mesh(new THREE.BoxGeometry(s*0.13,s*0.13,s*0.13), new THREE.MeshBasicMaterial({color:col})); }
+    if(t==="scale") tip=new THREE.Mesh(new THREE.BoxGeometry(s*.13,s*.13,s*.13), new THREE.MeshBasicMaterial({color:col}));
     else{
-      tip=new THREE.Mesh(new THREE.ConeGeometry(s*0.075,s*0.22,10), new THREE.MeshBasicMaterial({color:col}));
+      tip=new THREE.Mesh(new THREE.ConeGeometry(s*.075,s*.22,10), new THREE.MeshBasicMaterial({color:col}));
       tip.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0),AXES[a3]);
     }
     tip.position.copy(e); tip.renderOrder=6; manip.add(tip);
   }
-  var ctr=new THREE.Mesh(new THREE.SphereGeometry(s*0.085,12,10),
-    new THREE.MeshBasicMaterial({color: hotHandle===3? 0xffe680 : 0xe2c860}));
+  var ctr=new THREE.Mesh(new THREE.SphereGeometry(s*.085,12,10),
+    new THREE.MeshBasicMaterial({color:hotHandle===3?0xffe680:0xe2c860}));
   ctr.position.copy(c); ctr.renderOrder=6; manip.add(ctr);
 }
 function ring(c,axis,r,mat,seg){
@@ -966,31 +1033,27 @@ function segDist(px,py,a,b){
   return Math.hypot(a.x+dx*t-px, a.y+dy*t-py);
 }
 function pickHandle(l){
-  var c=pivotWorld(); if(!c||App.tool==="select"||App.tool==="multicut") return -1;
+  var c=pivotWorld(); if(!c) return -1;
+  if(App.tool!=="move"&&App.tool!=="rotate"&&App.tool!=="scale") return -1;
   var s=manipScale(c), sc=toScreen(c);
   if(Math.hypot(sc.x-l.x, sc.y-l.y) < 15) return 3;
   var best=-1, bd=15;
   for(var a=0;a<3;a++){
     var d;
     if(App.tool==="rotate"){
-      // リング上の最近点までの距離
       d=1e9;
+      var q=new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0,0,1),AXES[a]);
       for(var i=0;i<48;i++){
         var ang=i/48*Math.PI*2;
-        var q=new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0,0,1),AXES[a]);
         var w=new THREE.Vector3(Math.cos(ang)*s,Math.sin(ang)*s,0).applyQuaternion(q).add(c);
         var ss=toScreen(w);
         d=Math.min(d, Math.hypot(ss.x-l.x, ss.y-l.y));
       }
-    } else {
-      var e=toScreen(AXES[a].clone().multiplyScalar(s).add(c));
-      d=segDist(l.x,l.y,sc,e);
-    }
+    } else d=segDist(l.x,l.y,sc,toScreen(AXES[a].clone().multiplyScalar(s).add(c)));
     if(d<bd){ bd=d; best=a; }
   }
   return best;
 }
-// 無限直線 origin+t*dir とカメラレイの最近点における t
 function rayAxisT(ray, origin, dir){
   var w0=new THREE.Vector3().subVectors(origin,ray.origin);
   var a=dir.dot(dir), b=dir.dot(ray.direction), c=ray.direction.dot(ray.direction);
@@ -1001,16 +1064,23 @@ function rayAxisT(ray, origin, dir){
 }
 
 /* =========================================================================
-   8. カメラ（PC は Maya 準拠）
+   9. カメラ
    ========================================================================= */
 var cam={target:new THREE.Vector3(0,.4,0), theta:0.72, phi:1.12, dist:7.2};
 function applyCam(){
   var s=Math.sin(cam.phi);
-  camera.position.set(
-    cam.target.x + cam.dist*s*Math.sin(cam.theta),
-    cam.target.y + cam.dist*Math.cos(cam.phi),
-    cam.target.z + cam.dist*s*Math.cos(cam.theta));
-  camera.lookAt(cam.target);
+  var px=cam.target.x + cam.dist*s*Math.sin(cam.theta);
+  var py=cam.target.y + cam.dist*Math.cos(cam.phi);
+  var pz=cam.target.z + cam.dist*s*Math.cos(cam.theta);
+  persp.position.set(px,py,pz); persp.lookAt(cam.target);
+  persp.near=App.cam.near; persp.far=App.cam.far;
+  persp.setFocalLength(App.cam.focal);
+  ortho.position.set(px,py,pz); ortho.lookAt(cam.target);
+  var a=(vp.clientWidth||1)/(vp.clientHeight||1), hh=cam.dist*0.42;
+  ortho.left=-hh*a; ortho.right=hh*a; ortho.top=hh; ortho.bottom=-hh;
+  ortho.near=App.cam.near; ortho.far=App.cam.far; ortho.updateProjectionMatrix();
+  camera = App.cam.ortho ? ortho : persp;
+  manipSig="";
 }
 function frameSelected(){
   var box=new THREE.Box3();
@@ -1029,7 +1099,7 @@ function panCam(dx,dy){
   cam.target.addScaledVector(right,-dx*k).addScaledVector(up,dy*k);
   applyCam();
 }
-function dollyCam(f){ cam.dist=Math.max(.3,Math.min(120,cam.dist*f)); applyCam(); }
+function dollyCam(f){ cam.dist=Math.max(.3,Math.min(140,cam.dist*f)); applyCam(); }
 function tumbleCam(dx,dy){
   cam.theta -= dx*0.0088;
   cam.phi = Math.max(.05, Math.min(Math.PI-.05, cam.phi - dy*0.0088));
@@ -1037,52 +1107,41 @@ function tumbleCam(dx,dy){
 }
 
 /* =========================================================================
-   9. 入力
+   10. 入力
    ========================================================================= */
 var pointers=new Map(), gesture=null, drag=null, marq=null;
 var raycaster=new THREE.Raycaster();
 var canvas=document.getElementById("gl");
 var marqEl=document.getElementById("marquee");
-
 function localXY(e){ var r=vp.getBoundingClientRect(); return {x:e.clientX-r.left, y:e.clientY-r.top}; }
 function ndc(x,y){ return new THREE.Vector2(x/vp.clientWidth*2-1, -(y/vp.clientHeight*2-1)); }
 function altOn(e){ return App.mods.alt!=="off" || e.altKey; }
 function shiftOn(e){ return App.mods.shift!=="off" || e.shiftKey; }
 function ctrlOn(e){ return App.mods.ctrl!=="off" || e.ctrlKey || e.metaKey; }
-
 canvas.addEventListener("contextmenu",function(e){ e.preventDefault(); });
 
 canvas.addEventListener("pointerdown",function(e){
+  closePop();
   canvas.setPointerCapture(e.pointerId);
   pointers.set(e.pointerId,{x:e.clientX,y:e.clientY,type:e.pointerType});
-
   if(pointers.size>=2){
-    endMarquee(true); drag=null;
+    endMarquee(); drag=null; cancelHold();
     var a=Array.from(pointers.values());
     gesture={mode:"twofinger", d:Math.hypot(a[0].x-a[1].x,a[0].y-a[1].y),
              cx:(a[0].x+a[1].x)/2, cy:(a[0].y+a[1].y)/2};
-    cancelHold(); return;
-  }
-
-  var l=localXY(e);
-  // --- マウス: Maya のカメラ操作 ---
-  if(e.pointerType==="mouse"){
-    if(altOn(e)){
-      gesture={mode: e.button===0?"tumble" : e.button===1?"pan" : "dolly", x:e.clientX, y:e.clientY};
-      return;
-    }
-    if(e.button===2){ openMarkingMenu(e.clientX,e.clientY); gesture={mode:"marking"}; return; }
-    if(e.button===1){ gesture={mode:"pan", x:e.clientX, y:e.clientY}; return; }
-  }
-  // --- 指: カメラ / ペン: ツール ---
-  if(e.pointerType==="touch" && !App.fingerTool){
-    gesture={mode:"tumble", x:e.clientX, y:e.clientY};
-    startHold(e.clientX,e.clientY,e.pointerId);
     return;
   }
-  gesture={mode:"tool", moved:false, sx:l.x, sy:l.y, id:e.pointerId};
-  // 長押しメニューはペンと指だけ。マウスは右クリックで出す（Maya と同じ）
-  if(e.pointerType!=="mouse") startHold(e.clientX,e.clientY,e.pointerId);
+  var l=localXY(e);
+  if(e.pointerType==="mouse"){
+    if(altOn(e)){ gesture={mode: e.button===0?"tumble": e.button===1?"pan":"dolly"}; return; }
+    if(e.button===2){ openRadial("selmode",e.clientX,e.clientY); gesture={mode:"marking"}; return; }
+    if(e.button===1){ gesture={mode:"pan"}; return; }
+  }
+  if(e.pointerType==="touch" && !App.fingerTool){
+    gesture={mode:"tumble"}; startHold(e.clientX,e.clientY); return;
+  }
+  gesture={mode:"tool", moved:false, sx:l.x, sy:l.y};
+  if(e.pointerType!=="mouse") startHold(e.clientX,e.clientY);
   toolDown(l,e);
 },{passive:false});
 
@@ -1091,10 +1150,9 @@ canvas.addEventListener("pointermove",function(e){
   var px=p.x, py=p.y; p.x=e.clientX; p.y=e.clientY;
   if(Math.hypot(e.clientX-holdSX,e.clientY-holdSY)>12) cancelHold();
   if(!gesture) return;
-
-  if(gesture.mode==="tumble"){ tumbleCam(e.clientX-px, e.clientY-py); }
-  else if(gesture.mode==="pan"){ panCam(e.clientX-px, e.clientY-py); }
-  else if(gesture.mode==="dolly"){ dollyCam(1 + (e.clientX-px+ (e.clientY-py))*0.006); }
+  if(gesture.mode==="tumble") tumbleCam(e.clientX-px, e.clientY-py);
+  else if(gesture.mode==="pan") panCam(e.clientX-px, e.clientY-py);
+  else if(gesture.mode==="dolly") dollyCam(1+((e.clientX-px)+(e.clientY-py))*0.006);
   else if(gesture.mode==="twofinger"){
     var a=Array.from(pointers.values()); if(a.length<2) return;
     var nd=Math.hypot(a[0].x-a[1].x,a[0].y-a[1].y);
@@ -1112,41 +1170,30 @@ canvas.addEventListener("pointermove",function(e){
 
 function endPointer(e){
   cancelHold();
-  var wasTool = gesture && gesture.mode==="tool";
-  var moved = wasTool && gesture.moved;
+  var wasTool=gesture&&gesture.mode==="tool", moved=wasTool&&gesture.moved;
   pointers.delete(e.pointerId);
   if(wasTool) toolUp(localXY(e),e,moved);
   if(pointers.size===0) gesture=null;
-  else if(pointers.size===1){
-    var a=Array.from(pointers.values())[0];
-    gesture={mode:"tumble", x:a.x, y:a.y};
-  }
+  else if(pointers.size===1) gesture={mode:"tumble"};
 }
 canvas.addEventListener("pointerup",endPointer);
 canvas.addEventListener("pointercancel",endPointer);
-canvas.addEventListener("wheel",function(e){
-  e.preventDefault();
-  dollyCam(1+Math.sign(e.deltaY)*0.09);
-},{passive:false});
+canvas.addEventListener("wheel",function(e){ e.preventDefault(); dollyCam(1+Math.sign(e.deltaY)*0.09); },{passive:false});
 
-// 長押し（タブレット）→ マーキングメニュー
 var holdTimer=null, holdSX=0, holdSY=0;
-function startHold(x,y,pid){
-  holdSX=x; holdSY=y;
-  clearTimeout(holdTimer);
+function startHold(x,y){
+  holdSX=x; holdSY=y; clearTimeout(holdTimer);
   holdTimer=setTimeout(function(){
     if(pointers.size!==1) return;
-    endMarquee(true); drag=null; gesture=null;
-    openMarkingMenu(x,y);
+    endMarquee(); drag=null; gesture=null;
+    openRadial("selmode",x,y);
   },400);
 }
 function cancelHold(){ clearTimeout(holdTimer); }
 
-/* ---- ピック ---- */
 function pickSurface(l){
   raycaster.setFromCamera(ndc(l.x,l.y),camera);
-  var hits=raycaster.intersectObjects(App.objects.filter(function(o){return o.gfx;}).map(function(o){return o.gfx.surf;}),false);
-  return hits.length? hits[0] : null;
+  return (raycaster.intersectObjects(App.objects.filter(function(o){return o.gfx;}).map(function(o){return o.gfx.surf;}),false)[0])||null;
 }
 function project(o,vi){
   o.gfx.group.updateMatrixWorld();
@@ -1154,9 +1201,9 @@ function project(o,vi){
     .applyMatrix4(o.gfx.group.matrixWorld).project(camera);
   return {x:(v.x+1)/2*vp.clientWidth, y:(-v.y+1)/2*vp.clientHeight, z:v.z};
 }
-function projectLocal(o,arr3){
+function projectLocal(o,a){
   o.gfx.group.updateMatrixWorld();
-  var v=new THREE.Vector3(arr3[0],arr3[1],arr3[2]).applyMatrix4(o.gfx.group.matrixWorld).project(camera);
+  var v=new THREE.Vector3(a[0],a[1],a[2]).applyMatrix4(o.gfx.group.matrixWorld).project(camera);
   return {x:(v.x+1)/2*vp.clientWidth, y:(-v.y+1)/2*vp.clientHeight, z:v.z};
 }
 function pickVertex(o,l,rad){
@@ -1182,7 +1229,7 @@ function pickEdge(o,l,rad){
 }
 
 /* =========================================================================
-   10. ツール
+   11. ツール
    ========================================================================= */
 function componentVerts(){
   var o=App.sel, s=new Set();
@@ -1198,80 +1245,66 @@ function captureTargets(){
   o.gfx.group.updateMatrixWorld();
   if(App.compMode==="object")
     return {kind:"obj", pos:o.pos.clone(), quat:o.quat.clone(), scale:o.scale.clone()};
-  var vs=componentVerts();
-  var world=vs.map(function(v){
+  var w=softWeights(), verts=[], weights=[];
+  for(var k in w){ verts.push(+k); weights.push(w[k]); }
+  var world=verts.map(function(v){
     return new THREE.Vector3(o.mesh.pos[v*3],o.mesh.pos[v*3+1],o.mesh.pos[v*3+2])
       .applyMatrix4(o.gfx.group.matrixWorld);
   });
-  return {kind:"comp", verts:vs, world:world, inv:new THREE.Matrix4().copy(o.gfx.group.matrixWorld).invert()};
+  return {kind:"comp", verts:verts, weights:weights, world:world,
+          inv:new THREE.Matrix4().copy(o.gfx.group.matrixWorld).invert()};
 }
-
 function toolDown(l,e){
   var o=App.sel;
-  var h=(o && App.tool!=="select" && App.tool!=="multicut") ? pickHandle(l) : -1;
-  if(h>=0 && (App.tool==="move"||App.tool==="rotate"||App.tool==="scale")){
+  var h=o? pickHandle(l) : -1;
+  if(h>=0){
     var c=pivotWorld();
     raycaster.setFromCamera(ndc(l.x,l.y),camera);
     var sc=toScreen(c);
     drag={tool:App.tool, handle:h, pivot:c.clone(), snap:snapshot(), orig:captureTargets(),
-          sx:l.x, sy:l.y, scr:sc,
-          t0: h<3 ? rayAxisT(raycaster.ray, c, AXES[h]) : 0,
+          sx:l.x, sy:l.y, scr:sc, t0: h<3? rayAxisT(raycaster.ray,c,AXES[h]) : 0,
           a0: Math.atan2(l.y-sc.y, l.x-sc.x),
-          plane: new THREE.Plane().setFromNormalAndCoplanarPoint(
-                   new THREE.Vector3().subVectors(camera.position,c).normalize(), c)};
-    if(h===3){
-      var p0=new THREE.Vector3();
-      if(raycaster.ray.intersectPlane(drag.plane,p0)) drag.start=p0;
-    }
+          plane:new THREE.Plane().setFromNormalAndCoplanarPoint(
+            new THREE.Vector3().subVectors(camera.position,c).normalize(), c)};
+    if(h===3){ var p0=new THREE.Vector3(); if(raycaster.ray.intersectPlane(drag.plane,p0)) drag.start=p0; }
     hotHandle=h; return;
   }
-  // マニピュレータを掴んでいなければ矩形選択（Maya と同じ）
   if(App.tool!=="multicut") startMarquee(l);
 }
-
 function toolMove(l,e){
   if(marq){ updateMarquee(l); return; }
   if(!drag) return;
   var o=App.sel; if(!o) return;
   raycaster.setFromCamera(ndc(l.x,l.y),camera);
-
-  var xf={pos:null,quat:null,sc:null};
   if(drag.tool==="move"){
     var d;
     if(drag.handle===3){
       var hp=new THREE.Vector3();
       if(!drag.start || !raycaster.ray.intersectPlane(drag.plane,hp)) return;
       d=new THREE.Vector3().subVectors(hp,drag.start);
-    } else {
-      var t=rayAxisT(raycaster.ray, drag.pivot, AXES[drag.handle]);
-      d=AXES[drag.handle].clone().multiplyScalar(t-drag.t0);
-    }
-    applyWorldDelta(o,drag,function(w){ return w.clone().add(d); }, {pos:d});
+    } else d=AXES[drag.handle].clone().multiplyScalar(rayAxisT(raycaster.ray,drag.pivot,AXES[drag.handle])-drag.t0);
+    applyDelta(o,drag,function(w,wt){ return w.clone().addScaledVector(d,wt); },{pos:d});
   } else if(drag.tool==="rotate"){
-    var a=Math.atan2(l.y-drag.scr.y, l.x-drag.scr.x);
-    var da=a-drag.a0;
-    var axis = drag.handle===3
+    var da=Math.atan2(l.y-drag.scr.y, l.x-drag.scr.x)-drag.a0;
+    var axis=drag.handle===3
       ? new THREE.Vector3().subVectors(camera.position,drag.pivot).normalize()
       : AXES[drag.handle].clone();
-    // カメラから見て軸が奥を向いていたら回転方向を反転
     if(drag.handle<3 && axis.dot(new THREE.Vector3().subVectors(camera.position,drag.pivot))<0) da=-da;
-    var q=new THREE.Quaternion().setFromAxisAngle(axis,-da);
-    applyWorldDelta(o,drag,function(w){
+    applyDelta(o,drag,function(w,wt){
+      var q=new THREE.Quaternion().setFromAxisAngle(axis,-da*wt);
       return w.clone().sub(drag.pivot).applyQuaternion(q).add(drag.pivot);
-    },{quat:q});
+    },{quat:new THREE.Quaternion().setFromAxisAngle(axis,-da)});
   } else {
     var f;
-    if(drag.handle===3){
-      f=new THREE.Vector3(1,1,1).multiplyScalar(Math.max(.02, 1+(l.x-drag.sx)*0.008));
-    } else {
-      var tt=rayAxisT(raycaster.ray, drag.pivot, AXES[drag.handle]);
-      var base=Math.max(1e-4, Math.abs(drag.t0)) ;
-      var k=Math.max(.02, 1+(tt-drag.t0)/base*0.6);
+    if(drag.handle===3) f=new THREE.Vector3(1,1,1).multiplyScalar(Math.max(.02,1+(l.x-drag.sx)*.008));
+    else{
+      var tt=rayAxisT(raycaster.ray,drag.pivot,AXES[drag.handle]);
+      var k=Math.max(.02, 1+(tt-drag.t0)/Math.max(1e-4,Math.abs(drag.t0))*0.6);
       f=new THREE.Vector3(1,1,1); f.setComponent(drag.handle,k);
     }
-    applyWorldDelta(o,drag,function(w){
+    applyDelta(o,drag,function(w,wt){
       var r=w.clone().sub(drag.pivot);
-      r.set(r.x*f.x, r.y*f.y, r.z*f.z);
+      r.set(r.x*(1+(f.x-1)*wt), r.y*(1+(f.y-1)*wt), r.z*(1+(f.z-1)*wt));
       return r.add(drag.pivot);
     },{sc:f});
   }
@@ -1283,15 +1316,12 @@ function toolMove(l,e){
   } else buildGfx(o);
   rebuildOverlay(); refreshStats();
 }
-
-// ワールド空間の変換をオブジェクトかコンポーネントに適用する
-function applyWorldDelta(o,dg,fn,obj){
+function applyDelta(o,dg,fn,obj){
   if(dg.orig.kind==="obj"){
-    if(obj.pos){ o.pos.copy(dg.orig.pos).add(obj.pos); }
+    if(obj.pos) o.pos.copy(dg.orig.pos).add(obj.pos);
     if(obj.quat){
       o.quat.copy(obj.quat).multiply(dg.orig.quat);
-      var np=dg.orig.pos.clone().sub(dg.pivot).applyQuaternion(obj.quat).add(dg.pivot);
-      o.pos.copy(np);
+      o.pos.copy(dg.orig.pos.clone().sub(dg.pivot).applyQuaternion(obj.quat).add(dg.pivot));
     }
     if(obj.sc){
       o.scale.set(dg.orig.scale.x*obj.sc.x, dg.orig.scale.y*obj.sc.y, dg.orig.scale.z*obj.sc.z);
@@ -1302,36 +1332,25 @@ function applyWorldDelta(o,dg,fn,obj){
     return;
   }
   dg.orig.verts.forEach(function(v,i){
-    var w=fn(dg.orig.world[i]).applyMatrix4(dg.orig.inv);
+    var w=fn(dg.orig.world[i], dg.orig.weights[i]).applyMatrix4(dg.orig.inv);
     o.mesh.setP(v,w.x,w.y,w.z);
   });
 }
-
 function toolUp(l,e,moved){
   if(marq){ finishMarquee(l,e); hotHandle=-1; releaseLatches(); refreshUI(); return; }
   if(drag){
     if(moved) commitUndo({move:"移動",rotate:"回転",scale:"スケール"}[drag.tool], drag.snap);
     drag=null; hotHandle=-1; releaseLatches(); refreshUI(); return;
   }
-  if(!moved){
-    if(App.tool==="multicut") doMultiCut(l);
-    else clickSelect(l,e);
-  }
+  if(!moved){ if(App.tool==="multicut") doMultiCut(l); else clickSelect(l,e); }
   releaseLatches();
 }
-
-/* ---- 矩形選択（Maya と同じ挙動） ---- */
-function startMarquee(l){
-  marq={x0:l.x,y0:l.y,x1:l.x,y1:l.y};
-  marqEl.style.display="block"; updateMarquee(l);
-}
+function startMarquee(l){ marq={x0:l.x,y0:l.y,x1:l.x,y1:l.y}; marqEl.style.display="block"; updateMarquee(l); }
 function updateMarquee(l){
   if(!marq) return;
   marq.x1=l.x; marq.y1=l.y;
-  var x=Math.min(marq.x0,marq.x1), y=Math.min(marq.y0,marq.y1);
-  marqEl.style.left=x+"px"; marqEl.style.top=y+"px";
-  marqEl.style.width=Math.abs(marq.x1-marq.x0)+"px";
-  marqEl.style.height=Math.abs(marq.y1-marq.y0)+"px";
+  marqEl.style.left=Math.min(marq.x0,marq.x1)+"px"; marqEl.style.top=Math.min(marq.y0,marq.y1)+"px";
+  marqEl.style.width=Math.abs(marq.x1-marq.x0)+"px"; marqEl.style.height=Math.abs(marq.y1-marq.y0)+"px";
 }
 function endMarquee(){ marq=null; marqEl.style.display="none"; }
 function finishMarquee(l,e){
@@ -1342,7 +1361,6 @@ function finishMarquee(l,e){
   if(tiny){ clickSelect(l,e); return; }
   var add=shiftOn(e), sub=ctrlOn(e);
   function inR(s){ return s.z<=1 && s.x>=r.x0 && s.x<=r.x1 && s.y>=r.y0 && s.y<=r.y1; }
-
   if(App.compMode==="object"){
     var found=null;
     App.objects.forEach(function(o){
@@ -1358,8 +1376,8 @@ function finishMarquee(l,e){
   } else if(App.compMode==="edge"){
     o2.gfx.edges.forEach(function(ed,ei){
       var a=o2.mesh.p(ed[0]), b=o2.mesh.p(ed[1]);
-      var mid=[(a[0]+b[0])/2,(a[1]+b[1])/2,(a[2]+b[2])/2];
-      if(inR(projectLocal(o2,mid))) sub? App.comp.delete(ei) : App.comp.add(ei);
+      if(inR(projectLocal(o2,[(a[0]+b[0])/2,(a[1]+b[1])/2,(a[2]+b[2])/2])))
+        sub? App.comp.delete(ei) : App.comp.add(ei);
     });
   } else if(App.compMode==="face"){
     for(var f=0;f<o2.mesh.faces.length;f++)
@@ -1367,55 +1385,46 @@ function finishMarquee(l,e){
   }
   rebuildOverlay(); refreshUI();
 }
-
 function clickSelect(l,e){
   var add=shiftOn(e), sub=ctrlOn(e);
   if(App.compMode==="object"){
     var hit=pickSurface(l);
-    App.sel = hit? hit.object.userData.obj : null;
+    App.sel=hit? hit.object.userData.obj : null;
     App.comp.clear(); rebuildAllGfx(); refreshUI(); return;
   }
   var o=App.sel;
   if(!o){ var h2=pickSurface(l); if(h2){ App.sel=h2.object.userData.obj; rebuildAllGfx(); refreshUI(); } return; }
   if(!add&&!sub) App.comp.clear();
-  if(App.compMode==="vertex"){
-    var v=pickVertex(o,l,22); if(v>=0) sub? App.comp.delete(v) : App.comp.add(v);
-  } else if(App.compMode==="edge"){
-    var r=pickEdge(o,l,16); if(r.edge>=0) sub? App.comp.delete(r.edge) : App.comp.add(r.edge);
-  } else if(App.compMode==="face"){
+  if(App.compMode==="vertex"){ var v=pickVertex(o,l,22); if(v>=0) sub?App.comp.delete(v):App.comp.add(v); }
+  else if(App.compMode==="edge"){ var r=pickEdge(o,l,16); if(r.edge>=0) sub?App.comp.delete(r.edge):App.comp.add(r.edge); }
+  else if(App.compMode==="face"){
     var h3=pickSurface(l);
     if(h3 && h3.object.userData.obj===o){
       var fi=o.gfx.tri.triToFace[h3.faceIndex];
-      if(fi!==undefined) sub? App.comp.delete(fi) : App.comp.add(fi);
+      if(fi!==undefined) sub?App.comp.delete(fi):App.comp.add(fi);
     }
   }
   rebuildOverlay(); refreshUI();
 }
-
-function makeEditable(o,reason){
-  if(o.parametric){ o.parametric=false; toast(reason+" — "+o.name+" は編集可能メッシュになりました"); }
-}
+function makeEditable(o,r){ if(o.parametric){ o.parametric=false; toast(r+" — "+o.name+" は編集可能メッシュになりました"); } }
 function doMultiCut(l){
   var o=App.sel;
   if(!o){ toast("先にオブジェクトを選択してください"); return; }
   var r=pickEdge(o,l,26);
   if(r.edge<0){ toast("エッジの近くをタップしてください"); return; }
-  var e=o.gfx.edges[r.edge];
-  var res=insertEdgeLoop(o.mesh,e[0],e[1],r.t);
+  var e=o.gfx.edges[r.edge], res=insertEdgeLoop(o.mesh,e[0],e[1],r.t);
   if(!res){ toast("この位置にはループを挿入できません"); return; }
   pushUndo("エッジループ挿入"); makeEditable(o,"トポロジを変更");
-  o.mesh=res.mesh; App.comp.clear();
-  buildGfx(o); rebuildOverlay(); refreshUI();
+  o.mesh=res.mesh; App.comp.clear(); buildGfx(o); rebuildOverlay(); refreshUI();
   toast("エッジループを挿入 — "+res.count+" 面を分割");
 }
 function doExtrude(){
   var o=App.sel;
   if(!o||App.compMode!=="face"||!App.comp.size){ toast("面モードで面を選択してから実行してください"); return; }
-  var res=extrudeFaces(o.mesh,App.comp,.35);
+  var res=extrudeFaces(o.mesh,App.comp,App.toolOpts.extrudeDist);
   if(!res) return;
   pushUndo("押し出し"); makeEditable(o,"トポロジを変更");
-  o.mesh=res.mesh;
-  buildGfx(o); rebuildOverlay(); refreshUI();
+  o.mesh=res.mesh; buildGfx(o); rebuildOverlay(); refreshUI();
   toast("面を押し出し — "+res.count+" 面");
 }
 function doDelete(){
@@ -1427,8 +1436,7 @@ function doDelete(){
   if(App.compMode==="face"&&App.comp.size&&App.sel){
     pushUndo("面を削除"); makeEditable(App.sel,"トポロジを変更");
     var keep=[]; App.sel.mesh.faces.forEach(function(f,i){ if(!App.comp.has(i)) keep.push(f); });
-    App.sel.mesh.faces=keep; App.comp.clear();
-    buildGfx(App.sel); rebuildOverlay(); refreshUI();
+    App.sel.mesh.faces=keep; App.comp.clear(); buildGfx(App.sel); rebuildOverlay(); refreshUI();
   }
 }
 function doDuplicate(){
@@ -1439,52 +1447,72 @@ function doDuplicate(){
   o.params=Object.assign({},s.params);
   o.pos=s.pos.clone(); o.quat=s.quat.clone(); o.scale=s.scale.clone();
   o.mesh=s.mesh.clone(); o.gfx=null;
-  App.objects.push(o); App.sel=o; App.comp.clear();
-  rebuildAllGfx(); refreshUI();
+  App.objects.push(o); App.sel=o; App.comp.clear(); rebuildAllGfx(); refreshUI();
 }
 function addPrimitive(kind){
   pushUndo("プリミティブ追加");
-  var o=new SceneObject(kind);   // 原点に作られる
-  App.objects.push(o); App.sel=o; App.comp.clear();
-  rebuildAllGfx(); refreshUI();
+  var o=new SceneObject(kind);
+  App.objects.push(o); App.sel=o; App.comp.clear(); rebuildAllGfx(); refreshUI();
   toast(PRIM[kind].label+"を原点に追加");
 }
 
 /* =========================================================================
-   11. サークルメニュー / マーキングメニュー
+   12. サークルメニュー（8 方位固定のマーキングメニュー）
    ========================================================================= */
+var DIRS=["N","NE","E","SE","S","SW","W","NW"];
 var MODES=[
   {id:"model", label:"モデリング", sub:"Modeling", icon:I.mModel},
   {id:"uv", label:"UV", sub:"UV Editor", icon:I.mUV},
   {id:"sculpt", label:"スカルプト", sub:"Sculpt", icon:I.mSculpt},
   {id:"material", label:"マテリアル", sub:"Material", icon:I.mMaterial}
 ];
+function todo(n){ return function(){ toast(n+" は未実装です"); }; }
 var RADIALS={
-  modes:{ items: MODES.map(function(m){
-    return {label:m.label, sub:m.sub, icon:m.icon, act:function(){ setMode(m.id); }};
-  })},
-  prims:{ items: PRIM_ORDER.map(function(k){
-    return {label:PRIM[k].label, sub:PRIM[k].en, icon:PRIM[k].icon, act:function(){ addPrimitive(k); }};
-  })},
-  selmode:{ items:[
-    {label:"頂点", sub:"Vertex", icon:I.vVert, act:function(){setCompMode("vertex");}},
-    {label:"エッジ", sub:"Edge", icon:I.vEdge, act:function(){setCompMode("edge");}},
-    {label:"面", sub:"Face", icon:I.vFace, act:function(){setCompMode("face");}},
-    {label:"オブジェクト", sub:"Object", icon:I.vObj, act:function(){setCompMode("object");}}
-  ]}
+  // Maya のポリゴン用マーキングメニューと同じ配置
+  selmode:{ compass:{
+    N: {label:"エッジ", sub:"Edge", icon:I.vEdge, act:function(){setCompMode("edge");}},
+    NE:{label:"オブジェクト モード", sub:"Object", icon:I.vObj, act:function(){setCompMode("object");}},
+    E: {label:"UV", sub:"UV ▸", icon:I.vUV, act:todo("UV コンポーネント選択")},
+    SE:{label:"マルチ", sub:"Multi", icon:I.vMulti, act:todo("マルチコンポーネント選択")},
+    S: {label:"フェース", sub:"Face", icon:I.vFace, act:function(){setCompMode("face");}},
+    SW:{label:"頂点フェース", sub:"Vertex Face", icon:I.vVertFace, act:todo("頂点フェース選択")},
+    W: {label:"頂点", sub:"Vertex", icon:I.vVert, act:function(){setCompMode("vertex");}}
+  }},
+  modes:{ compass:{
+    N: {label:MODES[0].label, sub:MODES[0].sub, icon:MODES[0].icon, act:function(){setMode("model");}},
+    E: {label:MODES[1].label, sub:MODES[1].sub, icon:MODES[1].icon, act:function(){setMode("uv");}},
+    S: {label:MODES[2].label, sub:MODES[2].sub, icon:MODES[2].icon, act:function(){setMode("sculpt");}},
+    W: {label:MODES[3].label, sub:MODES[3].sub, icon:MODES[3].icon, act:function(){setMode("material");}}
+  }},
+  shading:{ compass:{
+    N: {label:"ワイヤーフレーム", sub:"4", icon:I.wire, act:function(){setDisplay("wire");}},
+    E: {label:"シェード", sub:"5", icon:I.shaded, act:function(){setDisplay("shaded");}},
+    S: {label:"シェード + ワイヤー", sub:"6", icon:I.shadedWire, act:function(){setDisplay("shadedWire");}},
+    W: {label:"スムースシェード", sub:"7", icon:I.smooth, act:function(){setDisplay("smooth");}}
+  }},
+  prims:{ compass:(function(){
+    var c={}; PRIM_ORDER.forEach(function(k,i){
+      c[DIRS[i]]={label:PRIM[k].label, sub:PRIM[k].en, icon:PRIM[k].icon, act:function(){ addPrimitive(k); }};
+    }); return c;
+  })()},
+  outliner:{ compass:{
+    N:{label:"名前変更", sub:"Rename", icon:I.rename, act:function(){ startRename(radialTarget); }},
+    E:{label:"複製", sub:"Duplicate", icon:I.dup, act:function(){ App.sel=radialTarget; doDuplicate(); }},
+    S:{label:"削除", sub:"Delete", icon:I.del, act:function(){ App.sel=radialTarget; setCompMode("object"); doDelete(); }},
+    W:{label:"フレーム", sub:"Frame", icon:I.frame, act:function(){ App.sel=radialTarget; refreshUI(); frameSelected(); }}
+  }}
 };
-function openMarkingMenu(x,y){ openRadial("selmode",x,y); }
+var radialTarget=null;
 
 var radial=null;
 function attachRadialButton(b,def){
   var timer=null, opened=false, sx=0, sy=0, pid=null;
   b.addEventListener("pointerdown",function(e){
-    e.preventDefault(); pid=e.pointerId; sx=e.clientX; sy=e.clientY; opened=false;
-    if(e.pointerType==="mouse" && e.button===2 && def.radial){
-      opened=true; openRadial(def.radial,sx,sy);
-    } else if(def.radial){
-      timer=setTimeout(function(){ opened=true; openRadial(def.radial,sx,sy); },200);
-    }
+    e.preventDefault(); closePop();
+    pid=e.pointerId; sx=e.clientX; sy=e.clientY; opened=false;
+    if(def.before) def.before();
+    if(e.pointerType==="mouse" && e.button===2 && def.radial){ opened=true; openRadial(def.radial,sx,sy); }
+    else if(def.radial) timer=setTimeout(function(){ opened=true; openRadial(def.radial,sx,sy); },200);
     window.addEventListener("pointermove",onMove);
     window.addEventListener("pointerup",onUp);
   });
@@ -1502,15 +1530,13 @@ function attachRadialButton(b,def){
     window.removeEventListener("pointerup",onUp);
     if(opened) return;
     if(def.action) def.action();
-    else if(def.id){ App.tool=def.id; rebuildManip(); refreshUI(); }
+    else if(def.id){ App.tool=def.id; manipSig=""; refreshUI(); }
   }
 }
-
 function openRadial(key,cx,cy){
   closeRadial();
   var def=RADIALS[key]; if(!def) return;
-  var n=def.items.length;
-  var ringOuter=Math.min(126, Math.max(96, n*14)), ringInner=38;
+  var ringOuter=132, ringInner=40;
   cx=Math.max(ringOuter+16,Math.min(window.innerWidth-ringOuter-16,cx));
   cy=Math.max(ringOuter+16,Math.min(window.innerHeight-ringOuter-16,cy));
   var host=document.createElement("div"); host.className="radial";
@@ -1518,31 +1544,32 @@ function openRadial(key,cx,cy){
   var svg=document.createElementNS(NS,"svg");
   host.appendChild(svg); document.body.appendChild(host);
   var slices=[];
-  for(var i=0;i<n;i++){
-    var a0=(i/n)*Math.PI*2 - Math.PI/2 - Math.PI/n;
-    var a1=((i+1)/n)*Math.PI*2 - Math.PI/2 - Math.PI/n;
+  for(var i=0;i<8;i++){
+    var item=def.compass[DIRS[i]];
+    var a0=(i*45-22.5-90)*Math.PI/180, a1=(i*45+22.5-90)*Math.PI/180;
     var path=document.createElementNS(NS,"path");
     path.setAttribute("d", arcPath(cx,cy,ringInner,ringOuter,a0,a1));
-    path.setAttribute("fill","#2c3238"); path.setAttribute("stroke","#171a1e"); path.setAttribute("stroke-width","1");
+    path.setAttribute("fill", item? "#2c3238" : "#23272c");
+    path.setAttribute("stroke","#171a1e"); path.setAttribute("stroke-width","1");
+    path.setAttribute("opacity", item? "1" : ".45");
     svg.appendChild(path);
+    if(!item){ slices.push(null); continue; }
     var mid=(a0+a1)/2, tr=(ringInner+ringOuter)/2;
     var tx=cx+Math.cos(mid)*tr, ty=cy+Math.sin(mid)*tr;
-    // アイコン（必ず表示）
     var g=document.createElementNS(NS,"g");
-    g.setAttribute("transform","translate("+(tx-10)+","+(ty-22)+") scale(0.83)");
+    g.setAttribute("transform","translate("+(tx-10)+","+(ty-23)+") scale(0.84)");
     g.setAttribute("fill","none"); g.setAttribute("stroke","#dfe5ea");
-    g.setAttribute("stroke-width","1.6"); g.setAttribute("stroke-linecap","round");
-    g.setAttribute("stroke-linejoin","round");
-    g.innerHTML=def.items[i].icon||"";
+    g.setAttribute("stroke-width","1.6"); g.setAttribute("stroke-linecap","round"); g.setAttribute("stroke-linejoin","round");
+    g.innerHTML=item.icon||"";
     svg.appendChild(g);
     var t1=document.createElementNS(NS,"text");
     t1.setAttribute("x",tx); t1.setAttribute("y",ty+10); t1.setAttribute("text-anchor","middle");
-    t1.textContent=def.items[i].label;
+    t1.textContent=item.label;
     var t2=document.createElementNS(NS,"text");
     t2.setAttribute("class","sub"); t2.setAttribute("x",tx); t2.setAttribute("y",ty+21);
-    t2.setAttribute("text-anchor","middle"); t2.textContent=def.items[i].sub||"";
+    t2.setAttribute("text-anchor","middle"); t2.textContent=item.sub||"";
     svg.appendChild(t1); svg.appendChild(t2);
-    slices.push({path:path, g:g, a0:a0, a1:a1, item:def.items[i]});
+    slices.push({path:path, g:g, item:item, idx:i});
   }
   var hub=document.createElementNS(NS,"circle");
   hub.setAttribute("cx",cx); hub.setAttribute("cy",cy); hub.setAttribute("r",ringInner-2);
@@ -1552,38 +1579,33 @@ function openRadial(key,cx,cy){
   hint.setAttribute("class","sub"); hint.setAttribute("x",cx); hint.setAttribute("y",cy+4);
   hint.setAttribute("text-anchor","middle"); hint.textContent="キャンセル";
   svg.appendChild(hint);
-
   radial={host:host, slices:slices, cx:cx, cy:cy, sel:-1};
   window.addEventListener("pointermove",radialMove);
   window.addEventListener("pointerup",radialUp);
   window.addEventListener("pointercancel",radialUp);
 }
 function arcPath(cx,cy,r0,r1,a0,a1){
-  var large=(a1-a0)>Math.PI?1:0;
   var x0=cx+Math.cos(a0)*r1, y0=cy+Math.sin(a0)*r1;
   var x1=cx+Math.cos(a1)*r1, y1=cy+Math.sin(a1)*r1;
   var x2=cx+Math.cos(a1)*r0, y2=cy+Math.sin(a1)*r0;
   var x3=cx+Math.cos(a0)*r0, y3=cy+Math.sin(a0)*r0;
-  return "M"+x0+","+y0+"A"+r1+","+r1+" 0 "+large+" 1 "+x1+","+y1+
-         "L"+x2+","+y2+"A"+r0+","+r0+" 0 "+large+" 0 "+x3+","+y3+"Z";
+  return "M"+x0+","+y0+"A"+r1+","+r1+" 0 0 1 "+x1+","+y1+"L"+x2+","+y2+"A"+r0+","+r0+" 0 0 0 "+x3+","+y3+"Z";
 }
 function radialMove(e){
   if(!radial) return;
   var dx=e.clientX-radial.cx, dy=e.clientY-radial.cy, d=Math.hypot(dx,dy), sel=-1;
-  if(d>=28){
-    var a=Math.atan2(dy,dx);
-    for(var i=0;i<radial.slices.length;i++){
-      var s=radial.slices[i], aa=a;
-      while(aa<s.a0) aa+=Math.PI*2;
-      while(aa>=s.a0+Math.PI*2) aa-=Math.PI*2;
-      if(aa<=s.a1){ sel=i; break; }
-    }
+  if(d>=30){
+    var deg=(Math.atan2(dy,dx)*180/Math.PI+90+360+22.5)%360;
+    var i=Math.floor(deg/45);
+    if(radial.slices[i]) sel=i;
   }
   if(sel!==radial.sel){
-    radial.slices.forEach(function(s,i){
-      s.path.setAttribute("fill", i===sel? "#2f5f7d":"#2c3238");
-      s.path.setAttribute("stroke", i===sel? "#4f9fd1":"#171a1e");
-      s.g.setAttribute("stroke", i===sel? "#ffffff":"#dfe5ea");
+    radial.slices.forEach(function(s){
+      if(!s) return;
+      var on=(s.idx===sel);
+      s.path.setAttribute("fill", on? "#2f5f7d":"#2c3238");
+      s.path.setAttribute("stroke", on? "#4f9fd1":"#171a1e");
+      s.g.setAttribute("stroke", on? "#ffffff":"#dfe5ea");
     });
     radial.sel=sel;
     if(sel>=0 && navigator.vibrate) navigator.vibrate(6);
@@ -1591,9 +1613,9 @@ function radialMove(e){
 }
 function radialUp(){
   if(!radial) return;
-  var sel=radial.sel, items=radial.slices;
+  var sel=radial.sel, slices=radial.slices;
   closeRadial();
-  if(sel>=0) items[sel].item.act();
+  if(sel>=0 && slices[sel]) slices[sel].item.act();
 }
 function closeRadial(){
   if(!radial) return;
@@ -1604,7 +1626,50 @@ function closeRadial(){
 }
 
 /* =========================================================================
-   12. パネル
+   13. ポップオーバー（カメラ設定）
+   ========================================================================= */
+var popEl=null;
+function closePop(){ if(popEl){ popEl.remove(); popEl=null; } }
+document.addEventListener("pointerdown",function(e){
+  if(popEl && !popEl.contains(e.target) && !e.target.closest("[data-pop]")) closePop();
+},true);
+function openCameraPop(anchor){
+  closePop();
+  var p=el("div","pop");
+  p.innerHTML="<h4>カメラ設定 — persp</h4>";
+  function slider(label,val,min,max,step,fmt,set){
+    var row=el("div","row");
+    var lab=el("label",null,label);
+    var num=el("input","num"); num.type="text"; num.readOnly=true; num.value=fmt(val);
+    row.appendChild(lab); row.appendChild(num);
+    var s=el("input","slider"); s.type="range"; s.min=min; s.max=max; s.step=step; s.value=val;
+    s.addEventListener("input",function(){ var v=parseFloat(s.value); num.value=fmt(v); set(v); applyCam(); });
+    row.appendChild(s); p.appendChild(row);
+    return {num:num, slider:s};
+  }
+  var aov=el("div","hint","");
+  function fov(){ return (2*Math.atan(24.0/(2*App.cam.focal))*180/Math.PI); }
+  function updAov(){ aov.textContent="アングル オブ ビュー  "+fov().toFixed(2)+"°\nフィルム ゲート  35mm アカデミー"; }
+  slider("焦点距離 (mm)",App.cam.focal,8,300,1,function(v){return v.toFixed(0);},function(v){ App.cam.focal=v; updAov(); });
+  p.appendChild(aov); updAov();
+  slider("ニア クリップ",App.cam.near,.01,5,.01,function(v){return v.toFixed(2);},function(v){ App.cam.near=v; });
+  slider("ファー クリップ",App.cam.far,20,2000,10,function(v){return v.toFixed(0);},function(v){ App.cam.far=v; });
+  var ob=el("button","chk"); ob.innerHTML='<i></i><span>平行投影（オルソグラフィック）</span>';
+  ob.setAttribute("aria-pressed",App.cam.ortho?"true":"false");
+  ob.onclick=function(){ App.cam.ortho=!App.cam.ortho; ob.setAttribute("aria-pressed",App.cam.ortho?"true":"false"); applyCam(); };
+  p.appendChild(ob);
+  var rb=el("button","act","既定に戻す");
+  rb.onclick=function(){ App.cam.focal=35; App.cam.near=.05; App.cam.far=500; App.cam.ortho=false; applyCam(); closePop(); openCameraPop(anchor); };
+  p.appendChild(rb);
+  document.getElementById("stage").appendChild(p);
+  var r=anchor.getBoundingClientRect(), sr=document.getElementById("stage").getBoundingClientRect();
+  p.style.left=Math.min(r.right-sr.left+8, sr.width-262)+"px";
+  p.style.top=Math.max(4, Math.min(r.top-sr.top, sr.height-320))+"px";
+  popEl=p;
+}
+
+/* =========================================================================
+   14. パネル
    ========================================================================= */
 var PANELS={
   tools:{title:"ツール", zone:"left", render:renderTools},
@@ -1623,7 +1688,13 @@ var TOOLS=[
   {id:"extrude", label:"押し出し (D)", icon:I.extrude, action:doExtrude},
   {sep:true},
   {id:"addprim", label:"プリミティブ追加 — 長押しで選択", icon:I.prim, radial:"prims",
-   action:function(){ addPrimitive("cube"); }}
+   action:function(){ addPrimitive("cube"); }},
+  {id:"shading", label:"シェーディング — 長押しで切り替え", icon:I.shade, radial:"shading",
+   action:function(){
+     var seq=["wire","shaded","shadedWire","smooth"];
+     setDisplay(seq[(seq.indexOf(App.display)+1)%4]);
+   }},
+  {id:"camera", label:"カメラ設定", icon:I.camera, pop:true}
 ];
 function renderTools(body){
   body.innerHTML="";
@@ -1632,27 +1703,29 @@ function renderTools(body){
     if(t.sep){ col.appendChild(el("div","tool-sep")); return; }
     var b=el("button","ibtn"); b.title=t.label; b.innerHTML=ico(t.icon,19);
     if(t.radial) b.dataset.radial=t.radial;
-    b.setAttribute("aria-pressed", App.tool===t.id ? "true":"false");
-    attachRadialButton(b,t);
+    if(t.pop){
+      b.dataset.pop="1";
+      b.onclick=function(){ if(popEl) closePop(); else openCameraPop(b); };
+    } else {
+      b.setAttribute("aria-pressed", App.tool===t.id ? "true":"false");
+      attachRadialButton(b,t);
+    }
     col.appendChild(b);
   });
   body.appendChild(col);
-
   body.appendChild(el("div","minilbl","選択"));
   var grid=el("div","igrid");
   [["object","オブジェクト (1)",I.vObj],["vertex","頂点 (2)",I.vVert],
-   ["edge","エッジ (3)",I.vEdge],["face","面 (4)",I.vFace]].forEach(function(m){
+   ["edge","エッジ (3)",I.vEdge],["face","フェース (4)",I.vFace]].forEach(function(m){
     var b=el("button","ibtn"); b.title=m[1]; b.innerHTML=ico(m[2],17);
     b.setAttribute("aria-pressed",App.compMode===m[0]?"true":"false");
     b.onclick=function(){ setCompMode(m[0]); };
     grid.appendChild(b);
   });
   body.appendChild(grid);
-
-  body.appendChild(el("div","minilbl","表示"));
+  body.appendChild(el("div","minilbl","編集"));
   var grid2=el("div","igrid");
-  [["wire","ワイヤーフレーム",I.wire,function(){ App.showWire=!App.showWire; applyWire(); }, function(){return App.showWire;}],
-   ["finger","指でツール",I.finger,function(){ App.fingerTool=!App.fingerTool; defaultHint(); }, function(){return App.fingerTool;}],
+  [["finger","指でツール",I.finger,function(){ App.fingerTool=!App.fingerTool; defaultHint(); },function(){return App.fingerTool;}],
    ["dup","複製",I.dup,doDuplicate,null],
    ["del","削除 (Del)",I.del,doDelete,null]].forEach(function(t){
     var b=el("button","ibtn"); b.title=t[1]; b.innerHTML=ico(t[2],17);
@@ -1663,51 +1736,97 @@ function renderTools(body){
   body.appendChild(grid2);
 }
 
+/* --- オプションは選択中のツール・オブジェクトで内容が変わる（Maya と同じ） --- */
+function sect(title,badge){
+  var s=el("div","sect");
+  var h=el("div","sect-h");
+  h.innerHTML=(badge? "<b>"+badge+"</b>" : "")+"<span>"+title+"</span>";
+  s.appendChild(h); return s;
+}
+function paramRow(parent,label,val,min,max,step,fmt,oninput,onchange){
+  var row=el("div","row");
+  var lab=el("label",null,label);
+  var num=el("input","num"); num.type="text"; num.readOnly=true; num.value=fmt(val);
+  row.appendChild(lab); row.appendChild(num);
+  var s=el("input","slider"); s.type="range"; s.min=min; s.max=max; s.step=step; s.value=val;
+  s.addEventListener("input",function(){ var v=parseFloat(s.value); num.value=fmt(v); oninput(v,lab); });
+  if(onchange){ s.addEventListener("pointerdown",function(){ sliderSnap=snapshot(); });
+                s.addEventListener("change",function(){ onchange(); }); }
+  row.appendChild(s); parent.appendChild(row);
+  return {lab:lab, num:num};
+}
 var sliderSnap=null;
+var TOOLNAME={select:"選択",move:"移動",rotate:"回転",scale:"スケール",multicut:"マルチカット"};
 function renderOptions(body){
   body.innerHTML="";
   var o=App.sel;
-  if(!o){ body.appendChild(el("div","empty","オブジェクトを選択すると\nパラメータが表示されます")); return; }
-  var t=el("div","attr-title"); t.innerHTML=o.name+"<span>"+(PRIM[o.kind]?PRIM[o.kind].en:"mesh")+"</span>";
-  body.appendChild(t);
+
+  // 1. ツールのオプション
+  var ts=sect("ツール オプション", TOOLNAME[App.tool]||App.tool);
+  if(App.tool==="multicut"){
+    ts.appendChild(el("div","hint","エッジをタップするとエッジループが挿入されます。タップ位置がループの分割比になります。\n四角形のストリップだけをたどります。"));
+  } else if(App.tool==="select"){
+    paramRow(ts,"ソフト選択 強度",App.soft.strength,0,1,.01,function(v){return v.toFixed(2);},
+      function(v){ App.soft.strength=v; syncGauges(); rebuildOverlay(); });
+    paramRow(ts,"ソフト選択 範囲",App.soft.radius,.05,6,.05,function(v){return v.toFixed(2);},
+      function(v){ App.soft.radius=v; syncGauges(); rebuildOverlay(); });
+    ts.appendChild(el("div","hint","強度 0 でソフト選択オフ。左のゲージと連動します。"));
+  } else {
+    ts.appendChild(el("div","hint","マニピュレータの軸ハンドルをドラッグします。中心ハンドルはビュー平面上を自由移動。\nソフト選択が有効なら周囲の頂点も減衰しながら追従します。"));
+  }
+  var eb=el("button","act","選択面を押し出す");
+  eb.onclick=doExtrude;
+  paramRow(ts,"押し出し量",App.toolOpts.extrudeDist,.02,2,.01,function(v){return v.toFixed(2);},
+    function(v){ App.toolOpts.extrudeDist=v; });
+  ts.appendChild(eb);
+  body.appendChild(ts);
+
+  if(!o){ body.appendChild(el("div","empty","オブジェクトを選択すると\nその属性が表示されます")); return; }
+
+  // 2. 選択中のコンポーネント
+  if(App.compMode!=="object"){
+    var cs=sect("選択", {vertex:"頂点",edge:"エッジ",face:"フェース"}[App.compMode]);
+    cs.appendChild(el("div","hint", App.comp.size? App.comp.size+" 個を選択中" : "未選択"));
+    body.appendChild(cs);
+  }
+
+  // 3. オブジェクトの属性
+  var os=sect("シェイプ", PRIM[o.kind]? PRIM[o.kind].en : "mesh");
+  var t=el("div","attr-title"); t.textContent=o.name;
+  os.appendChild(t);
   if(!o.parametric){
-    body.appendChild(el("div","notice","トポロジを編集したため、このオブジェクトのパラメータは無効になりました。Maya のヒストリ削除と同じ挙動です。"));
+    os.appendChild(el("div","notice","トポロジを編集したため、このオブジェクトのパラメータは無効になりました。Maya のヒストリ削除と同じ挙動です。"));
   } else {
     PRIM[o.kind].params.forEach(function(p){
-      var name=p[0], lbl=p[1], min=p[3], max=p[4], step=p[5];
-      var isKind=(name==="kind" && PRIM[o.kind].kinds);
-      var row=el("div","row");
-      var lab=el("label",null, isKind ? lbl+" — "+PRIM[o.kind].kinds[Math.round(o.params[name])] : lbl);
-      var num=el("input","num"); num.type="text"; num.readOnly=true;
-      num.value= isKind ? "" : (step<1? o.params[name].toFixed(2) : String(Math.round(o.params[name])));
-      row.appendChild(lab); row.appendChild(num);
-      var sl=el("input","slider");
-      sl.type="range"; sl.min=min; sl.max=max; sl.step=step; sl.value=o.params[name];
-      sl.addEventListener("input",function(){
-        o.params[name]=parseFloat(sl.value);
-        if(isKind) lab.textContent=lbl+" — "+PRIM[o.kind].kinds[Math.round(o.params[name])];
-        else num.value= step<1? o.params[name].toFixed(2) : String(Math.round(o.params[name]));
-        o.rebuild(); buildGfx(o); App.comp.clear(); rebuildOverlay(); rebuildManip(); refreshStats();
-      });
-      sl.addEventListener("pointerdown",function(){ sliderSnap=snapshot(); });
-      sl.addEventListener("change",function(){
-        if(sliderSnap){ commitUndo("パラメータ変更",sliderSnap); sliderSnap=null; }
-      });
-      row.appendChild(sl);
-      body.appendChild(row);
+      var name=p[0], isKind=(name==="kind" && PRIM[o.kind].kinds), step=p[5];
+      var label=isKind ? p[1]+" — "+PRIM[o.kind].kinds[Math.round(o.params[name])] : p[1];
+      var r=paramRow(os,label,o.params[name],p[3],p[4],step,
+        function(v){ return isKind? "" : (step<1? v.toFixed(2) : String(Math.round(v))); },
+        function(v,lab){
+          o.params[name]=v;
+          if(isKind) lab.textContent=p[1]+" — "+PRIM[o.kind].kinds[Math.round(v)];
+          o.rebuild(); buildGfx(o); App.comp.clear(); rebuildOverlay(); manipSig=""; refreshStats();
+        },
+        function(){ if(sliderSnap){ commitUndo("パラメータ変更",sliderSnap); sliderSnap=null; } });
+      if(isKind) r.num.value="";
     });
   }
-  body.appendChild(el("div","grouplbl","トランスフォーム"));
-  var p=o.pos, s=o.scale;
-  var e=new THREE.Euler().setFromQuaternion(o.quat);
-  var f=function(x){ return x.toFixed(2); }, dg=function(x){ return (x*180/Math.PI).toFixed(1); };
-  body.appendChild(el("div","hint",
+  body.appendChild(os);
+
+  // 4. トランスフォーム
+  var xs=sect("トランスフォーム");
+  var p=o.pos, s=o.scale, e2=new THREE.Euler().setFromQuaternion(o.quat);
+  var f=function(x){return x.toFixed(2);}, dg=function(x){return (x*180/Math.PI).toFixed(1);};
+  xs.appendChild(el("div","hint",
     "Translate  "+f(p.x)+"  "+f(p.y)+"  "+f(p.z)+"\n"+
-    "Rotate     "+dg(e.x)+"  "+dg(e.y)+"  "+dg(e.z)+"\n"+
+    "Rotate     "+dg(e2.x)+"  "+dg(e2.y)+"  "+dg(e2.z)+"\n"+
     "Scale      "+f(s.x)+"  "+f(s.y)+"  "+f(s.z)));
+  body.appendChild(xs);
+
+  var ms=sect("メッシュ");
   var st=o.mesh.stats();
-  body.appendChild(el("div","grouplbl","メッシュ"));
-  body.appendChild(el("div","hint","頂点 "+st.v+" / エッジ "+st.e+" / 面 "+st.f+" / 三角形 "+st.t));
+  ms.appendChild(el("div","hint","頂点 "+st.v+" / エッジ "+st.e+" / フェース "+st.f+" / 三角形 "+st.t));
+  body.appendChild(ms);
 }
 
 function renderOutliner(body){
@@ -1715,18 +1834,62 @@ function renderOutliner(body){
   if(!App.objects.length){ body.appendChild(el("div","empty","シーンは空です\nプリミティブ追加を長押し")); return; }
   App.objects.forEach(function(o){
     var b=el("button","olrow");
+    b.dataset.oid=o.id;
     b.setAttribute("aria-selected", App.sel===o ? "true":"false");
     b.appendChild(el("span","dot"));
     b.appendChild(el("span","nm",o.name));
     b.appendChild(el("span","ty", o.parametric ? (PRIM[o.kind]?PRIM[o.kind].en:"mesh") : "edited"));
-    b.onclick=function(){ App.sel=o; App.comp.clear(); rebuildAllGfx(); refreshUI(); };
+    attachOutlinerRow(b,o);
     body.appendChild(b);
   });
 }
+function attachOutlinerRow(b,o){
+  var timer=null, opened=false, sx=0, sy=0, pid=null, last=0;
+  b.addEventListener("pointerdown",function(e){
+    e.preventDefault(); closePop();
+    pid=e.pointerId; sx=e.clientX; sy=e.clientY; opened=false;
+    radialTarget=o;
+    if(e.pointerType==="mouse" && e.button===2){ opened=true; openRadial("outliner",sx,sy); }
+    else timer=setTimeout(function(){ opened=true; openRadial("outliner",sx,sy); },420);
+    window.addEventListener("pointermove",mv); window.addEventListener("pointerup",up);
+  });
+  b.addEventListener("contextmenu",function(e){ e.preventDefault(); });
+  function mv(e){ if(e.pointerId===pid && Math.hypot(e.clientX-sx,e.clientY-sy)>12) clearTimeout(timer); }
+  function up(e){
+    if(e.pointerId!==pid) return;
+    clearTimeout(timer);
+    window.removeEventListener("pointermove",mv); window.removeEventListener("pointerup",up);
+    if(opened) return;
+    var now=Date.now();
+    if(now-last<340){ last=0; startRename(o); return; }   // ダブルタップで名前変更
+    last=now;
+    App.sel=o; App.comp.clear(); rebuildAllGfx(); refreshUI();
+  }
+}
+function startRename(o){
+  if(!o) return;
+  var row=document.querySelector('.olrow[data-oid="'+o.id+'"]');
+  if(!row) return;
+  var nm=row.querySelector(".nm");
+  var inp=el("input","olinput"); inp.value=o.name;
+  nm.replaceWith(inp);
+  inp.focus(); inp.select();
+  function commit(){
+    var v=inp.value.trim();
+    if(v && v!==o.name){ pushUndo("名前変更"); o.name=v; }
+    refreshUI();
+  }
+  inp.addEventListener("keydown",function(e){
+    e.stopPropagation();
+    if(e.key==="Enter") commit();
+    if(e.key==="Escape") refreshUI();
+  });
+  inp.addEventListener("blur",commit);
+  inp.addEventListener("pointerdown",function(e){ e.stopPropagation(); });
+}
 
 function buildPanel(k){
-  var def=PANELS[k];
-  var p=el("div","panel"); p.dataset.panel=k;
+  var def=PANELS[k], p=el("div","panel"); p.dataset.panel=k;
   var h=el("div","phead");
   h.innerHTML='<svg class="grip" viewBox="0 0 8 12" fill="currentColor"><circle cx="2" cy="2" r="1"/><circle cx="6" cy="2" r="1"/><circle cx="2" cy="6" r="1"/><circle cx="6" cy="6" r="1"/><circle cx="2" cy="10" r="1"/><circle cx="6" cy="10" r="1"/></svg><span>'+def.title+'</span>';
   h.title=def.title;
@@ -1749,8 +1912,7 @@ function startPanelDrag(e,p){
   e.preventDefault();
   var r=p.getBoundingClientRect();
   pdrag={panel:p, key:p.dataset.panel, dx:e.clientX-r.left, dy:e.clientY-r.top, zones:[]};
-  showDropZones();
-  p.classList.add("floating");
+  showDropZones(); p.classList.add("floating");
   document.getElementById("stage").appendChild(p);
   movePanelDrag(e);
   window.addEventListener("pointermove",movePanelDrag);
@@ -1785,7 +1947,7 @@ function endPanelDrag(){
 }
 function showDropZones(){
   var stage=document.getElementById("stage"), sr=stage.getBoundingClientRect();
-  [{zone:"left", name:"左", x:52, y:0, w:200, h:sr.height},
+  [{zone:"left", name:"左", x:64, y:0, w:200, h:sr.height},
    {zone:"rightTop", name:"右上", x:sr.width-236, y:0, w:236, h:sr.height*0.62},
    {zone:"rightBottom", name:"右下", x:sr.width-236, y:sr.height*0.62, w:236, h:sr.height*0.38}
   ].forEach(function(d){
@@ -1799,7 +1961,46 @@ function showDropZones(){
 function hideDropZones(){ document.querySelectorAll(".dropz").forEach(function(z){ z.remove(); }); }
 
 /* =========================================================================
-   13. モード / 修飾キー / キーボード
+   15. 左レールのゲージ
+   ========================================================================= */
+function gaugeDef(which){ return (GAUGES[App.mode]||GAUGES.model)[which]; }
+function setupGauge(id,which,lblId,valId){
+  var g=document.getElementById(id), fill=g.querySelector(".fill"), knob=g.querySelector(".knob");
+  function paint(){
+    var d=gaugeDef(which), v=d.get();
+    var t=(v-d.min)/(d.max-d.min);
+    fill.style.height=(t*100)+"%";
+    knob.style.bottom="calc("+(t*100)+"% - 1px)";
+    document.getElementById(lblId).textContent=d.label;
+    g.title=d.full||d.label;
+    document.getElementById(valId).textContent=v.toFixed(2);
+    g.dataset.off=(which==="g1" && d.get()<=0) ? "true":"false";
+  }
+  function setFromY(clientY){
+    var d=gaugeDef(which), r=g.getBoundingClientRect();
+    var t=Math.max(0,Math.min(1,1-(clientY-r.top)/r.height));
+    var v=d.min+t*(d.max-d.min);
+    v=Math.round(v/d.step)*d.step;
+    d.set(v); paint(); rebuildOverlay();
+  }
+  var active=false;
+  g.addEventListener("pointerdown",function(e){
+    e.preventDefault(); active=true; g.setPointerCapture(e.pointerId); setFromY(e.clientY);
+  });
+  g.addEventListener("pointermove",function(e){ if(active) setFromY(e.clientY); });
+  ["pointerup","pointercancel"].forEach(function(t){
+    g.addEventListener(t,function(){ if(active){ active=false; refreshOptionsOnly(); } });
+  });
+  return paint;
+}
+var paintG1=null, paintG2=null;
+function syncGauges(){ if(paintG1) paintG1(); if(paintG2) paintG2(); }
+function refreshOptionsOnly(){
+  var o=findPanel("options"); if(o) renderOptions(o.querySelector(".pbody"));
+}
+
+/* =========================================================================
+   16. モード / 表示 / 修飾キー
    ========================================================================= */
 function setMode(id){
   App.mode=id;
@@ -1811,13 +2012,19 @@ function setMode(id){
   document.getElementById("stubUV").hidden=(id!=="uv");
   document.getElementById("stubSculpt").hidden=(id!=="sculpt");
   document.getElementById("stubMaterial").hidden=(id!=="material");
+  syncGauges();
   if(isModel) setTimeout(resize,0);
 }
+function setDisplay(d){
+  App.display=d; applyDisplayAll();
+  toast({wire:"ワイヤーフレーム",shaded:"シェード",shadedWire:"シェード + ワイヤーフレーム",smooth:"スムースシェード"}[d]);
+}
 attachRadialButton(document.getElementById("modeBtn"), {radial:"modes", action:function(){}});
+attachRadialButton(document.getElementById("btnFrame"), {radial:"selmode", action:frameSelected});
 
 function cycleMod(name,btn){
   var s=App.mods[name];
-  App.mods[name] = s==="off" ? "latch" : (s==="latch" ? "lock" : "off");
+  App.mods[name]= s==="off"?"latch" : (s==="latch"?"lock":"off");
   btn.dataset.state=App.mods[name];
 }
 function releaseLatches(){
@@ -1830,9 +2037,9 @@ document.getElementById("modCtrl").onclick=function(){ cycleMod("ctrl",this); };
 document.getElementById("modAlt").onclick=function(){ cycleMod("alt",this); };
 document.getElementById("btnUndo").onclick=doUndo;
 document.getElementById("btnRedo").onclick=doRedo;
-document.getElementById("btnFrame").onclick=frameSelected;
 document.getElementById("btnPanels").onclick=function(){
   App.panelsHidden=!App.panelsHidden;
+  this.setAttribute("aria-pressed",App.panelsHidden?"true":"false");
   ["dockLeft","dockColRight"].forEach(function(id){ document.getElementById(id).style.display=App.panelsHidden?"none":""; });
   document.querySelectorAll(".panel.floating").forEach(function(p){ p.style.display=App.panelsHidden?"none":""; });
   setTimeout(resize,0);
@@ -1843,80 +2050,75 @@ window.addEventListener("keydown",function(e){
   var k=e.key.toLowerCase();
   if((e.ctrlKey||e.metaKey)&&k==="z"){ e.preventDefault(); e.shiftKey?doRedo():doUndo(); return; }
   var map={q:"select",w:"move",e:"rotate",r:"scale",x:"multicut"};
-  if(map[k]){ App.tool=map[k]; rebuildManip(); refreshUI(); return; }
+  if(map[k]){ App.tool=map[k]; manipSig=""; refreshUI(); return; }
   if(k==="d"){ doExtrude(); return; }
   if(k==="f"){ frameSelected(); return; }
-  if(k==="1"){ setCompMode("object"); return; }
-  if(k==="2"){ setCompMode("vertex"); return; }
-  if(k==="3"){ setCompMode("edge"); return; }
-  if(k==="4"){ setCompMode("face"); return; }
+  // 選択モードは Maya と同じ F8–F11
+  if(e.key==="F8"){ e.preventDefault(); setCompMode("object"); return; }
+  if(e.key==="F9"){ e.preventDefault(); setCompMode("vertex"); return; }
+  if(e.key==="F10"){ e.preventDefault(); setCompMode("edge"); return; }
+  if(e.key==="F11"){ e.preventDefault(); setCompMode("face"); return; }
+  if(k==="4"){ setDisplay("wire"); return; }
+  if(k==="5"){ setDisplay("shaded"); return; }
+  if(k==="6"){ setDisplay("shadedWire"); return; }
+  if(k==="7"){ setDisplay("smooth"); return; }
   if(k==="delete"||k==="backspace"){ doDelete(); return; }
 });
-
 function setCompMode(m){
   App.compMode=m; App.comp.clear();
-  App.objects.forEach(function(o){ if(o.gfx) o.gfx.pts.visible=(o===App.sel&&m==="vertex"); });
-  rebuildOverlay(); refreshUI();
+  applyDisplayAll(); rebuildOverlay(); manipSig=""; refreshUI();
+  toast({object:"オブジェクト モード",vertex:"頂点",edge:"エッジ",face:"フェース"}[m]);
 }
-function applyWire(){ App.objects.forEach(function(o){ if(o.gfx) o.gfx.wire.visible=App.showWire; }); }
 
 /* =========================================================================
-   14. HUD
+   17. HUD
    ========================================================================= */
 function refreshStats(){
   var tot={v:0,e:0,f:0,t:0};
   App.objects.forEach(function(x){ var q=x.mesh.stats(); tot.v+=q.v; tot.e+=q.e; tot.f+=q.f; tot.t+=q.t; });
   document.getElementById("hudStats").innerHTML=
     "<i>Verts</i><span>"+tot.v+"</span><i>Edges</i><span>"+tot.e+"</span><i>Faces</i><span>"+tot.f+"</span><i>Tris</i><span>"+tot.t+"</span>";
-  var modeName={object:"オブジェクト",vertex:"頂点",edge:"エッジ",face:"面"}[App.compMode];
-  var toolName={select:"選択",move:"移動",rotate:"回転",scale:"スケール",multicut:"マルチカット"}[App.tool]||App.tool;
+  var mn={object:"オブジェクト",vertex:"頂点",edge:"エッジ",face:"フェース"}[App.compMode];
+  var dn={wire:"WIRE",shaded:"SHADED",shadedWire:"SHADED+WIRE",smooth:"SMOOTH"}[App.display];
   document.getElementById("hudMode").innerHTML=
-    toolName+" · <b>"+modeName+"</b>"+(App.comp.size? " · "+App.comp.size+" 選択":"")+(App.sel? "<br>"+App.sel.name : "");
+    (TOOLNAME[App.tool]||App.tool)+" · <b>"+mn+"</b>"+(App.comp.size? " · "+App.comp.size:"")+
+    "<br>"+dn+(App.cam.ortho?" · ORTHO":"")+(App.sel? " · "+App.sel.name : "");
 }
 var toastTimer=null;
 function toast(msg){
   document.getElementById("hudHint").innerHTML=msg;
-  clearTimeout(toastTimer);
-  toastTimer=setTimeout(defaultHint,2800);
+  clearTimeout(toastTimer); toastTimer=setTimeout(defaultHint,2800);
 }
 function defaultHint(){
   clearTimeout(toastTimer);
-  document.getElementById("hudHint").innerHTML= App.fingerTool
-    ? "指1本 <kbd>ツール</kbd> · 指2本 <kbd>パン / ズーム</kbd> · 長押し <kbd>選択モード</kbd><br>マウス <kbd>Alt+左 タンブル</kbd> <kbd>Alt+中 パン</kbd> <kbd>Alt+右 ズーム</kbd> <kbd>右 マーキングメニュー</kbd>"
-    : "指1本 <kbd>タンブル</kbd> · 指2本 <kbd>パン / ズーム</kbd> · ペン <kbd>ツール</kbd> · 長押し <kbd>選択モード</kbd><br>マウス <kbd>Alt+左 タンブル</kbd> <kbd>Alt+中 パン</kbd> <kbd>Alt+右 ズーム</kbd> <kbd>右 マーキングメニュー</kbd>";
+  document.getElementById("hudHint").innerHTML=
+    (App.fingerTool? "指1本 <kbd>ツール</kbd>" : "指1本 <kbd>タンブル</kbd> · ペン <kbd>ツール</kbd>")+
+    " · 指2本 <kbd>パン / ズーム</kbd> · <kbd>F</kbd> ボタン長押し <kbd>マーキングメニュー</kbd>"+
+    "<br>マウス <kbd>Alt+左 タンブル</kbd> <kbd>Alt+中 パン</kbd> <kbd>Alt+右 ズーム</kbd> <kbd>右 マーキングメニュー</kbd>";
 }
 function refreshUI(){
   var t=findPanel("tools"); if(t) renderTools(t.querySelector(".pbody"));
   var o=findPanel("options"); if(o) renderOptions(o.querySelector(".pbody"));
   var l=findPanel("outliner"); if(l) renderOutliner(l.querySelector(".pbody"));
-  applyWire(); refreshStats(); rebuildManip();
-  App.objects.forEach(function(x){
-    if(!x.gfx) return;
-    x.gfx.wire.material = (x===App.sel)?MAT.wireSel:MAT.wire;
-    x.gfx.pts.visible = (x===App.sel && App.compMode==="vertex");
-  });
+  applyDisplayAll(); refreshStats(); syncGauges(); rebuildManip();
 }
 
 /* =========================================================================
-   15. 起動
+   18. 起動
    ========================================================================= */
 mountPanels();
+paintG1=setupGauge("gauge1","g1","g1lbl","g1val");
+paintG2=setupGauge("gauge2","g2","g2lbl","g2val");
 setMode("model");
 (function seed(){
   var c=new SceneObject("cube");
   c.params.sdW=c.params.sdH=c.params.sdD=2; c.rebuild();
   App.objects.push(c); App.sel=c;
 })();
-rebuildAllGfx();
-applyCam(); resize(); refreshUI(); defaultHint(); updateHistoryButtons();
-
+rebuildAllGfx(); applyCam(); resize(); refreshUI(); defaultHint(); updateHistoryButtons();
 (function loop(){
   requestAnimationFrame(loop);
-  if(App.mode==="model"){
-    var c=pivotWorld();
-    if(c) rebuildManip();      // スクリーン一定サイズを保つ
-    renderer.render(scene,camera);
-  }
+  if(App.mode==="model"){ rebuildManip(); renderer.render(scene,camera); }
 })();
 })();
 </script>
