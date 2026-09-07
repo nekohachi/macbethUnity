@@ -115,11 +115,11 @@ const gl = await page.evaluate(() => {
 });
 check("WebGL で描画できている", gl.ok && gl.size[0] > 0, gl.size.join("×"));
 
-/* 3. フェースモードでクリックすると面が 1 つ選ばれる */
+/* 3. 何も選んでいない状態から 1 タップで面が選べる（Maya と同じ手数） */
 await page.keyboard.press("F11");
 await page.mouse.click(ON_MESH.x, ON_MESH.y);
 s = await state();
-check("フェースをクリックして選択", s.compMode === "face" && s.comp === 1, `comp=${s.comp}`);
+check("1 タップでフェースを選択", s.compMode === "face" && s.comp === 1, `comp=${s.comp}`);
 
 /* 4. ダブルクリックでシェル全体（立方体なら 6 面） */
 // 直前のクリックと繋がってダブル判定にならないよう、判定窓（380ms）を空ける
@@ -195,6 +195,37 @@ check(
   !offMesh ? "判定点がメッシュ上にある" : ready !== 1 ? `面が選べていない (comp=${ready})` : "",
 );
 await page.keyboard.press("Control+z");
+
+/* 7b. 選択の拡張と縮小 */
+await page.keyboard.press("Control+z");
+await page.waitForTimeout(500);
+await page.mouse.click(ON_MESH.x, ON_MESH.y);
+const g0 = await page.evaluate(() => window.macbeth.state.comp.size);
+await page.keyboard.press(">");
+const g1 = await page.evaluate(() => window.macbeth.state.comp.size);
+await page.keyboard.press("<");
+const g2 = await page.evaluate(() => window.macbeth.state.comp.size);
+check("選択を拡張 / 縮小できる", g1 > g0 && g2 < g1, `${g0} → ${g1} → ${g2}`);
+
+/* 7c. 取り消しても選択が残る */
+await page.keyboard.press("F11");
+await page.waitForTimeout(500);
+await page.mouse.click(ON_MESH.x, ON_MESH.y);
+const keptBefore = await page.evaluate(() => window.macbeth.state.comp.size);
+// 追加前の状態を積んでから足し、戻す。戻したあとオブジェクト数も元どおりになる
+await page.evaluate(() => window.macbeth.history.push("テスト用"));
+await page.evaluate(() => window.macbeth.state.doc.addObject("plane"));
+await page.keyboard.press("Control+z");
+const keptAfter = await page.evaluate(() => ({
+  comp: window.macbeth.state.comp.size,
+  mode: window.macbeth.state.compMode,
+}));
+const objectsAfter = await page.evaluate(() => window.macbeth.state.doc.objects.length);
+check(
+  "取り消しても選択が残る",
+  keptAfter.comp === keptBefore && keptAfter.mode === "face" && objectsAfter === 1,
+  `${keptBefore} → ${keptAfter.comp} (${keptAfter.mode}) / オブジェクト ${objectsAfter}`,
+);
 
 /* 8. マルチカットで面が増える（予測線 → 確定） */
 await page.keyboard.press("Control+z"); // 選択状態を整える
@@ -292,7 +323,52 @@ const dockedLeft = await page.evaluate(
 );
 check("パネルを別の場所へドッキングできる", dockedLeft);
 
-/* 17. 例外が出ていない */
+/* 17. モードを切り替えると予定表が出て、戻すとキャンバスが戻る */
+await page.evaluate(() => window.macbeth.setMode("uv"));
+const inUv = await page.evaluate(() => ({
+  stub: !document.getElementById("modeStub").hidden,
+  stage: document.getElementById("stage").hidden,
+  label: document.getElementById("modeLabel").textContent,
+  tools: document.querySelectorAll("#dockLeft .ibtn").length,
+  gauge: document.getElementById("g1lbl").textContent,
+}));
+await page.evaluate(() => window.macbeth.setMode("model"));
+const backToModel = await page.evaluate(() => ({
+  stub: !document.getElementById("modeStub").hidden,
+  stage: document.getElementById("stage").hidden,
+  tools: document.querySelectorAll("#dockLeft .ibtn").length,
+}));
+check(
+  "モードを切り替えられる",
+  inUv.stub && inUv.stage && inUv.label === "UV" && inUv.tools === 0 &&
+    !backToModel.stub && !backToModel.stage && backToModel.tools > 0,
+  `UV: 予定表 ${inUv.stub} / ツール ${inUv.tools} / ゲージ「${inUv.gauge}」→ モデリング: ツール ${backToModel.tools}`,
+);
+
+/* 18. 縦持ちで右のドックがビューポートの下に来る */
+await page.setViewportSize({ width: 744, height: 1133 }); // iPad mini の縦
+await page.waitForTimeout(200);
+const portrait = await page.evaluate(() => {
+  const stage = document.getElementById("stage");
+  const vp = document.getElementById("vp").getBoundingClientRect();
+  const dock = document.getElementById("dockColRight").getBoundingClientRect();
+  return {
+    klass: stage.classList.contains("portrait"),
+    below: dock.top >= vp.bottom - 2,
+    vpRatio: vp.height / stage.getBoundingClientRect().height,
+    canvas: document.getElementById("gl").width > 0,
+  };
+});
+await page.setViewportSize({ width: 1280, height: 800 });
+await page.waitForTimeout(200);
+const backLandscape = await page.evaluate(() => !document.getElementById("stage").classList.contains("portrait"));
+check(
+  "縦持ちで右のドックが下に来る",
+  portrait.klass && portrait.below && portrait.vpRatio >= 0.55 && portrait.canvas && backLandscape,
+  `下に配置 ${portrait.below} / ビューポート ${Math.round(portrait.vpRatio * 100)}%`,
+);
+
+/* 19. 例外が出ていない */
 check("例外なし", errors.length === 0, errors.join(" / "));
 
 await page.screenshot({ path: SHOT });

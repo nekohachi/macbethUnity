@@ -14,6 +14,7 @@ export interface PanelHost {
   /** 離したとき。ここで履歴に積む。 */
   onParamCommit(object: SceneObject, label: string): void;
   onSoftChange(which: "strength" | "radius", value: number): void;
+  onExtrudeDistChange(value: number): void;
   onCutChange(key: "snapStep" | "edgeFlow", value: number | boolean): void;
   onSmoothAngleChange(value: number): void;
   onSelect(object: SceneObject): void;
@@ -101,6 +102,7 @@ export interface OptionsState {
   selected: SceneObject | null;
   soft: { strength: number; radius: number };
   cut: { snapStep: number; edgeFlow: boolean };
+  extrudeDist: number;
   smoothAngle: number;
   compMode: string;
 }
@@ -128,6 +130,23 @@ export function renderOptions(body: HTMLElement, state: OptionsState, host: Pane
         "hint",
         "ホバーで入る位置を先に見せます。Shift で 50% に固定。\nエッジフローは頂点法線による三次補間で、ループをサーフェスに沿わせます。",
       ),
+    );
+    body.appendChild(s);
+  }
+
+  // 押し出しは面とエッジのメニューから使う。距離をここで決める
+  if (state.compMode === "face" || state.compMode === "edge") {
+    const s = section("押し出し", "EXTRUDE");
+    paramRow(s, {
+      label: "距離",
+      value: state.extrudeDist,
+      min: 0.05,
+      max: 3,
+      step: 0.05,
+      onInput: (v) => host.onExtrudeDistChange(v),
+    });
+    s.appendChild(
+      el("div", "hint", "編集メニューの「押し出し」で使う距離です。\nSHF を押しながらドラッグする場合は距離ではなく動かした量になります。"),
     );
     body.appendChild(s);
   }

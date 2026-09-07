@@ -8,12 +8,17 @@
  */
 import {
   arcBetween,
+  boundaryEdges,
   chainVertices,
   edgeKey,
   edgeLoopFrom,
   edgeRingFrom,
+  growFaces,
+  growVertices,
   shellFaces,
   shellVertices,
+  shrinkFaces,
+  shrinkVertices,
   type Edge,
 } from "../../core/index.js";
 import type { ObjectView } from "../render/meshView.js";
@@ -82,12 +87,26 @@ export class Selector {
       return { changed, objectChanged: changed };
     }
 
-    const o = this.state.selected;
+    let o = this.state.selected;
     if (!o) {
-      // コンポーネントモードでも、まだ何も選んでいなければオブジェクトを拾う
+      // まだ何も選んでいなければオブジェクトを拾い、続けてコンポーネントも拾う。
+      // Maya は 1 回で選べるので、ここで 2 回叩かせない。
       const hit = this.picker.pickSurface(p);
       if (!hit) return NOTHING;
       this.state.select(hit.object);
+      o = hit.object;
+      const fresh = this.viewOf(o.id);
+      if (fresh) {
+        this.pickOne(p, e, fresh);
+        this.lastClick = {
+          t: performance.now(),
+          x: p.x,
+          y: p.y,
+          mode: this.state.compMode,
+          objectId: o.id,
+          before: new Set(),
+        };
+      }
       return { changed: true, objectChanged: true };
     }
     const view = this.viewOf(o.id);
@@ -261,6 +280,70 @@ export class Selector {
       }
     }
     return { changed: true, objectChanged: false };
+  }
+
+  /**
+   * 選択を 1 段広げる / 狭める。Maya の Grow / Shrink。
+   * エッジは頂点を経由する（両端が含まれるエッジを取る）。
+   */
+  growOrShrink(grow: boolean): SelectResult {
+    const o = this.state.selected;
+    if (!o || this.state.compMode === "object" || !this.state.comp.size) {
+      return { changed: false, objectChanged: false, message: "コンポーネントを選択してください" };
+    }
+    const mesh = o.mesh;
+    const comp = this.state.comp;
+
+    if (this.state.compMode === "vertex") {
+      const next = grow ? growVertices(mesh, comp) : shrinkVertices(mesh, comp);
+      comp.clear();
+      for (const v of next) comp.add(v);
+    } else if (this.state.compMode === "face") {
+      const next = grow ? growFaces(mesh, comp) : shrinkFaces(mesh, comp);
+      comp.clear();
+      for (const f of next) comp.add(f);
+    } else {
+      const view = this.viewOf(o.id);
+      if (!view) return NOTHING;
+      // エッジは端点の集合で広げ、両端が入っているエッジを取り直す
+      const verts = new Set<number>();
+      for (const ei of comp) {
+        const e = view.edges[ei];
+        if (e) {
+          verts.add(e[0]);
+          verts.add(e[1]);
+        }
+      }
+      const next = new Set(grow ? growVertices(mesh, verts) : shrinkVertices(mesh, verts));
+      comp.clear();
+      view.edges.forEach(([a, b], i) => {
+        if (next.has(a) && next.has(b)) comp.add(i);
+      });
+    }
+    return {
+      changed: true,
+      objectChanged: false,
+      message: `${grow ? "選択を拡張" : "選択を縮小"} — ${comp.size}`,
+    };
+  }
+
+  /** 境界（面を 1 枚しか持たないエッジ）を選ぶ。 */
+  selectBoundary(): SelectResult {
+    const o = this.state.selected;
+    if (!o) return { changed: false, objectChanged: false, message: "オブジェクトを選択してください" };
+    const view = this.viewOf(o.id);
+    if (!view) return NOTHING;
+    const keys = new Set(boundaryEdges(o.mesh).map(([a, b]) => edgeKey(a, b)));
+    if (!keys.size) {
+      return { changed: false, objectChanged: false, message: "境界エッジがありません（閉じたメッシュです）" };
+    }
+    this.state.compMode = "edge";
+    this.state.comp.clear();
+    view.edges.forEach(([a, b], i) => {
+      if (keys.has(edgeKey(a, b))) this.state.comp.add(i);
+    });
+    this.lastClick = null;
+    return { changed: true, objectChanged: false, message: `境界エッジ — ${this.state.comp.size}` };
   }
 
   /** コンポーネント選択に含まれる頂点。変形の対象を求めるのに使う。 */

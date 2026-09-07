@@ -16,7 +16,7 @@
 <div class="app">
   <div class="topbar">
     <div class="brand"><b>macbeth</b></div>
-    <button class="modebtn" id="modeBtn">
+    <button class="modebtn" id="modeBtn" title="長押しでモードを切り替え">
       <span id="modeLabel">モデリング</span><span class="caret">▼</span>
     </button>
     <button class="topbtn" id="fileBtn" title="新規 / 開く / 保存 / OBJ">
@@ -77,6 +77,8 @@
       <div class="dock dock-right" id="dockRightBottom" data-zone="rightBottom"></div>
     </div>
   </div>
+
+  <div id="modeStub" hidden></div>
 </div>
 <script type="module" src="/src/app/main.ts"></script>
 </body>

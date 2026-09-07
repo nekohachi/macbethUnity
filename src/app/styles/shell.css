@@ -79,7 +79,32 @@ button{font-family:inherit; font-size:inherit; color:inherit; background:none; b
   display:flex; flex-direction:column; min-height:0; width:236px}
 .dock:empty{display:none}
 .dock-right{border-right:0; border-left:1px solid var(--line)}
-.dockcol{display:flex; flex-direction:column; min-height:0; flex:0 0 auto}
+/* 右のドック列。幅は JS が --dockw に入れる（ドラッグで変えられる） */
+.dockcol{display:flex; flex-direction:column; min-height:0; flex:0 0 auto; width:var(--dockw,236px)}
+
+/* 縦持ち: 右のドック列だけをビューポートの下へ移す。
+   flex の column にするとツール列が横一杯に伸びてビューポートが潰れるので、
+   上段（レール + ツール + ビューポート）と下段（ドック列）のグリッドにする。 */
+.stage.portrait{
+  display:grid;
+  grid-template-columns:auto auto minmax(0,1fr);
+  grid-template-rows:minmax(0,1fr) var(--dockw,240px);
+}
+.stage.portrait .rail{grid-column:1; grid-row:1}
+.stage.portrait .dock[data-zone="left"]{grid-column:2; grid-row:1}
+.stage.portrait .vp{grid-column:3; grid-row:1}
+.stage.portrait .dockcol{
+  grid-column:1 / -1; grid-row:2;
+  width:auto; height:auto; flex-direction:row;
+}
+.stage.portrait .dockcol .dock{border-left:0; border-top:1px solid var(--line); flex:1 1 50%}
+.stage.portrait .dockcol .dock:first-child{border-bottom:0; border-right:1px solid var(--line)}
+
+/* 幅 / 高さを変えるつまみ */
+.dockgrip{position:absolute; z-index:30; background:transparent; touch-action:none}
+.dockgrip:hover, .dockgrip.active{background:var(--accent); opacity:.5}
+.dockgrip.vertical{width:6px; cursor:col-resize; top:0; bottom:0}
+.dockgrip.horizontal{height:6px; cursor:row-resize; left:0; right:0}
 .dockcol .dock:first-child{flex:1 1 62%; border-bottom:1px solid var(--line)}
 .dockcol .dock:last-child{flex:1 1 38%}
 .dock.narrow{width:63px; min-width:63px}          /* ツール列を含むドック */
@@ -212,6 +237,7 @@ button{font-family:inherit; font-size:inherit; color:inherit; background:none; b
 .dropz.hot{background:rgba(79,159,209,.3); border-style:solid}
 
 /* ---------- stubs ---------- */
+#modeStub{flex:1; min-height:0; display:flex}
 .stub{flex:1; display:grid; place-items:center; padding:32px; background:var(--ground); overflow:auto; touch-action:pan-y}
 .stub-in{max-width:520px}
 .stub h2{font-size:19px; font-weight:600; margin:0 0 3px; letter-spacing:-.01em; text-wrap:balance}

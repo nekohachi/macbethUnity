@@ -56,7 +56,10 @@ export class Viewport {
   readonly root = new Group();
   readonly overlay = new Group();
   readonly manip = new Group();
+  /** マルチカットなどの予測表示。 */
   readonly preview = new Group();
+  /** ホバーのプリセレクション。予測表示とは別の層にして、片方の消去が他方を巻き込まないようにする。 */
+  readonly preselect = new Group();
 
   readonly cam: OrbitCamera = {
     target: new Vector3(0, 0.4, 0),
@@ -75,7 +78,7 @@ export class Viewport {
   ) {
     this.renderer = new WebGLRenderer({ canvas, antialias: true, alpha: true });
     this.renderer.setClearColor(0x000000, 0);
-    this.scene.add(this.root, this.overlay, this.manip, this.preview);
+    this.scene.add(this.root, this.overlay, this.manip, this.preview, this.preselect);
     this.addLights();
     this.addGrid();
     this.applyCamera();

@@ -6,7 +6,7 @@
  * 参照を共有しても壊れない）。
  */
 import { cloneTransform, type Mesh, type SceneObject, type Transform } from "../core/index.js";
-import type { AppState } from "./state.js";
+import type { AppState, CompMode } from "./state.js";
 
 interface ObjectSnapshot {
   ref: SceneObject;
@@ -26,6 +26,9 @@ interface ObjectSnapshot {
 interface Snapshot {
   objects: ObjectSnapshot[];
   selectedId: string | null;
+  /** 選択モードと選択中のコンポーネント。戻したときに選択も戻す。 */
+  compMode: CompMode;
+  comp: number[];
 }
 
 interface Entry {
@@ -81,6 +84,8 @@ export class History {
         paintLayers: o.paintLayers.slice(),
       })),
       selectedId: this.state.selected?.id ?? null,
+      compMode: this.state.compMode,
+      comp: [...this.state.comp],
     };
   }
 
@@ -143,6 +148,18 @@ export class History {
       return o;
     });
     this.state.selected = snap.selectedId ? (doc.find(snap.selectedId) ?? null) : null;
+    this.state.compMode = snap.compMode;
     this.state.comp.clear();
+    // トポロジが変わっていると番号がずれるので、今のメッシュに収まるものだけ戻す
+    const mesh = this.state.selected?.mesh;
+    const limit =
+      !mesh || snap.compMode === "object"
+        ? 0
+        : snap.compMode === "vertex"
+          ? mesh.vertexCount
+          : snap.compMode === "face"
+            ? mesh.faceCount
+            : Infinity;
+    for (const i of snap.comp) if (i < limit) this.state.comp.add(i);
   }
 }
