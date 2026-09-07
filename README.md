@@ -75,15 +75,30 @@ npm run smoke      # ビルド後、実際のブラウザで通し確認（要 n
 | `https://nekohachi.github.io/macbethUnity/` | プロトタイプ（これまでどおり） |
 | `https://nekohachi.github.io/macbethUnity/app/` | **新しいシェル。**ホーム画面に追加すると全画面・オフラインで動きます |
 
+### 最初の 1 回だけ必要な設定
+
+このリポジトリは **GitHub Pages がまだ有効になっていません**（ワークフローのログに
+`Get Pages site: Not Found` が出ます）。サイトの新規作成だけは管理者権限が要るため
+ワークフローからは有効化できません（`Resource not accessible by integration`）。
+
+<https://github.com/nekohachi/macbethUnity/settings/pages> を開いて:
+
+- **Source** … `Deploy from a branch`
+- **Branch** … `claude/tablet-3d-modeling-app-f6b1x5` / `/ (root)`
+- **Save**
+
+これで上の 2 つの URL が開くようになります。以後の更新は自動です。
+
 `app/` はビルド済みのものです。**push のたびに `.github/workflows/publish.yml` が
-自動でビルドし直して書き戻す**ので、Pages の設定は今のまま（Deploy from a branch）で
-最新が出ます。出す前に実際の Chromium で通し確認を走らせ、落ちたらコミットしません。
+自動でビルドし直して書き戻す**ので、設定はこの 1 回だけで、あとは触りません。
+出す前に実際の Chromium で通し確認を走らせ、落ちたらコミットしません。
 
 手元で先に `sh scripts/publish.sh` を実行して `app/` ごとコミットしておけば、
 ワークフローは差分なしで何もしません（余計なコミットが増えない）。
 
-Pages の Source を「GitHub Actions」に切り替えたい場合は、`pages.yml` の
-`on:` を `push:` に戻せば、ブランチに `app/` を置く必要はなくなります。
+Pages の Source を「GitHub Actions」にしたい場合は、`pages.yml` の `on:` を
+`push:` に戻せば、ブランチに `app/` を置く必要はなくなります。ただしその場合は
+`github-pages` 環境の許可ブランチに、既定ブランチ以外もを足す必要があります。
 
 **タブレットで開く（プロトタイプ）:** GitHub の Settings → Pages で Branch をこのブランチ、Folder を `/ (root)` にすると、`https://nekohachi.github.io/macbethUnity/` で開けます（ログイン不要、ホーム画面に追加で全画面）。
 

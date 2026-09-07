@@ -1,10 +1,16 @@
 name: Deploy to GitHub Pages
 
-# push のたびに Pages へ出す。
+# Pages の Source が「GitHub Actions」のときに使うもの。
 #
-# configure-pages に enablement: true を渡しているので、Pages が未設定でも
-# このワークフローが「Source = GitHub Actions」で有効化する。リポジトリの
-# 設定画面を触らなくてよい。
+# 現状このリポジトリでは Pages 自体がまだ有効になっていない（configure-pages が
+# Get Pages site: Not Found を返す）。enablement: true での自動有効化も試したが、
+# サイトの新規作成は管理者権限が要るため GITHUB_TOKEN では
+# "Resource not accessible by integration" で通らない。最初の 1 回だけは
+# 人が Settings → Pages で有効にする必要がある。
+#
+# いまの配信はブランチ配信 + publish.yml（app/ をブランチへ書き戻す）が担うので、
+# ここは手動起動だけにしてある。Source を「GitHub Actions」にしたら
+# on: を push に戻すこと。
 #
 # 出すもの:
 #   /            プロトタイプ（移植が終わるまでの入口）
@@ -12,8 +18,6 @@ name: Deploy to GitHub Pages
 #   /app.html    同じものの別名。前に案内した URL を生かしておくため
 #   /prototype/  プロトタイプの単体ページ
 on:
-  push:
-    branches: ["claude/tablet-3d-modeling-app-f6b1x5", "master", "main"]
   workflow_dispatch:
 
 permissions:
@@ -70,9 +74,6 @@ jobs:
           ls -R site | head -40
 
       - uses: actions/configure-pages@v5
-        with:
-          # Pages が未設定なら、ここで「Source = GitHub Actions」にして有効化する
-          enablement: true
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site
