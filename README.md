@@ -64,8 +64,10 @@ npm run smoke      # ビルド後、実際のブラウザで通し確認（要 n
 | [07-roadmap.md](docs/07-roadmap.md) | 開発フェーズ、期間見積もり、リスク一覧 |
 | [08-codex-task-01.md](docs/08-codex-task-01.md) | **コーディングエージェント向け作業指示書 #01。** マルチ解像度ジオメトリコアの実装と検証 |
 | [09-direction-review.md](docs/09-direction-review.md) | **方向性レビュー。** プロトタイプ 4 ラウンド後のズレと修正案。実装担当はこれを `04` `05` より優先して読む |
-| [10-next-phase.md](docs/10-next-phase.md) | **次のフェーズの依頼書。** 土台の作り直し、選択の Maya 互換、残りのモデリング機能、FBX、マルチ解像度検証、配布 |
+| [10-next-phase.md](docs/10-next-phase.md) | 次のフェーズの依頼書（土台の作り直し）。**土台は完了。** 以降は `12` に引き継いだ |
 | [11-data-architecture.md](docs/11-data-architecture.md) | **データ設計。** 作業形式 `.mbz`、PC とタブレットの受け渡し、Maya / ZBrush / Substance との経路、非破壊の層構造、UV の置き場所 |
+| [12-roadmap-v2.md](docs/12-roadmap-v2.md) | **ロードマップ v2。** 土台完成後の現在地、パリティ表、Phase A〜F（入口の切り替え、モデリング機能、UV モードの画面構成、マルチ解像度検証、外部形式、配布） |
+| [13-opus-task-02.md](docs/13-opus-task-02.md) | **作業指示書 #02。** 選択の穴、モード切替、縦持ち、入口の切り替え、ベベル、ターゲットウェルド、マルチ解像度 V1〜V3 |
 
 ## プロトタイプ
 
