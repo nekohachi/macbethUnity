@@ -68,9 +68,18 @@ npm run smoke      # ビルド後、実際のブラウザで通し確認（要 n
 
 [`prototype/modeling-ui-prototype.html`](prototype/modeling-ui-prototype.html) — 操作感の検証用。ブラウザで開くだけで動きます。
 
-**タブレットで開く:** GitHub の Settings → Pages で Branch をこのブランチ、Folder を `/ (root)` にすると、`https://nekohachi.github.io/macbethUnity/` で開けます（ログイン不要、ホーム画面に追加で全画面）。
+## タブレットで開く
 
-`.github/workflows/pages.yml` を入れたので、Pages の Source を **「GitHub Actions」に切り替える**と push のたびに自動で更新されます。切り替えるまでは今までどおりブランチ配信で、ルートの `index.html`（`prototype/make-pages.sh` が生成）が使われます。Actions に切り替えた後も Pages のトップはプロトタイプのままで、新しいシェルは `/app.html` に出ます。
+| URL | 中身 |
+|---|---|
+| `https://nekohachi.github.io/macbethUnity/` | プロトタイプ（これまでどおり） |
+| `https://nekohachi.github.io/macbethUnity/app/` | **新しいシェル。**ホーム画面に追加すると全画面・オフラインで動きます |
+
+`app/` はビルド済みのものをリポジトリに置いています（`sh scripts/publish.sh` で更新）。
+Pages の Source を **「GitHub Actions」に切り替える**と `.github/workflows/pages.yml` が
+push のたびに自動で出すようになるので、この手動公開は要らなくなります。
+
+**タブレットで開く（プロトタイプ）:** GitHub の Settings → Pages で Branch をこのブランチ、Folder を `/ (root)` にすると、`https://nekohachi.github.io/macbethUnity/` で開けます（ログイン不要、ホーム画面に追加で全画面）。
 
 **方針: まず Maya のクローンとして作り、そこから UI をタブレットに寄せる。**
 
