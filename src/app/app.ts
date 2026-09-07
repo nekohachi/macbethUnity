@@ -29,6 +29,7 @@ import { AppState, type CompMode, type Display, type Manip, type Mode } from "./
 import { History } from "./history.js";
 import { Autosave } from "./storage/autosave.js";
 import { openFile, saveAs, saveMethodLabel } from "./storage/files.js";
+import { BevelTool } from "./tools/bevel.js";
 import { MultiCut } from "./tools/multicut.js";
 import { Preselect } from "./tools/preselect.js";
 import { Selector } from "./tools/select.js";
@@ -111,6 +112,11 @@ export class App {
   private manipulator: Manipulator;
   private multicut: MultiCut;
   private preselect: Preselect;
+  private bevel = new BevelTool();
+  /** ターゲットウェルドの相手。ドラッグ中に近づいた頂点。 */
+  private weldTarget: number | null = null;
+  /** ベベル確定後、オプションで作り直すための控え。 */
+  private bevelSnapshot: ReturnType<History["snapshot"]> | null = null;
   private docking: Docking;
   private layout: Layout;
   /** パネルの置き場所。移したら覚えて、次に開いたときに戻す。 */
@@ -230,6 +236,11 @@ export class App {
       hoverLeave: () => {
         this.multicut.clear();
         this.preselect.clear();
+        this.weldTarget = null;
+        if (this.bevel.active) {
+          this.bevel.cancel();
+          this.bevelSnapshot = null;
+        }
       },
       openMarkingMenu: (x, y, edit) => this.openMarkingMenu(x, y, edit),
       undo: () => this.doUndo(),
@@ -241,6 +252,11 @@ export class App {
         this.manipulator.hot = -1;
         this.multicut.clear();
         this.preselect.clear();
+        this.weldTarget = null;
+        if (this.bevel.active) {
+          this.bevel.cancel();
+          this.bevelSnapshot = null;
+        }
       },
       // 指で置いた場所がツールの対象か。マニピュレータのハンドルは
       // メッシュの外にはみ出すので、面のヒットだけで判定すると指でつかめない
@@ -369,6 +385,10 @@ export class App {
       this.updateCutPreview(p, e);
       return;
     }
+    if (this.state.tool === "bevel") {
+      this.startBevel(p);
+      return;
+    }
     const o = this.state.selected;
     const pivot = this.pivotWorld();
     const tol = this.tolerance(e);
@@ -454,12 +474,14 @@ export class App {
 
   private moveTool(p: ScreenPoint, e: PointerEvent): void {
     if (this.state.tool === "multicut") return this.updateCutPreview(p, e);
+    if (this.state.tool === "bevel") return this.dragBevel(p);
     if (this.marquee) return this.updateMarquee(p);
     const drag = this.drag;
     const o = this.state.selected;
     if (!drag || !o) return;
     void e;
     updateDrag(drag, o, p, this.ray(p), this.cameraPosition());
+    this.updateWeldTarget(p, e, o);
     if (drag.target.kind === "object") {
       const view = this.viewport.viewOf(o);
       if (view) {
@@ -474,9 +496,47 @@ export class App {
     this.hud.refreshStats();
   }
 
+  /**
+   * ターゲットウェルド。頂点を 1 つだけ掴んで動かしている間、
+   * 近づいた別の頂点を光らせる。離すとそこへ溶接する。
+   */
+  private updateWeldTarget(p: ScreenPoint, e: PointerEvent, o: SceneObject): void {
+    this.weldTarget = null;
+    this.preselect.clear();
+    if (this.state.compMode !== "vertex" || this.state.comp.size !== 1) return;
+    const view = this.viewport.viewOf(o);
+    if (!view) return;
+    const moving = [...this.state.comp][0];
+    const radius = 22 * this.tolerance(e);
+    const hit = this.picker.pickVertexExcept(view, p, radius, moving);
+    if (hit < 0) return;
+    this.weldTarget = hit;
+    this.preselect.showVertex(view, hit);
+    byId("hudHint").innerHTML = "離すと <kbd>この頂点へ溶接</kbd> します";
+  }
+
+  private applyTargetWeld(o: SceneObject, moving: number, target: number): void {
+    o.mesh = compact(weldVertices(o.mesh, [[moving, target]]));
+    const dropped = o.markTopologyChanged();
+    this.state.comp.clear();
+    this.viewport.rebuildObject(o);
+    this.viewport.rebuildOverlay();
+    this.refresh();
+    let note = "ターゲットウェルド";
+    if (dropped.droppedLevels || dropped.droppedLayers) {
+      note += ` · 上位レベル ${dropped.droppedLevels} とレイヤー ${dropped.droppedLayers} を破棄`;
+    }
+    this.hud.toast(note);
+  }
+
   private finishTool(p: ScreenPoint, e: PointerEvent, moved: boolean): void {
     if (this.state.tool === "multicut") {
       this.doMultiCut();
+      if (this.state.releaseLatches()) this.syncModButtons();
+      return;
+    }
+    if (this.state.tool === "bevel") {
+      this.endBevel(moved);
       if (this.state.releaseLatches()) this.syncModButtons();
       return;
     }
@@ -489,6 +549,7 @@ export class App {
       const drag = this.drag;
       this.drag = null;
       this.manipulator.hot = -1;
+      this.preselect.clear();
       // 動かさずに離したなら、何も変えていないので選択として扱う。
       // マニピュレータの中心は選択の中心に出るので、これがないと
       // 選び直しやダブルクリックがハンドルに吸われてしまう。
@@ -497,9 +558,16 @@ export class App {
         this.dragSnapshot = null;
         this.applySelectResult(this.selector.click(p, e));
       } else if (this.dragSnapshot) {
-        this.history.commit(drag.label, this.dragSnapshot);
+        const target = this.weldTarget;
+        const moving = this.state.compMode === "vertex" ? [...this.state.comp][0] : undefined;
+        if (target !== null && moving !== undefined && this.state.selected) {
+          this.applyTargetWeld(this.state.selected, moving, target);
+          this.history.commit("ターゲットウェルド", this.dragSnapshot);
+        } else {
+          this.history.commit(drag.label, this.dragSnapshot);
+          this.hud.toast(drag.label);
+        }
         this.dragSnapshot = null;
-        this.hud.toast(drag.label);
       } else {
         this.dragSnapshot = null;
       }
@@ -508,6 +576,82 @@ export class App {
       this.applySelectResult(this.selector.click(p, e));
     }
     if (this.state.releaseLatches()) this.syncModButtons();
+  }
+
+  /* ---- ベベル ---------------------------------------------------------- */
+
+  /** 選択中のエッジを source 上の番号で取り出す。 */
+  private selectedEdgePairs(o: SceneObject): Array<[number, number]> {
+    const view = this.viewport.viewOf(o);
+    if (!view) return [];
+    return [...this.state.comp].map((i) => view.edges[i]).filter(Boolean);
+  }
+
+  private startBevel(p: ScreenPoint): void {
+    const o = this.state.selected;
+    if (!o || this.state.compMode !== "edge" || !this.state.comp.size) {
+      this.hud.toast("エッジモードでエッジを選択してから、左右にドラッグしてください");
+      return;
+    }
+    const edges = this.selectedEdgePairs(o);
+    const snapshot = this.history.snapshot();
+    if (!this.bevel.begin(o, edges, p.x)) return;
+    this.bevelSnapshot = snapshot;
+  }
+
+  private dragBevel(p: ScreenPoint): void {
+    const session = this.bevel.keep();
+    const o = this.state.selected;
+    if (!session || !o) return;
+    this.state.bevel.width = this.bevel.widthFromDrag(p.x - session.startX, session.scale);
+    const r = this.bevel.apply(this.state.bevel);
+    if (!r) {
+      this.hud.toast("この形はまだベベルできません（四角形と閉じたエッジのみ）");
+      return;
+    }
+    this.viewport.rebuildObject(o);
+    this.viewport.rebuildOverlay();
+    this.hud.refreshStats();
+    byId("hudHint").innerHTML =
+      `ベベル <kbd>幅 ${this.state.bevel.width.toFixed(3)}</kbd> · ` +
+      `<kbd>${this.state.bevel.segments} 分割</kbd> · ${r.faces} 面`;
+  }
+
+  private endBevel(moved: boolean): void {
+    const session = this.bevel.keep();
+    const o = this.state.selected;
+    if (!session || !o) return;
+    if (!moved) {
+      // 動かさずに離した = 何も変えていない
+      this.bevel.cancel();
+      this.bevel.end();
+      this.bevelSnapshot = null;
+      this.viewport.rebuildObject(o);
+      this.refresh();
+      return;
+    }
+    const dropped = o.markTopologyChanged();
+    this.state.comp.clear();
+    if (this.bevelSnapshot) this.history.commit("ベベル", this.bevelSnapshot);
+    this.bevelSnapshot = null;
+    this.viewport.rebuildObject(o);
+    this.viewport.rebuildOverlay();
+    this.refresh();
+    let note = `ベベル — 幅 ${this.state.bevel.width.toFixed(3)} · ${this.state.bevel.segments} 分割`;
+    if (dropped.droppedLevels || dropped.droppedLayers) {
+      note += ` · 上位レベル ${dropped.droppedLevels} とレイヤー ${dropped.droppedLayers} を破棄`;
+    }
+    this.hud.toast(`${note}（オプションで作り直せます）`);
+  }
+
+  /** オプションの幅 / セグメントを動かしたとき、確定したベベルをかけ直す。 */
+  private redoBevel(): void {
+    const o = this.state.selected;
+    if (!o || !this.bevel.active) return;
+    if (!this.bevel.apply(this.state.bevel)) return;
+    this.viewport.rebuildObject(o);
+    this.viewport.rebuildOverlay();
+    this.hud.refreshStats();
   }
 
   /** 予測どおりに切る。 */
@@ -524,6 +668,18 @@ export class App {
     this.viewport.rebuildOverlay();
     this.refresh();
     this.hud.toast(`エッジループを挿入しました — ${r.faceCount} 面`);
+  }
+
+  /**
+   * 頂点の画面位置。確認スクリプトが座標を組み立てるのに使う。
+   * 内部の投影と同じ経路を通すので、テストのためだけの計算を持たずに済む。
+   */
+  screenOfVertex(index: number): ScreenPoint | null {
+    const o = this.state.selected;
+    const view = o ? this.viewport.viewOf(o) : undefined;
+    if (!view || index >= view.object.mesh.vertexCount) return null;
+    const s = this.picker.projectVertex(view, index);
+    return { x: s.x, y: s.y };
   }
 
   /** マニピュレータを今の選択に合わせる。 */
@@ -543,6 +699,10 @@ export class App {
 
   setTool(tool: string): void {
     if (this.state.tool === tool) return;
+    if (this.bevel.active) {
+      this.bevel.end();
+      this.bevelSnapshot = null;
+    }
     this.state.tool = tool;
     this.multicut.clear();
     this.preselect.clear();
@@ -806,7 +966,7 @@ export class App {
     if (this.state.compMode === "edge") {
       return {
         N: { label: "押し出し", sub: "Extrude", icon: ICONS.extrude, run: () => this.doExtrudeEdgesMenu() },
-        NE: { label: "ベベル", sub: "Bevel", icon: ICONS.scale, run: todo("ベベル") },
+        NE: { label: "ベベル", sub: "Bevel", icon: ICONS.scale, run: () => this.setTool("bevel") },
         E: { label: "ブリッジ", sub: "Bridge", icon: ICONS.vEdge, run: todo("ブリッジ") },
         SE: {
           label: "エッジループ挿入",
@@ -1151,6 +1311,13 @@ export class App {
         tool: "multicut",
         onTap: () => this.setTool("multicut"),
       },
+      {
+        kind: "button",
+        icon: ICONS.scale,
+        title: "ベベル（エッジを選んで左右にドラッグ）",
+        tool: "bevel",
+        onTap: () => this.setTool("bevel"),
+      },
       { kind: "separator" },
       { kind: "label", text: "選択" },
     ];
@@ -1284,6 +1451,11 @@ export class App {
       onExtrudeDistChange: (value) => {
         this.state.toolOpts.extrudeDist = value;
       },
+      onBevelChange: (key, value) => {
+        if (key === "segments") this.state.bevel.segments = value;
+        else this.state.bevel.width = value;
+        this.redoBevel();
+      },
       onCutChange: (key, value) => {
         if (key === "edgeFlow") this.state.cut.edgeFlow = value as boolean;
         else this.state.cut.snapStep = value as number;
@@ -1353,6 +1525,8 @@ export class App {
           selected: this.state.selected,
           soft: this.state.soft,
           cut: this.state.cut,
+          bevel: this.state.bevel,
+          bevelActive: this.bevel.active,
           extrudeDist: this.state.toolOpts.extrudeDist,
           smoothAngle: this.state.smoothAngle,
           compMode: this.state.compMode,

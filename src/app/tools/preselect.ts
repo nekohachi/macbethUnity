@@ -23,6 +23,8 @@ const EDGE_RADIUS = 16;
 const MAT = {
   vert: new PointsMaterial({ color: 0xffc46b, size: 9, sizeAttenuation: false, transparent: true, opacity: 0.75 }),
   edge: new LineBasicMaterial({ color: 0xffc46b, transparent: true, opacity: 0.8 }),
+  /** ターゲットウェルドの相手。溶接するので選択より強い色にする。 */
+  weld: new PointsMaterial({ color: 0x6cf07a, size: 14, sizeAttenuation: false }),
   face: new MeshBasicMaterial({
     color: 0xffc46b,
     transparent: true,
@@ -49,6 +51,17 @@ export class Preselect {
       disposeObject3D(c);
     }
     this.current = "";
+  }
+
+  /** 指定した頂点を光らせる。ターゲットウェルドの相手を示すのに使う。 */
+  showVertex(view: ObjectView, v: number): void {
+    if (this.setKey(`w${v}`)) return;
+    const m = view.object.mesh;
+    const pt = new Points(
+      positionGeometry([m.positions[v * 3], m.positions[v * 3 + 1], m.positions[v * 3 + 2]]),
+      MAT.weld,
+    );
+    this.add(pt, view);
   }
 
   update(p: ScreenPoint, view: ObjectView | undefined): void {

@@ -358,6 +358,11 @@ export class MeshBuilder {
   get vertexCount(): number {
     return this.pos.length / 3;
   }
+
+  /** 積んだ頂点の座標を読む。溶接後の位置を使って計算したいときに要る。 */
+  positionAt(index: number): [number, number, number] {
+    return [this.pos[index * 3], this.pos[index * 3 + 1], this.pos[index * 3 + 2]];
+  }
   get faceCount(): number {
     return this.offsets.length - 1;
   }

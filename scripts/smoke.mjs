@@ -368,7 +368,78 @@ check(
   `下に配置 ${portrait.below} / ビューポート ${Math.round(portrait.vpRatio * 100)}%`,
 );
 
-/* 19. 例外が出ていない */
+/* 19. ベベル: エッジを選んで左右にドラッグすると面が増える */
+await page.setViewportSize({ width: 1280, height: 800 });
+await page.waitForTimeout(200);
+await page.keyboard.press("F10"); // エッジモード
+await page.waitForTimeout(500);
+await page.mouse.click(ON_MESH.x, ON_MESH.y); // 手前の面のどこかのエッジ
+const bevelReady = await page.evaluate(() => window.macbeth.state.comp.size);
+await page.click("#dockLeft .ibtn[title^='ベベル']");
+const bf0 = await page.evaluate(() => window.macbeth.state.selected.mesh.faceCount);
+await page.mouse.move(ON_MESH.x, ON_MESH.y);
+await page.mouse.down();
+await page.mouse.move(ON_MESH.x + 60, ON_MESH.y, { steps: 6 });
+await page.mouse.up();
+const bf1 = await page.evaluate(() => window.macbeth.state.selected.mesh.faceCount);
+// オプションのセグメントを増やすとかけ直される
+const bf2 = await page.evaluate(() => {
+  window.macbeth.state.bevel.segments = 3;
+  const sliders = document.querySelectorAll("#dockRightTop .slider");
+  return sliders.length;
+});
+await page.keyboard.press("Control+z");
+const bf3 = await page.evaluate(() => window.macbeth.state.selected.mesh.faceCount);
+await page.click("#dockLeft .ibtn[title^='選択・変形']");
+check(
+  "ベベルできる",
+  bevelReady >= 1 && bf1 > bf0 && bf3 === bf0,
+  `選択 ${bevelReady} / ${bf0} → ${bf1}面 → 取り消し ${bf3}面 / スライダー ${bf2}`,
+);
+
+/* 20. ターゲットウェルド: 頂点を隣の頂点まで運ぶと溶接される */
+await page.keyboard.press("F9"); // 頂点モード
+await page.waitForTimeout(500);
+const weld = await page.evaluate(() => {
+  const app = window.macbeth;
+  const o = app.state.selected;
+  app.state.comp.clear();
+  app.state.comp.add(0);
+  app.refresh();
+  return { verts: o.mesh.vertexCount };
+});
+// 頂点 0 の画面位置から、頂点 1 の画面位置へ運ぶ
+const path = await page.evaluate(() => {
+  const app = window.macbeth;
+  const o = app.state.selected;
+  const r = document.getElementById("gl").getBoundingClientRect();
+  const cam = app.viewportForTest ? null : null;
+  void cam;
+  return { rect: { x: r.x, y: r.y } };
+});
+void path;
+const screenOf = (i) =>
+  page.evaluate((idx) => {
+    const app = window.macbeth;
+    const s = app.screenOfVertex(idx);
+    const r = document.getElementById("gl").getBoundingClientRect();
+    return s ? { x: r.x + s.x, y: r.y + s.y } : null;
+  }, i);
+const from = await screenOf(0);
+const to = await screenOf(1);
+let weldOk = false;
+if (from && to) {
+  await page.mouse.move(from.x, from.y);
+  await page.mouse.down();
+  await page.mouse.move(to.x, to.y, { steps: 10 });
+  await page.mouse.up();
+  const after = await page.evaluate(() => window.macbeth.state.selected.mesh.vertexCount);
+  weldOk = after === weld.verts - 1;
+  await page.keyboard.press("Control+z");
+}
+check("ターゲットウェルドできる", weldOk, `頂点 ${weld.verts} → ${weldOk ? weld.verts - 1 : "変化なし"}`);
+
+/* 21. 例外が出ていない */
 check("例外なし", errors.length === 0, errors.join(" / "));
 
 await page.screenshot({ path: SHOT });

@@ -109,6 +109,27 @@ export class Picker {
     return best;
   }
 
+  /**
+   * 指定した頂点を除いて、半径 radius ピクセル以内で最も近い頂点。
+   * ターゲットウェルドで「掴んでいる頂点以外の相手」を探すのに使う。
+   */
+  pickVertexExcept(view: ObjectView, p: ScreenPoint, radius: number, exclude: number): number {
+    let best = -1;
+    let bestD = radius * radius;
+    const n = view.object.mesh.vertexCount;
+    for (let i = 0; i < n; i++) {
+      if (i === exclude) continue;
+      const s = this.projectVertex(view, i);
+      if (s.z > 1) continue;
+      const d = (s.x - p.x) ** 2 + (s.y - p.y) ** 2;
+      if (d < bestD) {
+        bestD = d;
+        best = i;
+      }
+    }
+    return best;
+  }
+
   /** 半径 radius ピクセル以内で最も近いエッジと、その上の位置。 */
   pickEdge(view: ObjectView, p: ScreenPoint, radius: number): EdgeHit {
     let best = -1;

@@ -94,6 +94,8 @@ export class AppState {
   toolOpts = { extrudeDist: 0.35 };
   /** マルチカット。snapStep は % で 0 ならオフ。 */
   cut = { snapStep: 0, edgeFlow: false };
+  /** ベベル。segments が 1 なら面取り、2 以上で丸め。 */
+  bevel = { width: 0.1, segments: 1 };
   /** Maya の既定と同じ 30°。 */
   smoothAngle = 30;
   camOpts = { focal: 35, near: 0.05, far: 500, ortho: false };

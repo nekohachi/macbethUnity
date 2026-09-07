@@ -15,6 +15,7 @@ export interface PanelHost {
   onParamCommit(object: SceneObject, label: string): void;
   onSoftChange(which: "strength" | "radius", value: number): void;
   onExtrudeDistChange(value: number): void;
+  onBevelChange(key: "width" | "segments", value: number): void;
   onCutChange(key: "snapStep" | "edgeFlow", value: number | boolean): void;
   onSmoothAngleChange(value: number): void;
   onSelect(object: SceneObject): void;
@@ -102,6 +103,9 @@ export interface OptionsState {
   selected: SceneObject | null;
   soft: { strength: number; radius: number };
   cut: { snapStep: number; edgeFlow: boolean };
+  bevel: { width: number; segments: number };
+  /** ベベルを確定した直後か。作り直せる間だけ出す。 */
+  bevelActive: boolean;
   extrudeDist: number;
   smoothAngle: number;
   compMode: string;
@@ -129,6 +133,37 @@ export function renderOptions(body: HTMLElement, state: OptionsState, host: Pane
         "div",
         "hint",
         "ホバーで入る位置を先に見せます。Shift で 50% に固定。\nエッジフローは頂点法線による三次補間で、ループをサーフェスに沿わせます。",
+      ),
+    );
+    body.appendChild(s);
+  }
+
+  if (state.tool === "bevel" || state.bevelActive) {
+    const s = section("ベベル", "BEVEL");
+    paramRow(s, {
+      label: "幅",
+      value: state.bevel.width,
+      min: 0.005,
+      max: 2,
+      step: 0.005,
+      format: (v) => v.toFixed(3),
+      onInput: (v) => host.onBevelChange("width", v),
+    });
+    paramRow(s, {
+      label: "セグメント",
+      value: state.bevel.segments,
+      min: 1,
+      max: 8,
+      step: 1,
+      onInput: (v) => host.onBevelChange("segments", v),
+    });
+    s.appendChild(
+      el(
+        "div",
+        "hint",
+        state.bevelActive
+          ? "確定したあとでも、ここを動かすとかけ直します。\n別の操作をすると確定します。"
+          : "エッジを選んで左右にドラッグすると幅が決まります。\nセグメント 1 で面取り、2 以上で丸めになります。",
       ),
     );
     body.appendChild(s);
