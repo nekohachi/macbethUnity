@@ -103,9 +103,10 @@ function segmentDistance(p: ScreenPoint, a: ScreenPoint, b: ScreenPoint): number
 export interface ManipulatorHost {
   /** ワールド座標を画面座標へ。 */
   toScreen(v: Vector3): ScreenPoint & { z: number };
-  camera: Camera;
-  /** 平行投影のときは距離で大きさを決められないので、カメラの距離を使う。 */
-  orthoDistance: number | null;
+  /** そのときのカメラ。透視と平行を切り替えるので、都度もらう。 */
+  camera(): Camera;
+  /** 平行投影のときは距離で大きさを決められないので、カメラの距離を使う。透視なら null。 */
+  orthoDistance(): number | null;
 }
 
 export class Manipulator {
@@ -117,11 +118,16 @@ export class Manipulator {
 
   constructor(private host: ManipulatorHost) {}
 
+  /** ワールド座標を画面座標へ。ドラッグ開始時の基準に使う。 */
+  toScreen(v: Vector3): ScreenPoint & { z: number } {
+    return this.host.toScreen(v);
+  }
+
   /** 画面上での大きさが一定になるようにする係数。 */
   scaleAt(center: Vector3): number {
-    const ortho = this.host.orthoDistance;
+    const ortho = this.host.orthoDistance();
     if (ortho !== null) return ortho * 0.09;
-    return this.host.camera.position.distanceTo(center) * 0.15;
+    return this.host.camera().position.distanceTo(center) * 0.15;
   }
 
   clear(): void {
@@ -198,7 +204,7 @@ export class Manipulator {
 
     // 回転単独のときだけ、画面に正対したリングを足す（Maya と同じ）
     if (manip === "rotate") {
-      const viewAxis = new Vector3().subVectors(this.host.camera.position, center).normalize();
+      const viewAxis = new Vector3().subVectors(this.host.camera().position, center).normalize();
       this.group.add(
         ringLine(center, viewAxis, s * 1.18, isHot(HANDLE_VIEW_ROTATE) ? HOT : 0xb9c3cb),
       );
@@ -261,7 +267,7 @@ export class Manipulator {
     if (L.rotate) {
       for (let a = 0; a < 3; a++) consider(10 + a, this.ringDistance(p, center, AXES[a], L.ring * s), 12);
       if (manip === "rotate") {
-        const viewAxis = new Vector3().subVectors(this.host.camera.position, center).normalize();
+        const viewAxis = new Vector3().subVectors(this.host.camera().position, center).normalize();
         consider(HANDLE_VIEW_ROTATE, this.ringDistance(p, center, viewAxis, s * 1.18), 12);
       }
     }

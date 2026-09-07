@@ -114,22 +114,44 @@ await page.mouse.dblclick(660, 480);
 s = await state();
 check("ダブルクリックでシェル選択", s.comp === 6, `comp=${s.comp}`);
 
-/* 5. プリミティブを足すと 2 つになる */
+/* 5. マニピュレータで動かせる（オブジェクトモードで中心をつかんでドラッグ） */
+await page.keyboard.press("F8");
+await page.mouse.click(660, 480);
+const before = await page.evaluate(() => window.macbeth.state.selected.transform.position.slice());
+// 立方体の面をつかんで引っぱる（オブジェクトモードなので中心ハンドルか面つかみ）
+await page.mouse.move(660, 480);
+await page.mouse.down();
+await page.mouse.move(760, 480, { steps: 8 });
+await page.mouse.up();
+const after = await page.evaluate(() => window.macbeth.state.selected.transform.position.slice());
+const moved = before.some((v, i) => Math.abs(v - after[i]) > 1e-4);
+check("マニピュレータで移動できる", moved, `${before.map((n) => n.toFixed(2))} → ${after.map((n) => n.toFixed(2))}`);
+
+/* 6. 移動も取り消せる */
+await page.keyboard.press("Control+z");
+const undone = await page.evaluate(() => window.macbeth.state.selected.transform.position.slice());
+check(
+  "移動を取り消せる",
+  undone.every((v, i) => Math.abs(v - before[i]) < 1e-6),
+  undone.map((n) => n.toFixed(2)).join(","),
+);
+
+/* 7. プリミティブを足すと 2 つになる */
 await page.click("#dockLeft .ibtn[title^='スフィア']");
 s = await state();
 check("プリミティブを追加", s.objects === 2, s.names.join(","));
 
-/* 6. 取り消しで 1 つに戻る */
+/* 8. 取り消しで 1 つに戻る */
 await page.keyboard.press("Control+z");
 s = await state();
 check("取り消しで元に戻る", s.objects === 1, s.names.join(","));
 
-/* 7. やり直しでまた 2 つ */
+/* 9. やり直しでまた 2 つ */
 await page.keyboard.press("Control+Shift+z");
 s = await state();
 check("やり直しで戻る", s.objects === 2, s.names.join(","));
 
-/* 8. 自動保存が IndexedDB に入る */
+/* 10. 自動保存が IndexedDB に入る */
 await page.waitForTimeout(1800);
 const saved = await page.evaluate(
   () =>
@@ -146,7 +168,7 @@ const saved = await page.evaluate(
 );
 check("自動保存が書けている", saved > 0, `${saved} バイト`);
 
-/* 9. 例外が出ていない */
+/* 11. 例外が出ていない */
 check("例外なし", errors.length === 0, errors.join(" / "));
 
 await page.screenshot({ path: SHOT });

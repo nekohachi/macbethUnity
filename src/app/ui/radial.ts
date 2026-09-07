@@ -168,3 +168,60 @@ export function closeRadial(): void {
 export function isRadialOpen(): boolean {
   return open !== null;
 }
+
+/**
+ * ボタンに長押しのサークルメニューを付ける。
+ * PC は右クリックで即開き、タブレットは 200ms の長押し。
+ * 動かさずに離したら tap を呼ぶ（ふつうのボタンとしても使える）。
+ */
+export function attachRadialButton(
+  button: HTMLElement,
+  menu: () => RadialMenu,
+  tap?: () => void,
+): void {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let opened = false;
+  let sx = 0;
+  let sy = 0;
+  let pid: number | null = null;
+
+  const cancel = () => {
+    if (timer !== null) clearTimeout(timer);
+    timer = null;
+  };
+
+  button.addEventListener("touchstart", (e) => e.preventDefault(), { passive: false });
+  button.addEventListener("contextmenu", (e) => e.preventDefault());
+  button.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    pid = e.pointerId;
+    sx = e.clientX;
+    sy = e.clientY;
+    opened = false;
+    if (e.pointerType === "mouse" && e.button === 2) {
+      opened = true;
+      openRadial(menu(), sx, sy);
+      return;
+    }
+    timer = setTimeout(() => {
+      opened = true;
+      openRadial(menu(), sx, sy);
+    }, 200);
+  });
+
+  const onMove = (e: PointerEvent) => {
+    if (e.pointerId !== pid) return;
+    if (Math.hypot(e.clientX - sx, e.clientY - sy) > 12) cancel();
+  };
+  const onUp = (e: PointerEvent) => {
+    if (e.pointerId !== pid) return;
+    cancel();
+    pid = null;
+    // サークルメニューを開いていたら、決定はそちらが受け取る
+    if (!opened) tap?.();
+    opened = false;
+  };
+  window.addEventListener("pointermove", onMove);
+  window.addEventListener("pointerup", onUp);
+  window.addEventListener("pointercancel", onUp);
+}

@@ -265,6 +265,9 @@ export class Viewport {
 
   /* ---- 選択のオーバーレイ --------------------------------------------- */
 
+  /** ソフト選択の影響範囲を出すための重み。app 側から差し込む。 */
+  softWeightsProvider: (() => Map<number, number>) | null = null;
+
   rebuildOverlay(): void {
     for (const c of this.overlay.children.slice()) {
       this.overlay.remove(c);
@@ -274,6 +277,19 @@ export class Viewport {
     const view = o ? this.views.get(o.id) : undefined;
     if (!o || !view || !this.state.comp.size) return;
     const m = o.mesh;
+
+    // 影響を受けるが選択そのものではない頂点をオレンジで示す
+    if (this.state.soft.strength > 0 && this.state.compMode !== "object" && this.softWeightsProvider) {
+      const p: number[] = [];
+      for (const [v, w] of this.softWeightsProvider()) {
+        if (w > 0.02 && w < 0.999) p.push(m.positions[v * 3], m.positions[v * 3 + 1], m.positions[v * 3 + 2]);
+      }
+      if (p.length) {
+        const pts = new Points(positionGeometry(p), MAT.softPt);
+        applyTransform(pts, o.transform).renderOrder = 2;
+        this.overlay.add(pts);
+      }
+    }
 
     if (this.state.compMode === "vertex") {
       const p: number[] = [];

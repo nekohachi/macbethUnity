@@ -4,11 +4,13 @@
  * プロトタイプ（prototype/modeling-ui-prototype.html）からの移植途中。
  * 移植が済んだ順に、ここへ機能が増えていく。docs/10 の土台フェーズ。
  */
-import { Vector3 } from "three";
+import { Matrix4, Raycaster, Vector3 } from "three";
 import {
   PRIMITIVES,
   PRIMITIVE_ORDER,
   cloneTransform,
+  extrudeEdges,
+  extrudeFaces,
   parseObj,
   subdivide,
   writeObj,
@@ -17,16 +19,20 @@ import {
 import { GestureRouter, type GestureHandlers } from "./input/gestures.js";
 import { Picker, type ScreenPoint } from "./render/picking.js";
 import { Viewport } from "./render/viewport.js";
-import { AppState, type CompMode, type Display } from "./state.js";
+import { HANDLE_TWEAK, Manipulator, handleKind } from "./render/manipulator.js";
+import { AppState, type CompMode, type Display, type Manip } from "./state.js";
 import { History } from "./history.js";
 import { Autosave } from "./storage/autosave.js";
 import { openFile, saveAs, saveMethodLabel } from "./storage/files.js";
 import { Selector } from "./tools/select.js";
+import { mirrorPairs, softWeights } from "./tools/softSelect.js";
+import { beginDrag, updateDrag, type DragState, type DragTarget } from "./tools/transform.js";
+import { applyTransform } from "./render/meshView.js";
 import { byId, el } from "./ui/dom.js";
 import { Gauge } from "./ui/gauges.js";
 import { Hud } from "./ui/hud.js";
 import { ICONS, iconSvg } from "./ui/icons.js";
-import { closeRadial, openRadial, type RadialMenu } from "./ui/radial.js";
+import { attachRadialButton, closeRadial, openRadial, type RadialMenu } from "./ui/radial.js";
 
 const COMP_MODES: Array<{ id: CompMode; label: string; key: string }> = [
   { id: "object", label: "オブジェクト", key: "F8" },
@@ -68,6 +74,11 @@ export class App {
   private marquee: { x0: number; y0: number; x1: number; y1: number } | null = null;
   private popup: HTMLElement | null = null;
   private router: GestureRouter;
+  private manipulator: Manipulator;
+  private drag: DragState | null = null;
+  /** ドラッグ開始前のスナップショット。動いたときだけ履歴に積む。 */
+  private dragSnapshot: ReturnType<History["snapshot"]> | null = null;
+  private raycaster = new Raycaster();
 
   constructor() {
     const vp = byId("vp");
@@ -78,6 +89,31 @@ export class App {
       const o = this.state.doc.find(id);
       return o ? this.viewport.viewOf(o) : undefined;
     });
+
+    // ソフト選択の影響範囲をオーバーレイに出すため、重みの求め方を渡しておく
+    this.viewport.softWeightsProvider = () => {
+      const o = this.state.selected;
+      if (!o) return new Map();
+      return softWeights(o.mesh, this.selector.selectedVertices(), {
+        strength: this.state.soft.strength,
+        radius: this.state.soft.radius,
+        enabled: true,
+      }).weights;
+    };
+
+    this.manipulator = new Manipulator({
+      toScreen: (v) => {
+        const p = v.clone().project(this.viewport.camera);
+        return {
+          x: ((p.x + 1) / 2) * (vp.clientWidth || 1),
+          y: ((-p.y + 1) / 2) * (vp.clientHeight || 1),
+          z: p.z,
+        };
+      },
+      camera: () => this.viewport.camera,
+      orthoDistance: () => (this.state.camOpts.ortho ? this.viewport.cam.distance : null),
+    });
+    this.viewport.manip.add(this.manipulator.group);
 
     this.history.onChange = () => {
       this.updateHistoryButtons();
@@ -117,8 +153,8 @@ export class App {
 
   private gestureHandlers(): GestureHandlers {
     return {
-      toolDown: () => {},
-      toolMove: (p) => this.updateMarquee(p),
+      toolDown: (p, e) => this.startTool(p, e),
+      toolMove: (p, e) => this.moveTool(p, e),
       toolUp: (p, e, moved) => this.finishTool(p, e, moved),
       hover: () => {},
       hoverLeave: () => {},
@@ -138,16 +174,225 @@ export class App {
     };
   }
 
+  /* ---- ツールの押下・移動・解放 ---------------------------------------- */
+
+  private ray(p: ScreenPoint) {
+    this.raycaster.setFromCamera(this.picker.ndc(p), this.viewport.camera);
+    return this.raycaster.ray;
+  }
+
+  private cameraPosition(): Vector3 {
+    return this.viewport.camera.position;
+  }
+
+  /** 選択中のコンポーネントを直接つかんだか（Maya のツイークに相当）。 */
+  private hitSelectedComponent(p: ScreenPoint): boolean {
+    const o = this.state.selected;
+    const view = o ? this.viewport.viewOf(o) : undefined;
+    if (!o || !view || !this.state.comp.size) return false;
+    if (this.state.compMode === "face") {
+      const hit = this.picker.pickSurface(p);
+      return !!hit && hit.object === o && this.state.comp.has(hit.face);
+    }
+    if (this.state.compMode === "vertex") {
+      const v = this.picker.pickVertex(view, p, 22);
+      return v >= 0 && this.state.comp.has(v);
+    }
+    if (this.state.compMode === "edge") {
+      const r = this.picker.pickEdge(view, p, 16);
+      return r.edge >= 0 && this.state.comp.has(r.edge);
+    }
+    return false;
+  }
+
+  /** ドラッグ開始時に動かす対象を控える。ソフト選択と対称編集もここで決める。 */
+  private captureTarget(): DragTarget | null {
+    const o = this.state.selected;
+    if (!o) return null;
+    const view = this.viewport.viewOf(o);
+    if (!view) return null;
+    view.group.updateMatrixWorld();
+
+    if (this.state.compMode === "object") {
+      return { kind: "object", transform: cloneTransform(o.transform) };
+    }
+
+    const seeds = this.selector.selectedVertices();
+    if (!seeds.length) return null;
+    const soft = softWeights(o.mesh, seeds, {
+      strength: this.state.soft.strength,
+      radius: this.state.soft.radius,
+      enabled: true,
+    });
+    if (soft.skipped) this.hud.toast("範囲が広すぎるのでソフト選択を省きました");
+
+    const verts: number[] = [];
+    const weights: number[] = [];
+    const world: Vector3[] = [];
+    for (const [v, w] of soft.weights) {
+      const p = o.mesh.getPosition(v);
+      verts.push(v);
+      weights.push(w);
+      world.push(new Vector3(p[0], p[1], p[2]).applyMatrix4(view.group.matrixWorld));
+    }
+    return {
+      kind: "component",
+      verts,
+      weights,
+      world,
+      inverse: new Matrix4().copy(view.group.matrixWorld).invert(),
+      mirror: this.state.symX ? mirrorPairs(o.mesh, verts) : [],
+    };
+  }
+
+  private startTool(p: ScreenPoint, e: PointerEvent): void {
+    const o = this.state.selected;
+    const pivot = this.pivotWorld();
+    let handle = o ? this.manipulator.pick(p, pivot, this.state.manip) : -1;
+    // ハンドルを外しても、選択中のコンポーネントの上ならつかんだ扱いにする
+    if (handle < 0 && o && this.state.compMode !== "object" && this.hitSelectedComponent(p)) {
+      handle = HANDLE_TWEAK;
+    }
+    if (handle < 0 || !o || !pivot) {
+      this.startMarquee(p);
+      return;
+    }
+
+    const snapshot = this.history.snapshot();
+    let label = { move: "移動", rotate: "回転", scale: "スケール" }[handleKind(handle) ?? "move"];
+
+    // Shift + 移動 = 押し出してから移動（Maya と同じ）
+    if (
+      handleKind(handle) === "move" &&
+      this.state.compMode !== "object" &&
+      this.state.comp.size &&
+      (this.state.modOn("shift") || e.shiftKey)
+    ) {
+      if (this.extrudeForDrag(o)) label = "押し出し";
+    }
+
+    const target = this.captureTarget();
+    if (!target) {
+      this.startMarquee(p);
+      return;
+    }
+
+    this.dragSnapshot = snapshot;
+    this.drag = beginDrag({
+      handle,
+      pivot: this.pivotWorld() ?? pivot,
+      target,
+      point: p,
+      pivotScreen: this.manipulator.toScreen(this.pivotWorld() ?? pivot),
+      ray: this.ray(p),
+      cameraPosition: this.cameraPosition(),
+      label,
+    });
+    this.manipulator.hot = handle;
+    this.refreshManipulator();
+  }
+
+  /** Shift ドラッグの押し出し。面とエッジに対応。頂点はそのまま移動する。 */
+  private extrudeForDrag(o: SceneObject): boolean {
+    if (this.state.compMode === "face") {
+      const r = extrudeFaces(o.mesh, this.state.comp, 0);
+      if (!r) return false;
+      o.mesh = r.mesh;
+      o.markTopologyChanged();
+      this.viewport.rebuildObject(o);
+      this.viewport.rebuildOverlay();
+      return true;
+    }
+    if (this.state.compMode === "edge") {
+      const view = this.viewport.viewOf(o);
+      if (!view) return false;
+      const edges = [...this.state.comp].map((i) => view.edges[i]).filter(Boolean);
+      const r = extrudeEdges(o.mesh, edges, 0);
+      if (!r) return false;
+      o.mesh = r.mesh;
+      o.markTopologyChanged();
+      this.viewport.rebuildObject(o);
+      const next = this.viewport.viewOf(o);
+      if (next) {
+        // 押し出しでできた新しいエッジを選択に置き換える
+        const keys = new Set(r.newEdges.map(([a, b]) => `${Math.min(a, b)}_${Math.max(a, b)}`));
+        this.state.comp.clear();
+        next.edges.forEach(([a, b], i) => {
+          if (keys.has(`${Math.min(a, b)}_${Math.max(a, b)}`)) this.state.comp.add(i);
+        });
+      }
+      this.viewport.rebuildOverlay();
+      return true;
+    }
+    this.hud.toast("頂点の押し出しは未対応です（そのまま移動します）");
+    return false;
+  }
+
+  private moveTool(p: ScreenPoint, e: PointerEvent): void {
+    if (this.marquee) return this.updateMarquee(p);
+    const drag = this.drag;
+    const o = this.state.selected;
+    if (!drag || !o) return;
+    void e;
+    updateDrag(drag, o, p, this.ray(p), this.cameraPosition());
+    if (drag.target.kind === "object") {
+      const view = this.viewport.viewOf(o);
+      if (view) {
+        applyTransform(view.group, o.transform);
+        view.group.updateMatrixWorld();
+      }
+    } else {
+      this.viewport.refreshPositions(o);
+    }
+    this.viewport.rebuildOverlay();
+    this.refreshManipulator();
+    this.hud.refreshStats();
+  }
+
   private finishTool(p: ScreenPoint, e: PointerEvent, moved: boolean): void {
     const m = this.marquee;
     if (m) {
       this.endMarquee();
       const r = this.selector.marquee(m.x0, m.y0, m.x1, m.y1, p, e);
       this.applySelectResult(r);
+    } else if (this.drag) {
+      const drag = this.drag;
+      this.drag = null;
+      this.manipulator.hot = -1;
+      if (drag.handle === HANDLE_TWEAK && !moved) {
+        // 選択中のものをタップしただけ。ふつうの選択として扱う
+        this.dragSnapshot = null;
+        this.applySelectResult(this.selector.click(p, e));
+      } else if ((moved || drag.label === "押し出し") && this.dragSnapshot) {
+        this.history.commit(drag.label, this.dragSnapshot);
+        this.dragSnapshot = null;
+        this.hud.toast(drag.label);
+      } else {
+        this.dragSnapshot = null;
+      }
+      this.refresh();
     } else if (!moved) {
       this.applySelectResult(this.selector.click(p, e));
     }
     if (this.state.releaseLatches()) this.syncModButtons();
+  }
+
+  /** マニピュレータを今の選択に合わせる。 */
+  private refreshManipulator(): void {
+    const signature = [
+      this.state.compMode,
+      this.state.selected?.id ?? "-",
+      this.state.comp.size,
+      this.state.tool,
+    ].join(",");
+    this.manipulator.rebuild(this.pivotWorld(), this.state.manip, signature);
+  }
+
+  setManip(manip: Manip): void {
+    this.state.manip = manip;
+    this.manipulator.clear();
+    this.refreshManipulator();
+    this.hud.toast(`マニピュレータ: ${{ all: "ユニバーサル", move: "移動", rotate: "回転", scale: "スケール" }[manip]}`);
   }
 
   private applySelectResult(r: { changed: boolean; objectChanged: boolean; message?: string }): void {
@@ -215,6 +460,16 @@ export class App {
   private openMarkingMenu(x: number, y: number, edit: boolean): void {
     this.closePopup();
     openRadial(edit ? this.editMenu() : this.selectModeMenu(), x, y);
+  }
+
+  /** マニピュレータの種類。長押しで出す。 */
+  private manipMenu(): RadialMenu {
+    return {
+      N: { label: "ユニバーサル", sub: "All  T", icon: ICONS.xform, run: () => this.setManip("all") },
+      E: { label: "移動", sub: "Move  W", icon: ICONS.move, run: () => this.setManip("move") },
+      S: { label: "回転", sub: "Rotate  E", icon: ICONS.rotate, run: () => this.setManip("rotate") },
+      W: { label: "スケール", sub: "Scale  R", icon: ICONS.scale, run: () => this.setManip("scale") },
+    };
   }
 
   private selectModeMenu(): RadialMenu {
@@ -357,6 +612,17 @@ export class App {
     const body = el("div", "pbody");
     const col = el("div", "toolcol");
 
+    // 「選択・変形」1 つ。長押しで移動 / 回転 / スケールの単独モードを選ぶ
+    col.appendChild(el("div", "minilbl", "変形"));
+    const xform = el("button", "ibtn");
+    xform.innerHTML = iconSvg(ICONS.xform);
+    xform.dataset.radial = "manip";
+    xform.title = "選択・変形（長押しで 移動 / 回転 / スケール）";
+    xform.setAttribute("aria-pressed", "true");
+    attachRadialButton(xform, () => this.manipMenu(), () => this.setManip("all"));
+    col.appendChild(xform);
+
+    col.appendChild(el("div", "tool-sep"));
     col.appendChild(el("div", "minilbl", "選択"));
     for (const m of COMP_MODES) {
       const b = el("button", "ibtn");
@@ -492,6 +758,18 @@ export class App {
         this.viewport.frameSelected();
         return;
       }
+      // Maya と同じ割り当て。Q はツール解除の位置だが、ここではユニバーサルに戻す
+      const manip = { q: "all", t: "all", w: "move", e: "rotate", r: "scale" }[e.key.toLowerCase()];
+      if (manip && !e.ctrlKey && !e.metaKey) {
+        this.setManip(manip as Manip);
+        return;
+      }
+      if (e.key === "x" || e.key === "X") {
+        this.state.symX = !this.state.symX;
+        this.refresh();
+        this.hud.toast(`対称編集 X: ${this.state.symX ? "オン" : "オフ"}`);
+        return;
+      }
       if ((e.ctrlKey || e.metaKey) && (e.key === "z" || e.key === "Z")) {
         e.preventDefault();
         if (e.shiftKey) this.doRedo();
@@ -624,6 +902,7 @@ export class App {
 
   refresh(): void {
     this.viewport.applyDisplayAll();
+    this.refreshManipulator();
     this.hud.refreshStats();
     for (const g of this.gauges) g.paint();
     this.updateHistoryButtons();
