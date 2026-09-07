@@ -5,9 +5,11 @@
  * three.js を npm で持つようにしたので、ヘッドレス Chromium で描画から
  * 選択・取り消しまで通しで見られる。
  *
- *   npm run build && npm run smoke
+ *   npm run build && npm run smoke          # dist/（ベースは /）
+ *   npm run smoke app                       # app/（ベースは /macbethUnity/app/）
  *
- * 画面の写真は SHOT=path で保存先を変えられる。
+ * 配信のベースは入口の HTML に書かれた資材のパスから読み取るので、
+ * どちらのビルドでもそのまま動く。画面の写真は SHOT=path で保存先を変えられる。
  */
 import { chromium } from "playwright";
 import { createServer } from "node:http";
@@ -24,6 +26,8 @@ const TYPES = {
   ".css": "text/css",
   ".map": "application/json",
   ".png": "image/png",
+  ".svg": "image/svg+xml",
+  ".webmanifest": "application/manifest+json",
 };
 
 // この環境には Chromium が先に入っていて、playwright の同梱版とは版が違う。
@@ -34,9 +38,17 @@ const launchOptions = {
   ...(existsSync(CHROME) ? { executablePath: CHROME } : {}),
 };
 
+// 入口の名前と配信のベースを、ビルドされたものから読み取る。
+// vite の base を変えても確認手順を書き換えずに済むようにするため。
+const ENTRY = existsSync(join(DIST, "app.html")) ? "app.html" : "index.html";
+const entryHtml = await readFile(join(DIST, ENTRY), "utf8");
+const BASE = entryHtml.match(/(?:src|href)="(\/.*?\/)assets\//)?.[1] ?? "/";
+
 const server = createServer(async (req, res) => {
   let path = req.url.split("?")[0];
-  if (path === "/") path = "/app.html";
+  // ベース付きで要求されたぶんを剥がして、ビルド先の実ファイルに対応させる
+  if (BASE !== "/" && path.startsWith(BASE)) path = `/${path.slice(BASE.length)}`;
+  if (path === "/" || path === "") path = `/${ENTRY}`;
   try {
     const data = await readFile(join(DIST, path));
     res.writeHead(200, { "content-type": TYPES[extname(path)] ?? "application/octet-stream" });
@@ -46,6 +58,7 @@ const server = createServer(async (req, res) => {
   }
 });
 await new Promise((resolve) => server.listen(PORT, resolve));
+console.log(`${DIST}/ を ${BASE} で配信して確かめます\n`);
 
 const failures = [];
 const check = (label, ok, detail = "") => {
@@ -62,7 +75,7 @@ page.on("console", (m) => {
   if (m.type() === "error" && !m.text().includes("Failed to load resource")) errors.push(m.text());
 });
 
-await page.goto(`http://localhost:${PORT}/app.html`, { waitUntil: "load" });
+await page.goto(`http://localhost:${PORT}${BASE}${ENTRY}`, { waitUntil: "load" });
 await page.waitForFunction(() => window.macbeth?.state.doc.objects.length > 0, null, { timeout: 5000 });
 
 const state = () => page.evaluate(() => {

@@ -46,9 +46,9 @@ jobs:
         run: npx playwright install --with-deps chromium
 
       - name: 壊れていないか通しで確かめる
-        # 出す前に、実際の Chromium で描画・選択・取り消し・自動保存まで通す。
+        # 実際に公開する app/ を、公開時と同じベースパスで配信して確かめる。
         # ここで落ちたらコミットしない（タブレットに壊れたものを出さないため）
-        run: npm run smoke
+        run: node scripts/smoke.mjs app
 
       - name: 変わっていたらコミットする
         run: |
