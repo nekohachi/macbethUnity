@@ -38,7 +38,9 @@ Maya のポリゴン編集精度、ZBrush のスカルプト、Substance Painter
 
 ## プロトタイプ
 
-[`prototype/modeling-ui-prototype.html`](prototype/modeling-ui-prototype.html) — 操作感の検証用。ブラウザで開くだけで動きます（iPad の Safari でそのまま試せます）。
+[`prototype/modeling-ui-prototype.html`](prototype/modeling-ui-prototype.html) — 操作感の検証用。ブラウザで開くだけで動きます。
+
+**タブレットで開く:** GitHub の Settings → Pages で Branch をこのブランチ、Folder を `/ (root)` にすると、`https://nekohachi.github.io/macbethUnity/` で単体ページとして開けます（ログイン不要、ホーム画面に追加で全画面）。ルートの `index.html` はその単体ページで、`prototype/make-pages.sh` で生成します。プロトタイプを編集したら再生成してください。
 
 製品実装はネイティブ C++ ですが、サークルメニュー、ドッキング、ジェスチャ、非破壊プリミティブは**触ってみないと良し悪しが判断できない**ため、Web で先に作って操作を固めます。ここで確定した挙動を C++ に持ち込む前提の使い捨てです。設計ドキュメントで「UI フレームワークの自作に 6〜8 週間」と見積もったリスクの前倒し検証にあたります。
 
