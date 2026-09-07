@@ -34,6 +34,7 @@ Maya のポリゴン編集精度、ZBrush のスカルプト、Substance Painter
 | [06-file-formats.md](docs/06-file-formats.md) | ファイル形式対応の可否と代替案、追加で必要な拡張子 |
 | [07-roadmap.md](docs/07-roadmap.md) | 開発フェーズ、期間見積もり、リスク一覧 |
 | [08-codex-task-01.md](docs/08-codex-task-01.md) | **コーディングエージェント向け作業指示書 #01。** マルチ解像度ジオメトリコアの実装と検証 |
+| [09-direction-review.md](docs/09-direction-review.md) | **方向性レビュー。** プロトタイプ 4 ラウンド後のズレと修正案。実装担当はこれを `04` `05` より優先して読む |
 
 ## プロトタイプ
 
