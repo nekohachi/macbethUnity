@@ -78,6 +78,20 @@ page.on("console", (m) => {
 await page.goto(`http://localhost:${PORT}${BASE}${ENTRY}`, { waitUntil: "load" });
 await page.waitForFunction(() => window.macbeth?.state.doc.objects.length > 0, null, { timeout: 5000 });
 
+// 画面の座標はキャンバスの矩形からの比率で出す。
+// パネルの有無で幅が変わっても手順が壊れないようにするため。
+const rect = await page.evaluate(() => {
+  const r = document.getElementById("gl").getBoundingClientRect();
+  return { x: r.x, y: r.y, w: r.width, h: r.height };
+});
+const at = (fx, fy) => ({ x: Math.round(rect.x + rect.w * fx), y: Math.round(rect.y + rect.h * fy) });
+/** 立方体の手前の面のあたり。 */
+const ON_MESH = at(0.46, 0.6);
+/** 何もない所。 */
+const EMPTY = at(0.15, 0.23);
+/** 面を選んだときに出る +Y のハンドル。メッシュの外側にある。 */
+const ON_HANDLE = at(0.45, 0.34);
+
 const state = () => page.evaluate(() => {
   const app = window.macbeth;
   return {
@@ -103,25 +117,25 @@ check("WebGL で描画できている", gl.ok && gl.size[0] > 0, gl.size.join("�
 
 /* 3. フェースモードでクリックすると面が 1 つ選ばれる */
 await page.keyboard.press("F11");
-await page.mouse.click(660, 480);
+await page.mouse.click(ON_MESH.x, ON_MESH.y);
 s = await state();
 check("フェースをクリックして選択", s.compMode === "face" && s.comp === 1, `comp=${s.comp}`);
 
 /* 4. ダブルクリックでシェル全体（立方体なら 6 面） */
 // 直前のクリックと繋がってダブル判定にならないよう、判定窓（380ms）を空ける
 await page.waitForTimeout(500);
-await page.mouse.dblclick(660, 480);
+await page.mouse.dblclick(ON_MESH.x, ON_MESH.y);
 s = await state();
 check("ダブルクリックでシェル選択", s.comp === 6, `comp=${s.comp}`);
 
 /* 5. マニピュレータで動かせる（オブジェクトモードで中心をつかんでドラッグ） */
 await page.keyboard.press("F8");
-await page.mouse.click(660, 480);
+await page.mouse.click(ON_MESH.x, ON_MESH.y);
 const before = await page.evaluate(() => window.macbeth.state.selected.transform.position.slice());
 // 立方体の面をつかんで引っぱる（オブジェクトモードなので中心ハンドルか面つかみ）
-await page.mouse.move(660, 480);
+await page.mouse.move(ON_MESH.x, ON_MESH.y);
 await page.mouse.down();
-await page.mouse.move(760, 480, { steps: 8 });
+await page.mouse.move(ON_MESH.x + 100, ON_MESH.y, { steps: 8 });
 await page.mouse.up();
 const after = await page.evaluate(() => window.macbeth.state.selected.transform.position.slice());
 const moved = before.some((v, i) => Math.abs(v - after[i]) > 1e-4);
@@ -136,22 +150,82 @@ check(
   undone.map((n) => n.toFixed(2)).join(","),
 );
 
-/* 7. プリミティブを足すと 2 つになる */
+/* 7. 指でもマニピュレータをつかめる（メッシュの外にあるハンドルを触る） */
+await page.waitForTimeout(500);
+// Y の矢印の先はメッシュの外にある。ここを指で触ってもタンブルにならないこと。
+// まず何も選んでいない状態でその点を叩き、メッシュに当たらないことを確かめる
+const ARROW = ON_HANDLE;
+await page.keyboard.press("F8");
+await page.mouse.click(EMPTY.x, EMPTY.y); // 何もない所 → 選択解除
+await page.mouse.click(ARROW.x, ARROW.y);
+const offMesh = await page.evaluate(() => window.macbeth.state.selected === null);
+// 選び直してマニピュレータを出す。何も選んでいない状態の 1 回目は
+// オブジェクトが選ばれるだけなので、間を空けてもう一度叩いて面を選ぶ
+await page.keyboard.press("F11");
+await page.mouse.click(ON_MESH.x, ON_MESH.y);
+await page.waitForTimeout(500);
+await page.mouse.click(ON_MESH.x, ON_MESH.y);
+const ready = await page.evaluate(() => window.macbeth.state.comp.size);
+const touchMoved = await page.evaluate(async (a) => {
+  const canvas = document.getElementById("gl");
+  const before = Array.from(window.macbeth.state.selected.mesh.positions);
+  const fire = (type, x, y) =>
+    canvas.dispatchEvent(
+      new PointerEvent(type, {
+        pointerId: 99,
+        pointerType: "touch",
+        isPrimary: true,
+        clientX: x,
+        clientY: y,
+        buttons: type === "pointerup" ? 0 : 1,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+  fire("pointerdown", a.x, a.y);
+  for (let i = 1; i <= 8; i++) fire("pointermove", a.x, a.y - i * 8);
+  fire("pointerup", a.x, a.y - 64);
+  await new Promise((r) => setTimeout(r, 50));
+  const after = Array.from(window.macbeth.state.selected.mesh.positions);
+  return before.some((v, i) => Math.abs(v - after[i]) > 1e-4);
+}, ARROW);
+check(
+  "指でマニピュレータをつかめる",
+  offMesh && ready === 1 && touchMoved,
+  !offMesh ? "判定点がメッシュ上にある" : ready !== 1 ? `面が選べていない (comp=${ready})` : "",
+);
+await page.keyboard.press("Control+z");
+
+/* 8. マルチカットで面が増える（予測線 → 確定） */
+await page.keyboard.press("Control+z"); // 選択状態を整える
+await page.click("#dockLeft .ibtn[title^='マルチカット']");
+const facesBefore = await page.evaluate(() => window.macbeth.state.selected.mesh.faceCount);
+await page.mouse.move(at(0.4, 0.62).x, at(0.4, 0.62).y); // エッジの近くへホバー
+const previewed = await page.evaluate(() => document.getElementById("hudHint").innerHTML.includes("エッジループ挿入"));
+await page.mouse.move(ON_MESH.x, ON_MESH.y);
+await page.mouse.down();
+await page.mouse.up();
+const facesAfter = await page.evaluate(() => window.macbeth.state.selected.mesh.faceCount);
+check("マルチカットで切れる", facesAfter > facesBefore, `${facesBefore} → ${facesAfter}面 / 予測線 ${previewed ? "あり" : "なし"}`);
+await page.keyboard.press("Control+z");
+await page.click("#dockLeft .ibtn[title^='選択・変形']");
+
+/* 9. プリミティブを足すと 2 つになる */
 await page.click("#dockLeft .ibtn[title^='スフィア']");
 s = await state();
 check("プリミティブを追加", s.objects === 2, s.names.join(","));
 
-/* 8. 取り消しで 1 つに戻る */
+/* 10. 取り消しで 1 つに戻る */
 await page.keyboard.press("Control+z");
 s = await state();
 check("取り消しで元に戻る", s.objects === 1, s.names.join(","));
 
-/* 9. やり直しでまた 2 つ */
+/* 11. やり直しでまた 2 つ */
 await page.keyboard.press("Control+Shift+z");
 s = await state();
 check("やり直しで戻る", s.objects === 2, s.names.join(","));
 
-/* 10. 自動保存が IndexedDB に入る */
+/* 12. 自動保存が IndexedDB に入る */
 await page.waitForTimeout(1800);
 const saved = await page.evaluate(
   () =>
@@ -168,7 +242,15 @@ const saved = await page.evaluate(
 );
 check("自動保存が書けている", saved > 0, `${saved} バイト`);
 
-/* 11. 例外が出ていない */
+/* 13. 右のパネルが出て、プリミティブのパラメータが効く */
+await page.mouse.click(EMPTY.x, EMPTY.y); // 選択解除
+await page.keyboard.press("F8");
+await page.mouse.click(ON_MESH.x, ON_MESH.y); // オブジェクトを選ぶ
+const outliner = await page.evaluate(() => document.querySelectorAll("#dockRightBottom .olrow").length);
+const sliders = await page.evaluate(() => document.querySelectorAll("#dockRightTop .slider").length);
+check("アウトライナとオプションが出る", outliner >= 1 && sliders >= 1, `行 ${outliner} / スライダー ${sliders}`);
+
+/* 14. 例外が出ていない */
 check("例外なし", errors.length === 0, errors.join(" / "));
 
 await page.screenshot({ path: SHOT });

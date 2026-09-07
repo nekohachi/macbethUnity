@@ -52,6 +52,9 @@ export function handleKind(h: number): HandleKind {
   return "scale";
 }
 
+/** 指で操作するときの判定の広さ。ペン・マウスの 1.0 に対しての倍率。 */
+export const TOUCH_TOLERANCE = 1.8;
+
 const HOT = 0xffe680;
 const CENTER = 0xe2c860;
 
@@ -230,12 +233,15 @@ export class Manipulator {
   /**
    * 画面の点からハンドルを拾う。
    * 重なりが多い順に判定を狭くする: 中心 > スケールの箱 > 移動の矢印 > 回転のリング。
+   *
+   * tolerance は判定の広さの倍率。指はペンより当たりが粗いので、
+   * 呼ぶ側が TOUCH_TOLERANCE を渡して広げる。
    */
-  pick(p: ScreenPoint, center: Vector3 | null, manip: Manip): number {
+  pick(p: ScreenPoint, center: Vector3 | null, manip: Manip, tolerance = 1): number {
     if (!center) return -1;
     const s = this.scaleAt(center);
     const sc = this.host.toScreen(center);
-    if (Math.hypot(sc.x - p.x, sc.y - p.y) < 16) {
+    if (Math.hypot(sc.x - p.x, sc.y - p.y) < 16 * tolerance) {
       return manip === "scale" ? HANDLE_UNIFORM_SCALE : HANDLE_FREE_MOVE;
     }
 
@@ -253,22 +259,24 @@ export class Manipulator {
       const axis = AXES[a];
       if (L.scale) {
         const cs = this.host.toScreen(axis.clone().multiplyScalar(L.cube * s).add(center));
-        consider(20 + a, Math.hypot(cs.x - p.x, cs.y - p.y), 16);
+        consider(20 + a, Math.hypot(cs.x - p.x, cs.y - p.y), 16 * tolerance);
       }
       if (L.move) {
         // 中心付近は自由移動に譲るので、矢印は 0.3 から先だけ判定する
         const p0 = this.host.toScreen(axis.clone().multiplyScalar(0.3 * s).add(center));
         const p1 = this.host.toScreen(axis.clone().multiplyScalar(L.arrow * s).add(center));
-        consider(a, segmentDistance(p, p0, p1), 14);
+        consider(a, segmentDistance(p, p0, p1), 14 * tolerance);
       }
     }
     if (best >= 0) return best;
 
     if (L.rotate) {
-      for (let a = 0; a < 3; a++) consider(10 + a, this.ringDistance(p, center, AXES[a], L.ring * s), 12);
+      for (let a = 0; a < 3; a++) {
+        consider(10 + a, this.ringDistance(p, center, AXES[a], L.ring * s), 12 * tolerance);
+      }
       if (manip === "rotate") {
         const viewAxis = new Vector3().subVectors(this.host.camera().position, center).normalize();
-        consider(HANDLE_VIEW_ROTATE, this.ringDistance(p, center, viewAxis, s * 1.18), 12);
+        consider(HANDLE_VIEW_ROTATE, this.ringDistance(p, center, viewAxis, s * 1.18), 12 * tolerance);
       }
     }
     return best;

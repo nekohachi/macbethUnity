@@ -19,11 +19,12 @@ import {
 import { GestureRouter, type GestureHandlers } from "./input/gestures.js";
 import { Picker, type ScreenPoint } from "./render/picking.js";
 import { Viewport } from "./render/viewport.js";
-import { HANDLE_TWEAK, Manipulator, handleKind } from "./render/manipulator.js";
+import { HANDLE_TWEAK, Manipulator, TOUCH_TOLERANCE, handleKind } from "./render/manipulator.js";
 import { AppState, type CompMode, type Display, type Manip } from "./state.js";
 import { History } from "./history.js";
 import { Autosave } from "./storage/autosave.js";
 import { openFile, saveAs, saveMethodLabel } from "./storage/files.js";
+import { MultiCut } from "./tools/multicut.js";
 import { Selector } from "./tools/select.js";
 import { mirrorPairs, softWeights } from "./tools/softSelect.js";
 import { beginDrag, updateDrag, type DragState, type DragTarget } from "./tools/transform.js";
@@ -31,6 +32,7 @@ import { applyTransform } from "./render/meshView.js";
 import { byId, el } from "./ui/dom.js";
 import { Gauge } from "./ui/gauges.js";
 import { Hud } from "./ui/hud.js";
+import { panelShell, renderOptions, renderOutliner, type PanelHost } from "./ui/panels.js";
 import { ICONS, iconSvg } from "./ui/icons.js";
 import { attachRadialButton, closeRadial, openRadial, type RadialMenu } from "./ui/radial.js";
 
@@ -75,6 +77,11 @@ export class App {
   private popup: HTMLElement | null = null;
   private router: GestureRouter;
   private manipulator: Manipulator;
+  private multicut: MultiCut;
+  private optionsBody: HTMLElement | null = null;
+  private outlinerBody: HTMLElement | null = null;
+  /** スライダーを触り始めたときの状態。離したときに履歴へ積む。 */
+  private paramSnapshot: ReturnType<History["snapshot"]> | null = null;
   private drag: DragState | null = null;
   /** ドラッグ開始前のスナップショット。動いたときだけ履歴に積む。 */
   private dragSnapshot: ReturnType<History["snapshot"]> | null = null;
@@ -89,6 +96,8 @@ export class App {
       const o = this.state.doc.find(id);
       return o ? this.viewport.viewOf(o) : undefined;
     });
+
+    this.multicut = new MultiCut(this.state, this.picker, this.viewport.preview);
 
     // ソフト選択の影響範囲をオーバーレイに出すため、重みの求め方を渡しておく
     this.viewport.softWeightsProvider = () => {
@@ -126,6 +135,7 @@ export class App {
     this.router = new GestureRouter(canvas, (e) => this.picker.local(e), this.gestureHandlers());
     this.router.attach();
     this.buildToolDock();
+    this.buildPanels();
     this.buildGauges();
     this.buildCluster();
     this.bindKeyboard();
@@ -156,13 +166,27 @@ export class App {
       toolDown: (p, e) => this.startTool(p, e),
       toolMove: (p, e) => this.moveTool(p, e),
       toolUp: (p, e, moved) => this.finishTool(p, e, moved),
-      hover: () => {},
-      hoverLeave: () => {},
+      hover: (p, e) => this.updateCutPreview(p, e),
+      hoverLeave: () => this.multicut.clear(),
       openMarkingMenu: (x, y, edit) => this.openMarkingMenu(x, y, edit),
       undo: () => this.doUndo(),
       redo: () => this.doRedo(),
-      abort: () => this.endMarquee(),
-      isOnMesh: (p) => !!this.picker.pickSurface(p),
+      abort: () => {
+        this.endMarquee();
+        this.drag = null;
+        this.dragSnapshot = null;
+        this.manipulator.hot = -1;
+        this.multicut.clear();
+      },
+      // 指で置いた場所がツールの対象か。マニピュレータのハンドルは
+      // メッシュの外にはみ出すので、面のヒットだけで判定すると指でつかめない
+      isOnMesh: (p, e) => {
+        const tol = this.tolerance(e);
+        if (this.state.selected && this.manipulator.pick(p, this.pivotWorld(), this.state.manip, tol) >= 0) {
+          return true;
+        }
+        return this.hitSelectedComponent(p, tol) || !!this.picker.pickSurface(p);
+      },
       zoomPivot: () => this.pivotWorld(),
       marqueeStart: (p) => this.startMarquee(p),
       tumble: (dx, dy) => this.viewport.tumble(dx, dy),
@@ -185,8 +209,13 @@ export class App {
     return this.viewport.camera.position;
   }
 
+  /** ペンとマウスは 1.0、指は当たりが粗いので広げる。 */
+  private tolerance(e: PointerEvent): number {
+    return e.pointerType === "touch" ? TOUCH_TOLERANCE : 1;
+  }
+
   /** 選択中のコンポーネントを直接つかんだか（Maya のツイークに相当）。 */
-  private hitSelectedComponent(p: ScreenPoint): boolean {
+  private hitSelectedComponent(p: ScreenPoint, tolerance = 1): boolean {
     const o = this.state.selected;
     const view = o ? this.viewport.viewOf(o) : undefined;
     if (!o || !view || !this.state.comp.size) return false;
@@ -195,11 +224,11 @@ export class App {
       return !!hit && hit.object === o && this.state.comp.has(hit.face);
     }
     if (this.state.compMode === "vertex") {
-      const v = this.picker.pickVertex(view, p, 22);
+      const v = this.picker.pickVertex(view, p, 22 * tolerance);
       return v >= 0 && this.state.comp.has(v);
     }
     if (this.state.compMode === "edge") {
-      const r = this.picker.pickEdge(view, p, 16);
+      const r = this.picker.pickEdge(view, p, 16 * tolerance);
       return r.edge >= 0 && this.state.comp.has(r.edge);
     }
     return false;
@@ -245,12 +274,30 @@ export class App {
     };
   }
 
+  /** マルチカットの予測線を引き直す。 */
+  private updateCutPreview(p: ScreenPoint, e: PointerEvent): void {
+    if (this.state.tool !== "multicut") return;
+    const o = this.state.selected;
+    const hint = this.multicut.update(
+      p,
+      o ? this.viewport.viewOf(o) : undefined,
+      this.state.modOn("shift") || e.shiftKey,
+    );
+    if (hint) byId("hudHint").innerHTML = hint;
+  }
+
   private startTool(p: ScreenPoint, e: PointerEvent): void {
+    // マルチカットは押している間ずっと予測線、離した位置で確定する
+    if (this.state.tool === "multicut") {
+      this.updateCutPreview(p, e);
+      return;
+    }
     const o = this.state.selected;
     const pivot = this.pivotWorld();
-    let handle = o ? this.manipulator.pick(p, pivot, this.state.manip) : -1;
+    const tol = this.tolerance(e);
+    let handle = o ? this.manipulator.pick(p, pivot, this.state.manip, tol) : -1;
     // ハンドルを外しても、選択中のコンポーネントの上ならつかんだ扱いにする
-    if (handle < 0 && o && this.state.compMode !== "object" && this.hitSelectedComponent(p)) {
+    if (handle < 0 && o && this.state.compMode !== "object" && this.hitSelectedComponent(p, tol)) {
       handle = HANDLE_TWEAK;
     }
     if (handle < 0 || !o || !pivot) {
@@ -329,6 +376,7 @@ export class App {
   }
 
   private moveTool(p: ScreenPoint, e: PointerEvent): void {
+    if (this.state.tool === "multicut") return this.updateCutPreview(p, e);
     if (this.marquee) return this.updateMarquee(p);
     const drag = this.drag;
     const o = this.state.selected;
@@ -350,6 +398,11 @@ export class App {
   }
 
   private finishTool(p: ScreenPoint, e: PointerEvent, moved: boolean): void {
+    if (this.state.tool === "multicut") {
+      this.doMultiCut();
+      if (this.state.releaseLatches()) this.syncModButtons();
+      return;
+    }
     const m = this.marquee;
     if (m) {
       this.endMarquee();
@@ -359,11 +412,14 @@ export class App {
       const drag = this.drag;
       this.drag = null;
       this.manipulator.hot = -1;
-      if (drag.handle === HANDLE_TWEAK && !moved) {
-        // 選択中のものをタップしただけ。ふつうの選択として扱う
+      // 動かさずに離したなら、何も変えていないので選択として扱う。
+      // マニピュレータの中心は選択の中心に出るので、これがないと
+      // 選び直しやダブルクリックがハンドルに吸われてしまう。
+      // ただし Shift 押し出しは押した時点でメッシュが変わっているので確定する。
+      if (!moved && drag.label !== "押し出し") {
         this.dragSnapshot = null;
         this.applySelectResult(this.selector.click(p, e));
-      } else if ((moved || drag.label === "押し出し") && this.dragSnapshot) {
+      } else if (this.dragSnapshot) {
         this.history.commit(drag.label, this.dragSnapshot);
         this.dragSnapshot = null;
         this.hud.toast(drag.label);
@@ -377,8 +433,28 @@ export class App {
     if (this.state.releaseLatches()) this.syncModButtons();
   }
 
+  /** 予測どおりに切る。 */
+  private doMultiCut(): void {
+    const o = this.state.selected;
+    if (!o) return;
+    const snapshot = this.history.snapshot();
+    const r = this.multicut.commit(this.viewport.viewOf(o));
+    if (!r) return;
+    o.markTopologyChanged();
+    this.state.comp.clear();
+    this.history.commit("エッジループ挿入", snapshot);
+    this.viewport.rebuildObject(o);
+    this.viewport.rebuildOverlay();
+    this.refresh();
+    this.hud.toast(`エッジループを挿入しました — ${r.faceCount} 面`);
+  }
+
   /** マニピュレータを今の選択に合わせる。 */
   private refreshManipulator(): void {
+    if (this.state.tool !== "select") {
+      this.manipulator.clear();
+      return;
+    }
     const signature = [
       this.state.compMode,
       this.state.selected?.id ?? "-",
@@ -386,6 +462,19 @@ export class App {
       this.state.tool,
     ].join(",");
     this.manipulator.rebuild(this.pivotWorld(), this.state.manip, signature);
+  }
+
+  setTool(tool: string): void {
+    if (this.state.tool === tool) return;
+    this.state.tool = tool;
+    this.multicut.clear();
+    this.manipulator.clear();
+    this.refresh();
+    for (const b of document.querySelectorAll<HTMLElement>("[data-tool]")) {
+      b.setAttribute("aria-pressed", String(b.dataset.tool === tool));
+    }
+    this.hud.toast(tool === "multicut" ? "マルチカット" : "選択・変形");
+    this.hud.defaultHint();
   }
 
   setManip(manip: Manip): void {
@@ -477,7 +566,7 @@ export class App {
     return {
       N: { label: "エッジ", sub: "Edge", icon: ICONS.vEdge, run: () => this.setCompMode("edge") },
       NE: { label: "オブジェクト モード", sub: "Object", icon: ICONS.vObj, run: () => this.setCompMode("object") },
-      E: { label: "UV", sub: "UV ▸", icon: ICONS.vUV, run: todo("UV コンポーネント選択") },
+      // 東は空き。UV は選択モードではなく独立した UV モードにする
       SE: { label: "マルチ", sub: "Multi", icon: ICONS.vMulti, run: todo("マルチコンポーネント選択") },
       S: { label: "フェース", sub: "Face", icon: ICONS.vFace, run: () => this.setCompMode("face") },
       SW: { label: "頂点フェース", sub: "Vertex Face", icon: ICONS.vVertFace, run: todo("頂点フェース選択") },
@@ -505,7 +594,12 @@ export class App {
         N: { label: "押し出し", sub: "Extrude", icon: ICONS.extrude, run: todo("押し出し") },
         NE: { label: "ベベル", sub: "Bevel", icon: ICONS.scale, run: todo("ベベル") },
         E: { label: "ブリッジ", sub: "Bridge", icon: ICONS.vEdge, run: todo("ブリッジ") },
-        SE: { label: "エッジループ挿入", sub: "Insert Loop", icon: ICONS.multicut, run: todo("エッジループ挿入") },
+        SE: {
+          label: "エッジループ挿入",
+          sub: "Insert Loop",
+          icon: ICONS.multicut,
+          run: () => this.setTool("multicut"),
+        },
         S: { label: "削除", sub: "Delete", icon: ICONS.del, run: todo("エッジの削除") },
         SW: { label: "スピン", sub: "Spin", icon: ICONS.rotate, run: todo("スピンエッジ") },
         W: { label: "接続", sub: "Connect", icon: ICONS.vMulti, run: todo("接続") },
@@ -617,10 +711,26 @@ export class App {
     const xform = el("button", "ibtn");
     xform.innerHTML = iconSvg(ICONS.xform);
     xform.dataset.radial = "manip";
+    xform.dataset.tool = "select";
     xform.title = "選択・変形（長押しで 移動 / 回転 / スケール）";
     xform.setAttribute("aria-pressed", "true");
-    attachRadialButton(xform, () => this.manipMenu(), () => this.setManip("all"));
+    attachRadialButton(
+      xform,
+      () => this.manipMenu(),
+      () => {
+        this.setTool("select");
+        this.setManip("all");
+      },
+    );
     col.appendChild(xform);
+
+    const cut = el("button", "ibtn");
+    cut.innerHTML = iconSvg(ICONS.multicut);
+    cut.dataset.tool = "multicut";
+    cut.title = "マルチカット（エッジループ挿入）";
+    cut.setAttribute("aria-pressed", "false");
+    cut.addEventListener("click", () => this.setTool("multicut"));
+    col.appendChild(cut);
 
     col.appendChild(el("div", "tool-sep"));
     col.appendChild(el("div", "minilbl", "選択"));
@@ -648,6 +758,120 @@ export class App {
     body.appendChild(col);
     panel.append(head, body);
     dock.appendChild(panel);
+  }
+
+  /* ---- 右のパネル ------------------------------------------------------ */
+
+  private buildPanels(): void {
+    const options = panelShell("options", "オプション");
+    byId("dockRightTop").appendChild(options.panel);
+    this.optionsBody = options.body;
+
+    const outliner = panelShell("outliner", "アウトライナ");
+    byId("dockRightBottom").appendChild(outliner.panel);
+    this.outlinerBody = outliner.body;
+    this.renderPanels();
+  }
+
+  private panelHost(): PanelHost {
+    return {
+      onParamInput: (o, key, value) => {
+        this.paramSnapshot ??= this.history.snapshot();
+        o.params[key] = value;
+        o.rebuild();
+        this.viewport.rebuildObject(o);
+        this.viewport.rebuildOverlay();
+        this.hud.refreshStats();
+        this.refreshManipulator();
+      },
+      onParamCommit: (_o, label) => {
+        if (!this.paramSnapshot) return;
+        this.history.commit(label, this.paramSnapshot);
+        this.paramSnapshot = null;
+      },
+      onSoftChange: (which, value) => {
+        this.state.soft[which] = value;
+        this.viewport.rebuildOverlay();
+        this.refresh();
+      },
+      onCutChange: (key, value) => {
+        if (key === "edgeFlow") this.state.cut.edgeFlow = value as boolean;
+        else this.state.cut.snapStep = value as number;
+      },
+      onSmoothAngleChange: (value) => {
+        this.state.smoothAngle = value;
+        for (const o of this.state.doc.objects) this.viewport.rebuildObject(o);
+      },
+      onSelect: (o) => {
+        this.state.select(o);
+        this.viewport.applyDisplayAll();
+        this.viewport.rebuildOverlay();
+        this.refresh();
+      },
+      onRename: (o, name) => {
+        this.history.push("名前変更");
+        o.name = name;
+        this.refresh();
+      },
+      onOutlinerMenu: (o, x, y) => {
+        openRadial(
+          {
+            N: { label: "名前変更", sub: "Rename", icon: ICONS.rename, run: () => this.hud.toast("行をダブルタップでも変更できます") },
+            E: {
+              label: "複製",
+              sub: "Duplicate",
+              icon: ICONS.dup,
+              run: () => {
+                this.state.select(o);
+                this.doDuplicate();
+              },
+            },
+            S: {
+              label: "削除",
+              sub: "Delete",
+              icon: ICONS.del,
+              run: () => {
+                this.state.select(o);
+                this.doDelete();
+              },
+            },
+            W: {
+              label: "フレーム",
+              sub: "Frame",
+              icon: ICONS.frame,
+              run: () => {
+                this.state.select(o);
+                this.refresh();
+                this.viewport.frameSelected();
+              },
+            },
+          },
+          x,
+          y,
+        );
+      },
+    };
+  }
+
+  private renderPanels(): void {
+    const host = this.panelHost();
+    if (this.optionsBody) {
+      renderOptions(
+        this.optionsBody,
+        {
+          tool: this.state.tool,
+          selected: this.state.selected,
+          soft: this.state.soft,
+          cut: this.state.cut,
+          smoothAngle: this.state.smoothAngle,
+          compMode: this.state.compMode,
+        },
+        host,
+      );
+    }
+    if (this.outlinerBody) {
+      renderOutliner(this.outlinerBody, this.state.doc.objects, this.state.selected, host);
+    }
   }
 
   private addPrimitive(kind: string): void {
@@ -793,6 +1017,7 @@ export class App {
       byId("btnPanels").setAttribute("aria-pressed", String(this.state.panelsHidden));
       byId("dockLeft").hidden = this.state.panelsHidden;
       byId("dockColRight").hidden = this.state.panelsHidden;
+      this.viewport.resize();
     });
     byId("fileBtn").addEventListener("click", (e) => this.openFileMenu(e.currentTarget as HTMLElement));
     document.addEventListener("pointerdown", (e) => {
@@ -906,5 +1131,7 @@ export class App {
     this.hud.refreshStats();
     for (const g of this.gauges) g.paint();
     this.updateHistoryButtons();
+    // スライダーを触っている最中に描き直すと掴んでいる指が外れる
+    if (!this.paramSnapshot) this.renderPanels();
   }
 }

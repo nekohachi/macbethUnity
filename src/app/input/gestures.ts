@@ -28,8 +28,11 @@ export interface GestureHandlers {
   /** 進行中の操作（矩形選択、ドラッグ、予測線）を確定させずに片付ける。 */
   abort(): void;
 
-  /** 指のヒットテスト。true = ツール、false = タンブル（Nomad 方式）。 */
-  isOnMesh(p: ScreenPoint): boolean;
+  /**
+   * 指を置いた場所がツールの対象か。true = ツール、false = タンブル（Nomad 方式）。
+   * マニピュレータのハンドルも対象に含める（指で直接つかめるように）。
+   */
+  isOnMesh(p: ScreenPoint, e: PointerEvent): boolean;
   /** F を押しながらのピンチで中心を固定する点。 */
   zoomPivot(): Vector3 | null;
 
@@ -134,7 +137,12 @@ export class GestureRouter {
   }
 
   private down(e: PointerEvent): void {
-    this.canvas.setPointerCapture(e.pointerId);
+    // Safari は条件によって投げる。捕捉できなくても操作自体は続けられる
+    try {
+      this.canvas.setPointerCapture(e.pointerId);
+    } catch {
+      /* 捕捉できないだけなので続ける */
+    }
     this.pointers.set(e.pointerId, {
       x: e.clientX,
       y: e.clientY,
@@ -197,7 +205,7 @@ export class GestureRouter {
     }
 
     if (e.pointerType === "touch") {
-      const onMesh = !this.fingerCam && this.h.isOnMesh(p);
+      const onMesh = !this.fingerCam && this.h.isOnMesh(p, e);
       if (!onMesh) {
         this.gesture = { mode: "tumble", live: false, acc: 0 };
         this.startHold(e.clientX, e.clientY, this.h.shiftOn(e));

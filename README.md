@@ -44,6 +44,9 @@ npm run smoke      # ビルド後、実際のブラウザで通し確認（要 n
 | `src/app/render/` | Three.js への変換、ビューポート、ピッキング |
 | `src/app/input/gestures.ts` | ペンと指の割り振り。しきい値は実機で確かめた値 |
 | `src/app/tools/select.ts` | Maya 準拠の選択（ループ、リング、シェル、矩形） |
+| `src/app/tools/transform.ts` | 移動・回転・スケールのドラッグ |
+| `src/app/tools/multicut.ts` | エッジループ挿入（予測線つき） |
+| `src/app/tools/softSelect.ts` | ソフト選択の減衰と対称編集 |
 | `src/app/storage/` | IndexedDB、自動保存、ファイルの読み書き |
 | `src/app/ui/` | マーキングメニュー、ゲージ、HUD、アイコン |
 
