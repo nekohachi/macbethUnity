@@ -1,0 +1,57 @@
+/**
+ * アイコン。24×24 の SVG フラグメント。
+ * プロトタイプから移した。線は currentColor で描くので、色は使う側が決める。
+ */
+
+export const ICONS = {
+  select: "<path d=\"m5 3 6 16 2.4-6.2L19.6 10z\"/>",
+  move: "<path d=\"M12 3v18M3 12h18M12 3l-2.6 2.6M12 3l2.6 2.6M12 21l-2.6-2.6M12 21l2.6-2.6M3 12l2.6-2.6M3 12l2.6 2.6M21 12l-2.6-2.6M21 12l-2.6 2.6\"/>",
+  rotate: "<path d=\"M20.5 12a8.5 8.5 0 1 1-2.9-6.4\"/><path d=\"M20.5 3.6v5h-5\"/>",
+  scale: "<path d=\"M5 19 18 6\"/><path d=\"M12.5 6H18v5.5\"/><rect x=\"3.2\" y=\"15.2\" width=\"5.6\" height=\"5.6\" rx=\".8\"/>",
+  multicut: "<circle cx=\"5.5\" cy=\"5.5\" r=\"2.3\"/><circle cx=\"5.5\" cy=\"18.5\" r=\"2.3\"/><path d=\"M7.4 6.8 20 18M7.4 17.2 20 6\"/>",
+  extrude: "<path d=\"M4.5 13.5h8v7h-8z\"/><path d=\"m4.5 13.5 4-4h8v7M12.5 13.5l4-4\"/><path d=\"M20 3v5m0-5-1.8 1.8M20 3l1.8 1.8\"/>",
+  prim: "<path d=\"m12 2.6 8.6 4.8v9.2L12 21.4l-8.6-4.8V7.4z\"/><path d=\"M12 12.2 20.6 7.4M12 12.2v9.2M12 12.2 3.4 7.4\"/>",
+  camera: "<path d=\"M3.4 8.4h3.2l1.6-2.4h7.6l1.6 2.4h3.2v9.8a1 1 0 0 1-1 1H4.4a1 1 0 0 1-1-1z\"/><circle cx=\"12\" cy=\"13\" r=\"3.4\"/>",
+  shade: "<circle cx=\"12\" cy=\"12\" r=\"8.8\"/><path d=\"M12 3.2a8.8 8.8 0 0 1 0 17.6z\" fill=\"currentColor\" fill-opacity=\".5\"/>",
+  vObj: "<path d=\"m12 3 8 4.5v9L12 21l-8-4.5v-9z\"/>",
+  vVert: "<rect x=\"6\" y=\"6\" width=\"12\" height=\"12\"/><circle cx=\"6\" cy=\"6\" r=\"2\" fill=\"currentColor\"/><circle cx=\"18\" cy=\"6\" r=\"2\" fill=\"currentColor\"/><circle cx=\"6\" cy=\"18\" r=\"2\" fill=\"currentColor\"/><circle cx=\"18\" cy=\"18\" r=\"2\" fill=\"currentColor\"/>",
+  vEdge: "<rect x=\"6\" y=\"6\" width=\"12\" height=\"12\"/><path d=\"M6 6h12\" stroke-width=\"3.4\"/>",
+  vFace: "<rect x=\"6\" y=\"6\" width=\"12\" height=\"12\" fill=\"currentColor\" fill-opacity=\".45\"/>",
+  vVertFace: "<rect x=\"6\" y=\"6\" width=\"12\" height=\"12\" fill=\"currentColor\" fill-opacity=\".2\"/><circle cx=\"8.6\" cy=\"8.6\" r=\"2.1\" fill=\"currentColor\"/>",
+  vMulti: "<rect x=\"6\" y=\"6\" width=\"12\" height=\"12\"/><circle cx=\"6\" cy=\"6\" r=\"1.9\" fill=\"currentColor\"/><path d=\"M6 18h12\" stroke-width=\"3\"/>",
+  vUV: "<rect x=\"4\" y=\"4\" width=\"16\" height=\"16\" rx=\"1\"/><path d=\"M4 12h16M12 4v16\" stroke-dasharray=\"2.4 2\"/>",
+  wire: "<rect x=\"4\" y=\"4\" width=\"16\" height=\"16\"/><path d=\"M4 9.3h16M4 14.6h16M9.3 4v16M14.6 4v16\"/>",
+  shaded: "<rect x=\"4\" y=\"4\" width=\"16\" height=\"16\" rx=\"1\" fill=\"currentColor\" fill-opacity=\".5\"/>",
+  shadedWire: "<rect x=\"4\" y=\"4\" width=\"16\" height=\"16\" rx=\"1\" fill=\"currentColor\" fill-opacity=\".3\"/><path d=\"M4 12h16M12 4v16\"/>",
+  smooth: "<circle cx=\"12\" cy=\"12\" r=\"8.6\" fill=\"currentColor\" fill-opacity=\".5\"/><path d=\"M8 15.4a6 6 0 0 1 5-6.6\"/>",
+  sym: "<path d=\"M12 3v18\" stroke-dasharray=\"2.4 2.4\"/><path d=\"M9.4 7 4.5 12l4.9 5zM14.6 7l4.9 5-4.9 5z\"/>",
+  xform: "<path d=\"M12 3v18M3 12h18\"/><circle cx=\"12\" cy=\"12\" r=\"6.5\"/><rect x=\"16.6\" y=\"16.6\" width=\"4.2\" height=\"4.2\"/><path d=\"M12 3l-2 2M12 3l2 2M3 12l2-2M3 12l2 2\"/>",
+  file: "<path d=\"M6 3h8l5 5v13H6z\"/><path d=\"M14 3v5h5\"/>",
+  rename: "<path d=\"M4 20h16\"/><path d=\"M15.4 4.6 19 8.2 8.6 18.6 4.4 19.6l1-4.2z\"/>",
+  dup: "<rect x=\"3.6\" y=\"3.6\" width=\"12\" height=\"12\" rx=\"1\"/><path d=\"M8.4 20.4h12v-12\"/>",
+  del: "<path d=\"M4 6.6h16M9.4 6.6V4.4h5.2v2.2M6.4 6.6l1 13.2a1 1 0 0 0 1 .9h7.2a1 1 0 0 0 1-.9l1-13.2\"/>",
+  frame: "<path d=\"M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3\"/><circle cx=\"12\" cy=\"12\" r=\"3\"/>",
+  finger: "<path d=\"M9 11V5.6a1.6 1.6 0 0 1 3.2 0V11\"/><path d=\"M12.2 11V9.4a1.6 1.6 0 0 1 3.2 0V11\"/><path d=\"M15.4 11.4v-.8a1.6 1.6 0 0 1 3.2 0V15a5.6 5.6 0 0 1-5.6 5.6h-1.3a5 5 0 0 1-3.9-1.9L5 15.5a1.6 1.6 0 0 1 2.4-2.1L9 15\"/>",
+  mModel: "<path d=\"m12 2.6 8.6 4.8v9.2L12 21.4l-8.6-4.8V7.4z\"/><path d=\"M12 12.2 20.6 7.4M12 12.2v9.2M12 12.2 3.4 7.4\"/>",
+  mUV: "<rect x=\"3.4\" y=\"3.4\" width=\"17.2\" height=\"17.2\" rx=\"1\"/><path d=\"M3.4 12h17.2M12 3.4v17.2\" stroke-dasharray=\"2.6 2.2\"/>",
+  mSculpt: "<path d=\"M16.4 3.6 20.4 7.6 9.6 18.4l-5.2 1.2 1.2-5.2z\"/><path d=\"m14.4 5.6 4 4\"/>",
+  mMaterial: "<circle cx=\"12\" cy=\"12\" r=\"8.6\"/><path d=\"M12 3.4a8.6 8.6 0 0 1 0 17.2z\" fill=\"currentColor\" fill-opacity=\".45\"/><path d=\"M3.4 12h17.2\"/>",
+  pCube: "<path d=\"m12 2.6 8.6 4.8v9.2L12 21.4l-8.6-4.8V7.4z\"/><path d=\"M12 12.2 20.6 7.4M12 12.2v9.2M12 12.2 3.4 7.4\"/>",
+  pSphere: "<circle cx=\"12\" cy=\"12\" r=\"9\"/><ellipse cx=\"12\" cy=\"12\" rx=\"4\" ry=\"9\"/><path d=\"M3 12h18\"/>",
+  pCylinder: "<ellipse cx=\"12\" cy=\"5.6\" rx=\"7\" ry=\"2.8\"/><path d=\"M5 5.6v12.8M19 5.6v12.8\"/><path d=\"M5 18.4a7 2.8 0 0 0 14 0\"/>",
+  pCone: "<path d=\"M12 3 19 18.4M12 3 5 18.4\"/><ellipse cx=\"12\" cy=\"18.4\" rx=\"7\" ry=\"2.8\"/>",
+  pTorus: "<ellipse cx=\"12\" cy=\"12\" rx=\"9.2\" ry=\"5.4\"/><ellipse cx=\"12\" cy=\"12\" rx=\"3.6\" ry=\"1.9\"/>",
+  pPlane: "<path d=\"M2.6 16.4 9.4 6.6h12L14.6 16.4z\"/><path d=\"M6 11.5h12\"/>",
+  pDisk: "<ellipse cx=\"12\" cy=\"12\" rx=\"9.2\" ry=\"5.4\"/><path d=\"M2.8 12h18.4\"/>",
+  pPlatonic: "<path d=\"m12 2.8 8.8 6.4-3.4 10.4H6.6L3.2 9.2z\"/><path d=\"M12 2.8v16.8M3.2 9.2l13.8 10M20.8 9.2 7 19.2\"/>",
+} as const;
+
+export type IconName = keyof typeof ICONS;
+
+/** フラグメントを <svg> で包む。ボタンなどに差し込むとき用。 */
+export function iconSvg(fragment: string, size = 18, strokeWidth = 1.6): string {
+  return (
+    `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" ` +
+    `stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round">${fragment}</svg>`
+  );
+}

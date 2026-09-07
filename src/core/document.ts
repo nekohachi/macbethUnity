@@ -29,6 +29,13 @@ export function identityTransform(): Transform {
   return { position: [0, 0, 0], rotation: [0, 0, 0, 1], scale: [1, 1, 1] };
 }
 
+export function cloneTransform(t: Transform): Transform {
+  const [px, py, pz] = t.position;
+  const [rx, ry, rz, rw] = t.rotation;
+  const [sx, sy, sz] = t.scale;
+  return { position: [px, py, pz], rotation: [rx, ry, rz, rw], scale: [sx, sy, sz] };
+}
+
 /** マルチ解像度の 1 レベル。デルタは接空間で持つ（docs/03）。 */
 export interface MultiresLevel {
   level: number;

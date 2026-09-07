@@ -6,7 +6,9 @@ Maya のポリゴン編集精度、ZBrush のスカルプト、Substance Painter
 
 ## 現在の状態
 
-**土台の実装フェーズ。** ジオメトリコア（`src/core/`）と `.mbz` 形式ができ、55 件のテストが通っています。UI シェルの移植はこれからです（`docs/10-next-phase.md`）。
+**土台の実装フェーズ。** ジオメトリコア（`src/core/`）、`.mbz` 形式、UI シェルの土台（`src/app/`）ができました。テスト 55 件に加えて、実際の Chromium で描画から選択・取り消し・自動保存まで通す確認（`npm run smoke`）が通ります。残りの機能はプロトタイプから順に移植中です（`docs/10-next-phase.md`）。
+
+新しいシェルは `/app.html`、ページのトップは移植が済むまで従来どおりプロトタイプです。
 
 **実装方針: v1.0 はモデリング特化で、Web（TypeScript + WebGL2 / WebGPU）で構築します。** スカルプト版に向けてジオメトリカーネルは C++ で書いて wasm に載せ、必要になればそのカーネルをネイティブに持ち出します。経緯と判断は `docs/09-direction-review.md`。ネイティブ C++ の設計（`docs/02-architecture.md`）はその段階の参照として残しています。
 
@@ -18,6 +20,7 @@ npm run dev        # 開発サーバー。新しいシェルは /app.html
 npm test           # core のテスト（55 件）
 npm run typecheck
 npm run build
+npm run smoke      # ビルド後、実際のブラウザで通し確認（要 npm run build）
 ```
 
 `src/core/` は **DOM にも Three.js にも依存しません**（`docs/02`、`docs/09`）。v1.5 でこの層を C++ → wasm に差し替えるときの境界なので、この境界を越えないでください。
@@ -31,6 +34,18 @@ npm run build
 | `src/core/subdivide.ts` | Catmull-Clark（UV とクリースも細分割） |
 | `src/core/document.ts` | シーンの層構造（`docs/11`） |
 | `src/core/io/` | OBJ、メッシュのバイナリ、`.mbz`、トポロジハッシュ |
+
+`src/app/` はブラウザ側。ここだけが DOM と Three.js を触ります。
+
+| 場所 | 内容 |
+|---|---|
+| `src/app/state.ts` | モード、選択、修飾キー、ゲージの定義 |
+| `src/app/history.ts` | 元に戻す / やり直す（シーンのスナップショット） |
+| `src/app/render/` | Three.js への変換、ビューポート、ピッキング |
+| `src/app/input/gestures.ts` | ペンと指の割り振り。しきい値は実機で確かめた値 |
+| `src/app/tools/select.ts` | Maya 準拠の選択（ループ、リング、シェル、矩形） |
+| `src/app/storage/` | IndexedDB、自動保存、ファイルの読み書き |
+| `src/app/ui/` | マーキングメニュー、ゲージ、HUD、アイコン |
 
 ## 技術スタック
 ## ドキュメント
