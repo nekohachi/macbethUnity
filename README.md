@@ -6,19 +6,33 @@ Maya のポリゴン編集精度、ZBrush のスカルプト、Substance Painter
 
 ## 現在の状態
 
-**設計フェーズ。** 実装はまだ始まっていません。
+**土台の実装フェーズ。** ジオメトリコア（`src/core/`）と `.mbz` 形式ができ、55 件のテストが通っています。UI シェルの移植はこれからです（`docs/10-next-phase.md`）。
 
-**実装方針（改訂）: v1.0 はモデリング特化で、Web（TypeScript + WebGL2 / WebGPU）で構築します。** スカルプト版に向けてジオメトリカーネルは C++ で書いて wasm に載せ、必要になればそのカーネルをネイティブに持ち出します。経緯と判断は `docs/09-direction-review.md`。ネイティブ C++ の設計（`docs/02-architecture.md`）はその段階の参照として残しています。
+**実装方針: v1.0 はモデリング特化で、Web（TypeScript + WebGL2 / WebGPU）で構築します。** スカルプト版に向けてジオメトリカーネルは C++ で書いて wasm に載せ、必要になればそのカーネルをネイティブに持ち出します。経緯と判断は `docs/09-direction-review.md`。ネイティブ C++ の設計（`docs/02-architecture.md`）はその段階の参照として残しています。
+
+## 開発
+
+```
+npm install
+npm run dev        # 開発サーバー。新しいシェルは /app.html
+npm test           # core のテスト（55 件）
+npm run typecheck
+npm run build
+```
+
+`src/core/` は **DOM にも Three.js にも依存しません**（`docs/02`、`docs/09`）。v1.5 でこの層を C++ → wasm に差し替えるときの境界なので、この境界を越えないでください。
+
+| 場所 | 内容 |
+|---|---|
+| `src/core/mesh.ts` | CSR 形式のメッシュ。UV セット、クリース、ポリグループ、マテリアル ID を持つ |
+| `src/core/primitives.ts` | 8 種のプリミティブ（UV 付き、原点生成） |
+| `src/core/topology.ts` | エッジループ挿入、押し出し、溶接、エッジ削除。すべて UV を持ち越す |
+| `src/core/selection.ts` | エッジループ / リング、シェル、拡張と縮小 |
+| `src/core/subdivide.ts` | Catmull-Clark（UV とクリースも細分割） |
+| `src/core/document.ts` | シーンの層構造（`docs/11`） |
+| `src/core/io/` | OBJ、メッシュのバイナリ、`.mbz`、トポロジハッシュ |
 
 ## 技術スタック
-
-| 領域 | v1.0（モデリング） | v1.5 以降（スカルプト） |
-|---|---|---|
-| シェル | TypeScript + Vite、PWA。ストア配布は Capacitor | 同じ Web シェル。上限に当たればネイティブへ |
-| 描画 | WebGL2（WebGPU は iOS 26 以降で選択可） | 同左 |
-| ジオメトリ | TypeScript（`core/`、UI 非依存） | C++ → wasm（OpenSubdiv 込み）。同じコードをネイティブでも使う |
-| 検証機材 | iPad mini（Apple Pencil）、Wacom MovinkPad 14、Windows PC | 同左 |
-
 ## ドキュメント
 
 | ファイル | 内容 |
@@ -39,9 +53,9 @@ Maya のポリゴン編集精度、ZBrush のスカルプト、Substance Painter
 
 [`prototype/modeling-ui-prototype.html`](prototype/modeling-ui-prototype.html) — 操作感の検証用。ブラウザで開くだけで動きます。
 
-**タブレットで開く:** GitHub の Settings → Pages で Branch をこのブランチ、Folder を `/ (root)` にすると、`https://nekohachi.github.io/macbethUnity/` で単体ページとして開けます（ログイン不要、ホーム画面に追加で全画面）。ルートの `index.html` はその単体ページで、`prototype/make-pages.sh` で生成します。プロトタイプを編集したら再生成してください。
+**タブレットで開く:** GitHub の Settings → Pages で Branch をこのブランチ、Folder を `/ (root)` にすると、`https://nekohachi.github.io/macbethUnity/` で開けます（ログイン不要、ホーム画面に追加で全画面）。
 
-v1.0 が Web 基盤に確定したので、このプロトタイプは使い捨てではなく**製品の種**です。ただし単一 HTML のままでは製品構造にならないため、次の実装作業は機能追加ではなく TypeScript + モジュール分割 + テストへの再構成です（`docs/09-direction-review.md` の「次の実装依頼」）。
+`.github/workflows/pages.yml` を入れたので、Pages の Source を **「GitHub Actions」に切り替える**と push のたびに自動で更新されます。切り替えるまでは今までどおりブランチ配信で、ルートの `index.html`（`prototype/make-pages.sh` が生成）が使われます。Actions に切り替えた後も Pages のトップはプロトタイプのままで、新しいシェルは `/app.html` に出ます。
 
 **方針: まず Maya のクローンとして作り、そこから UI をタブレットに寄せる。**
 
