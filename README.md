@@ -6,7 +6,7 @@ Maya のポリゴン編集精度、ZBrush のスカルプト、Substance Painter
 
 ## 現在の状態
 
-**土台の実装フェーズ。** ジオメトリコア（`src/core/`）、`.mbz` 形式、UI シェルの土台（`src/app/`）ができました。テスト 55 件に加えて、実際の Chromium で描画から選択・取り消し・自動保存まで通す確認（`npm run smoke`）が通ります。残りの機能はプロトタイプから順に移植中です（`docs/10-next-phase.md`）。
+**土台の実装フェーズ。** ジオメトリコア（`src/core/`）、`.mbz` 形式、UI シェルの土台（`src/app/`）ができました。テスト 71 件に加えて、実際の Chromium で描画から選択・取り消し・自動保存まで通す確認（`npm run smoke`）が通ります。残りの機能はプロトタイプから順に移植中です（`docs/10-next-phase.md`）。
 
 新しいシェルは `/app.html`、ページのトップは移植が済むまで従来どおりプロトタイプです。
 
@@ -17,7 +17,7 @@ Maya のポリゴン編集精度、ZBrush のスカルプト、Substance Painter
 ```
 npm install
 npm run dev        # 開発サーバー。新しいシェルは /app.html
-npm test           # core のテスト（55 件）
+npm test           # core のテスト（71 件）
 npm run typecheck
 npm run build
 npm run smoke      # ビルド後、実際のブラウザで通し確認（要 npm run build）
@@ -31,7 +31,9 @@ npm run smoke      # ビルド後、実際のブラウザで通し確認（要 n
 | `src/core/primitives.ts` | 8 種のプリミティブ（UV 付き、原点生成） |
 | `src/core/topology.ts` | エッジループ挿入、押し出し、溶接、エッジ削除。すべて UV を持ち越す |
 | `src/core/selection.ts` | エッジループ / リング、シェル、拡張と縮小 |
-| `src/core/subdivide.ts` | Catmull-Clark（UV とクリースも細分割） |
+| `src/core/subdivide.ts` | Catmull-Clark（UV とクリースも細分割。頂点点の規則にも折り目が効く） |
+| `src/core/bevel.ts` | ベベル（面取り / 丸め）。四角形メッシュ向け |
+| `src/core/multires.ts` | マルチ解像度スタック。接空間デルタ（docs/03） |
 | `src/core/document.ts` | シーンの層構造（`docs/11`） |
 | `src/core/io/` | OBJ、メッシュのバイナリ、`.mbz`、トポロジハッシュ |
 

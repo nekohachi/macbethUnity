@@ -10,6 +10,7 @@ export * from "./topology.js";
 export * from "./bevel.js";
 export * from "./selection.js";
 export * from "./subdivide.js";
+export * from "./multires.js";
 export * from "./document.js";
 export * from "./io/obj.js";
 export * from "./io/binary.js";
