@@ -1,10 +1,19 @@
 name: Deploy to GitHub Pages
 
-# Pages の Source が「GitHub Actions」のときだけ動くもの。
-# 今は「Deploy from a branch」なので configure-pages で必ず失敗する。
-# 自動更新は publish.yml（app/ をブランチへ書き戻す）が担っているため、
-# ここは手動起動だけにしてある。Source を切り替えたら push トリガに戻す。
+# push のたびに Pages へ出す。
+#
+# configure-pages に enablement: true を渡しているので、Pages が未設定でも
+# このワークフローが「Source = GitHub Actions」で有効化する。リポジトリの
+# 設定画面を触らなくてよい。
+#
+# 出すもの:
+#   /            プロトタイプ（移植が終わるまでの入口）
+#   /app/        新しいシェル（タブレットはこちら）
+#   /app.html    同じものの別名。前に案内した URL を生かしておくため
+#   /prototype/  プロトタイプの単体ページ
 on:
+  push:
+    branches: ["claude/tablet-3d-modeling-app-f6b1x5", "master", "main"]
   workflow_dispatch:
 
 permissions:
@@ -26,25 +35,47 @@ jobs:
           node-version: "22"
           cache: npm
       - run: npm ci
+
       - name: 型検査とテスト
         run: |
           npm run typecheck
           npm test
-      - name: ビルド
+
+      - name: 新しいシェルを /app/ 用にビルドする
         env:
-          MACBETH_BASE: /${{ github.event.repository.name }}/
-        run: npm run build
-      - name: プロトタイプを同梱する（新しいシェルが揃うまでの入口）
+          MACBETH_PAGES_PATH: /${{ github.event.repository.name }}/app/
+        run: sh scripts/publish.sh
+
+      - name: ブラウザを入れる
+        run: npx playwright install --with-deps chromium
+
+      - name: 壊れていないか通しで確かめる
+        # 出す前に、実際の Chromium で描画・選択・取り消し・自動保存まで通す
+        run: node scripts/smoke.mjs app
+
+      - name: 公開するものを組み立てる
         run: |
-          # 移植が済むまで、Pages のトップはプロトタイプのまま。
-          # 新しいシェルは /app.html で確認できる。
-          cp index.html dist/index.html
-          mkdir -p dist/prototype
-          cp prototype/modeling-ui-prototype.html dist/prototype/
+          rm -rf site
+          mkdir -p site
+          # トップは移植が終わるまでプロトタイプのまま
+          cp index.html site/index.html
+          mkdir -p site/prototype
+          cp prototype/modeling-ui-prototype.html site/prototype/
+          # 新しいシェル
+          cp -r app site/app
+          # 前に案内した /app.html でも開けるようにしておく
+          cp app/index.html site/app.html
+          # Jekyll に通さない（_ で始まる名前などを勝手に落とさせない）
+          touch site/.nojekyll
+          ls -R site | head -40
+
       - uses: actions/configure-pages@v5
+        with:
+          # Pages が未設定なら、ここで「Source = GitHub Actions」にして有効化する
+          enablement: true
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: dist
+          path: site
 
   deploy:
     needs: build
