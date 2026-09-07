@@ -61,9 +61,9 @@ ufbx は読み込み専用なので、書き出しは自前で書きます。FBX
 
 | 項目 | 問題 |
 |---|---|
-| **軸方向** | Maya は Y-up 右手系、Unity は Y-up **左手系**。FBX ヘッダの `UpAxis` / `FrontAxis` / `CoordAxis` を必ず読み書きする |
-| **単位** | Maya の既定はセンチメートル、Unity はメートル。`UnitScaleFactor` を尊重する |
-| **UV の V 方向** | OBJ / FBX / Unity で V の向きが異なる。反転規則を一元管理する |
+| **軸方向** | Maya と ZBrush は Y-up 右手系、Unreal は Z-up、Unity は左手系。**本アプリの内部規約を Y-up 右手系に固定**したうえで、FBX ヘッダの `UpAxis` / `FrontAxis` / `CoordAxis` を必ず読み書きする |
+| **単位** | Maya の既定はセンチメートル、glTF と USD はメートル。`UnitScaleFactor` を尊重し、内部単位を 1 つに決める |
+| **UV の V 方向** | OBJ、FBX、glTF で V の向きが異なる。反転規則を入出力層の 1 箇所に集約する |
 | **法線** | 明示的な法線とスムージンググループの両方が存在しうる。**往復しても法線が変わらないこと**をテストで担保する |
 | **ノーマルマップの緑チャンネル** | Maya / Substance は OpenGL 形式（+Y）、Unreal は DirectX 形式（−Y）。**設定で切り替えられるようにする**。これは実務で最も多い事故です |
 
@@ -140,7 +140,7 @@ ZBrush の `.ztl` / `.zpr` も非公開形式で読めません。ただし **ZB
 
 - **iOS**: `UIDocumentPickerViewController` とセキュリティスコープ付き URL。iCloud Drive 連携。ファイルアプリからの「このアプリで開く」対応
 - **Android**: Storage Access Framework（SAF）。Android 10 以降は直接のファイルパスアクセスが原則できません
-- **Unity は上記のいずれも扱えません。** ネイティブプラグインが必要です
+- ネイティブ C++ なので、iOS は Objective-C++ から、Android は JNI 経由で直接扱えます。SAF だけは Java 側のコードが避けられません
 
 もう 1 点。**大きなファイルの読み込みでメモリ不足による強制終了が起きます。** 500MB の FBX を一括で読むと確実に落ちます。ストリーミング読み込みと、読み込み前のファイルサイズ確認・警告表示を実装してください。
 

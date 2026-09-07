@@ -6,14 +6,28 @@ Maya のポリゴン編集精度、ZBrush のスカルプト、Substance Painter
 
 ## 現在の状態
 
-**設計フェーズ。** 実装はまだ始まっていません。まず `docs/07-roadmap.md` の 7.8 節「いま決めるべきこと」を確定させてください。
+**設計フェーズ。** 実装はまだ始まっていません。
+
+**実装方針は決定済み: ゲームエンジンを使わず、ネイティブ C++ で構築します。** 理由は `docs/02-architecture.md` の 2.1 節。残る未決事項は `docs/07-roadmap.md` の 7.8 節にまとめてあります。
+
+## 技術スタック
+
+| 領域 | 選定 |
+|---|---|
+| 言語 | C++20 |
+| グラフィックス | bgfx（Metal / Vulkan / GLES） |
+| 細分割 | OpenSubdiv |
+| UI | 自前構築（テキストは HarfBuzz + FreeType） |
+| ビルド | CMake / Xcode / Gradle + NDK |
+| プラットフォーム | iOS（Objective-C++）、Android（GameActivity + NDK）、デスクトップ（SDL3） |
+| プロファイラ | Tracy |
 
 ## ドキュメント
 
 | ファイル | 内容 |
 |---|---|
 | [01-concept-scope.md](docs/01-concept-scope.md) | コンセプト、競合分析、差別化、性能目標、スコープの線引き |
-| [02-architecture.md](docs/02-architecture.md) | エンジン選定、メッシュデータ構造、レンダリング、Undo、フレーム予算 |
+| [02-architecture.md](docs/02-architecture.md) | ネイティブ C++ の構成、メモリ管理、メッシュデータ構造、レンダリング、Undo、フレーム予算 |
 | [03-multires-core.md](docs/03-multires-core.md) | **マルチ解像度編集（本アプリの中核機能）** |
 | [04-input-ui.md](docs/04-input-ui.md) | ペン／指の役割分離、カメラ操作、サークルメニュー、パネル、ドッキング |
 | [05-modes.md](docs/05-modes.md) | モデリング／UV／スカルプト／マテリアル各モードの機能スコープ |
@@ -27,3 +41,4 @@ Maya のポリゴン編集精度、ZBrush のスカルプト、Substance Painter
 - **`.mb` と Substance のファイル形式は読めない。** それぞれ `.ma` 経由、テクスチャ書き出し経由で代替する。詳細は `06-file-formats.md`
 - **`.usd` を最優先で追加すべき。** 細分割とクリースをネイティブに表現できる唯一の主要形式で、本アプリのワークフローと完全に一致する
 - **v1.0 はスカルプト＋モデリング＋マルチ解像度に絞る。** マテリアルモードは v2.0
+- **`core/` をプラットフォーム非依存・グラフィックス非依存に保つ。** ここが最大の資産で、検証もテストもデスクトップ上で完結できる
