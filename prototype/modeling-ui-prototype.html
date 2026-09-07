@@ -85,8 +85,8 @@ button{font-family:inherit; font-size:inherit; color:inherit; background:none; b
 .dockcol{display:flex; flex-direction:column; min-height:0; flex:0 0 auto}
 .dockcol .dock:first-child{flex:1 1 62%; border-bottom:1px solid var(--line)}
 .dockcol .dock:last-child{flex:1 1 38%}
-.dock:has(.panel[data-panel="tools"]){width:auto}
-.panel[data-panel="tools"] .pbody{padding:5px; width:52px}
+.dock.narrow{width:63px; min-width:63px}          /* ツール列を含むドック */
+.panel[data-panel="tools"] .pbody{padding:5px; width:52px; min-width:52px}
 
 .panel{display:flex; flex-direction:column; min-height:0; flex:1}
 .phead{display:flex; align-items:center; gap:5px; padding:6px 7px; background:var(--panel-lo);
@@ -99,7 +99,7 @@ button{font-family:inherit; font-size:inherit; color:inherit; background:none; b
 .pbody{overflow:auto; padding:8px; flex:1; min-height:0; -webkit-overflow-scrolling:touch; touch-action:pan-y}
 .panel.floating{position:absolute; z-index:20; max-height:70%; border:1px solid var(--line);
   border-radius:var(--radius); box-shadow:0 12px 32px rgba(0,0,0,.5); background:var(--panel)}
-.panel.floating[data-panel="tools"]{width:auto}
+.panel.floating[data-panel="tools"]{width:63px}
 .panel.floating:not([data-panel="tools"]){width:250px}
 
 /* ---------- icon tool column ---------- */
@@ -171,13 +171,13 @@ button{font-family:inherit; font-size:inherit; color:inherit; background:none; b
 .hud-stats i{font-style:normal; color:#93a0ab}
 .hud-mode{top:8px; right:12px; text-align:right}
 .hud-mode b{color:var(--comp); font-weight:500}
-.hud-hint{bottom:12px; left:150px; right:12px; color:#a7b2bc; line-height:1.7}
+.hud-hint{bottom:calc(12px + env(safe-area-inset-bottom, 0px)); left:150px; right:12px; color:#a7b2bc; line-height:1.7}
 .hud-hint kbd{font-family:inherit; background:rgba(0,0,0,.35); border:1px solid rgba(255,255,255,.14);
   border-radius:2px; padding:0 3px; color:#dbe2e8}
 .marquee{position:absolute; border:1px solid #e8eef2; background:rgba(232,238,242,.14); pointer-events:none; display:none}
 
 /* 左下のタッチ用クラスタ:  SHF  F  /  CTL  ALT */
-.cluster{position:absolute; left:12px; bottom:12px; display:grid; grid-template-columns:46px 66px;
+.cluster{position:absolute; left:12px; bottom:calc(12px + env(safe-area-inset-bottom, 0px)); display:grid; grid-template-columns:46px 66px;
   grid-auto-rows:auto; gap:6px; z-index:8; align-items:end}
 .cmod{width:46px; height:40px; border-radius:var(--radius); font-weight:600; font-size:10px; letter-spacing:.03em;
   background:rgba(37,42,48,.9); border:1px solid var(--line); color:var(--text-dim); backdrop-filter:blur(4px)}
@@ -1354,6 +1354,12 @@ function altOn(e){ return App.mods.alt!=="off" || e.altKey; }
 function shiftOn(e){ return App.mods.shift!=="off" || e.shiftKey; }
 function ctrlOn(e){ return App.mods.ctrl!=="off" || e.ctrlKey || e.metaKey; }
 canvas.addEventListener("contextmenu",function(e){ e.preventDefault(); });
+// iOS の長押しコールアウト・選択・拡大は、touchstart を抑止しないと止まらない。
+// canvas はポインタイベントだけで動くので click 抑止の副作用がない。
+canvas.addEventListener("touchstart",function(e){ e.preventDefault(); },{passive:false});
+canvas.addEventListener("touchmove",function(e){ e.preventDefault(); },{passive:false});
+document.addEventListener("contextmenu",function(e){ e.preventDefault(); });   // Android の長押しメニュー
+document.addEventListener("selectstart",function(e){ if(e.target.tagName!=="INPUT") e.preventDefault(); });
 
 canvas.addEventListener("pointerdown",function(e){
   closePop();
@@ -1897,6 +1903,7 @@ function attachRadialButton(b,def){
     window.addEventListener("pointerup",onUp);
   });
   b.addEventListener("contextmenu",function(e){ e.preventDefault(); });
+  b.addEventListener("touchstart",function(e){ e.preventDefault(); },{passive:false});
   function onMove(e){
     if(e.pointerId!==pid) return;
     if(!opened && def.radial && Math.hypot(e.clientX-sx,e.clientY-sy)>12){
@@ -1922,6 +1929,8 @@ function openRadial(key,cx,cy){
   cx=Math.max(ringOuter+16,Math.min(window.innerWidth-ringOuter-16,cx));
   cy=Math.max(ringOuter+16,Math.min(window.innerHeight-ringOuter-16,cy));
   var host=document.createElement("div"); host.className="radial";
+  host.addEventListener("touchstart",function(e){ e.preventDefault(); },{passive:false});
+  host.addEventListener("touchmove",function(e){ e.preventDefault(); },{passive:false});
   var NS="http://www.w3.org/2000/svg";
   var svg=document.createElementNS(NS,"svg");
   host.appendChild(svg); document.body.appendChild(host);
@@ -2248,6 +2257,7 @@ function attachOutlinerRow(b,o){
     window.addEventListener("pointermove",mv); window.addEventListener("pointerup",up);
   });
   b.addEventListener("contextmenu",function(e){ e.preventDefault(); });
+  b.addEventListener("touchstart",function(e){ e.preventDefault(); },{passive:false});
   function mv(e){ if(e.pointerId===pid && Math.hypot(e.clientX-sx,e.clientY-sy)>12) clearTimeout(timer); }
   function up(e){
     if(e.pointerId!==pid) return;
@@ -2294,12 +2304,18 @@ function buildPanel(k){
   return p;
 }
 function findPanel(k){ return document.querySelector('.panel[data-panel="'+k+'"]'); }
+function updateDockWidths(){
+  document.querySelectorAll(".dock").forEach(function(d){
+    d.classList.toggle("narrow", !!d.querySelector('.panel[data-panel="tools"]'));
+  });
+}
 function mountPanels(){
   Object.keys(PANELS).forEach(function(k){
     var p=buildPanel(k), zone=PANELS[k].zone;
     if(zone==="float"){ p.classList.add("floating"); p.style.left="320px"; p.style.top="90px"; document.getElementById("stage").appendChild(p); }
     else document.querySelector('[data-zone="'+zone+'"]').appendChild(p);
   });
+  updateDockWidths();
 }
 var pdrag=null;
 function startPanelDrag(e,p){
@@ -2337,7 +2353,7 @@ function endPanelDrag(){
     PANELS[pdrag.key].zone=pdrag.hot.zone;
     toast(PANELS[pdrag.key].title+"を"+pdrag.hot.name+"にドッキング");
   } else PANELS[pdrag.key].zone="float";
-  hideDropZones(); pdrag=null; setTimeout(resize,0);
+  hideDropZones(); pdrag=null; updateDockWidths(); setTimeout(resize,0);
 }
 function showDropZones(){
   var stage=document.getElementById("stage"), sr=stage.getBoundingClientRect();
@@ -2378,6 +2394,7 @@ function setupGauge(id,which,lblId,valId){
     d.set(v); paint(); rebuildOverlay();
   }
   var active=false;
+  g.addEventListener("touchstart",function(e){ e.preventDefault(); },{passive:false});
   g.addEventListener("pointerdown",function(e){
     e.preventDefault(); active=true; g.setPointerCapture(e.pointerId); setFromY(e.clientY);
   });

@@ -8,19 +8,16 @@ Maya のポリゴン編集精度、ZBrush のスカルプト、Substance Painter
 
 **設計フェーズ。** 実装はまだ始まっていません。
 
-**実装方針は決定済み: ゲームエンジンを使わず、ネイティブ C++ で構築します。** 理由は `docs/02-architecture.md` の 2.1 節。残る未決事項は `docs/07-roadmap.md` の 7.8 節にまとめてあります。
+**実装方針（改訂）: v1.0 はモデリング特化で、Web（TypeScript + WebGL2 / WebGPU）で構築します。** スカルプト版に向けてジオメトリカーネルは C++ で書いて wasm に載せ、必要になればそのカーネルをネイティブに持ち出します。経緯と判断は `docs/09-direction-review.md`。ネイティブ C++ の設計（`docs/02-architecture.md`）はその段階の参照として残しています。
 
 ## 技術スタック
 
-| 領域 | 選定 |
-|---|---|
-| 言語 | C++20 |
-| グラフィックス | bgfx（Metal / Vulkan / GLES） |
-| 細分割 | OpenSubdiv |
-| UI | 自前構築（テキストは HarfBuzz + FreeType） |
-| ビルド | CMake / Xcode / Gradle + NDK |
-| プラットフォーム | iOS（Objective-C++）、Android（GameActivity + NDK）、デスクトップ（SDL3） |
-| プロファイラ | Tracy |
+| 領域 | v1.0（モデリング） | v1.5 以降（スカルプト） |
+|---|---|---|
+| シェル | TypeScript + Vite、PWA。ストア配布は Capacitor | 同じ Web シェル。上限に当たればネイティブへ |
+| 描画 | WebGL2（WebGPU は iOS 26 以降で選択可） | 同左 |
+| ジオメトリ | TypeScript（`core/`、UI 非依存） | C++ → wasm（OpenSubdiv 込み）。同じコードをネイティブでも使う |
+| 検証機材 | iPad mini（Apple Pencil）、Wacom MovinkPad 14、Windows PC | 同左 |
 
 ## ドキュメント
 
