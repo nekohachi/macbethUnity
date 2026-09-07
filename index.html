@@ -187,9 +187,9 @@ button{font-family:inherit; font-size:inherit; color:inherit; background:none; b
 .marquee{position:absolute; border:1px solid #e8eef2; background:rgba(232,238,242,.14); pointer-events:none; display:none}
 
 /* 左下のタッチ用クラスタ:  SHF  F  /  CTL  ALT */
-.cluster{position:absolute; left:12px; bottom:calc(12px + env(safe-area-inset-bottom, 0px)); display:grid; grid-template-columns:46px 66px;
-  grid-auto-rows:auto; gap:6px; z-index:8; align-items:end}
-.cmod{width:46px; height:40px; border-radius:var(--radius); font-weight:600; font-size:10px; letter-spacing:.03em;
+.cluster{position:absolute; left:12px; bottom:calc(12px + env(safe-area-inset-bottom, 0px)); display:grid; grid-template-columns:66px 66px;
+  grid-auto-rows:58px; gap:6px; z-index:8}
+.cmod{width:66px; height:58px; border-radius:8px; font-weight:600; font-size:11px; letter-spacing:.04em;
   background:rgba(37,42,48,.9); border:1px solid var(--line); color:var(--text-dim); backdrop-filter:blur(4px)}
 .cmod[data-state="latch"]{background:var(--accent-dim); border-color:var(--accent); color:#fff}
 .cmod[data-state="lock"]{background:var(--accent); border-color:var(--accent); color:#0f1418;
@@ -198,8 +198,7 @@ button{font-family:inherit; font-size:inherit; color:inherit; background:none; b
   background:rgba(37,42,48,.92); border:1px solid var(--line-soft); color:var(--text); backdrop-filter:blur(4px);
   box-shadow:0 4px 14px rgba(0,0,0,.4); touch-action:none}
 .cframe:hover{background:var(--panel-hi)}
-.cframe::after{content:""; position:absolute; right:4px; bottom:4px;
-  border-left:6px solid transparent; border-bottom:6px solid var(--text-faint)}
+.cframe.held{background:var(--accent-dim); border-color:var(--accent); color:#eaf4fb}
 .cframe small{position:absolute; bottom:3px; left:6px; font-size:8px; color:var(--text-faint); letter-spacing:.06em}
 
 /* ---------- popover (カメラ設定) ---------- */
@@ -284,7 +283,7 @@ button{font-family:inherit; font-size:inherit; color:inherit; background:none; b
       <div class="hud hud-hint" id="hudHint"></div>
       <div class="cluster">
         <button class="cmod" id="modShift" data-state="off">SHF</button>
-        <button class="cframe" id="btnFrame" data-radial="selmode" title="選択をフレーム (F) — 長押しでマーキングメニュー、SHF + 長押しで編集メニュー">
+        <button class="cframe" id="btnFrame" title="タップで選択をフレーム (F)。押しながらドラッグで矩形選択、押しながらピンチで選択中心へズーム">
           <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3"/><circle cx="12" cy="12" r="3"/></svg>
           <small>F</small>
         </button>
@@ -1345,6 +1344,12 @@ function panCam(dx,dy){
   applyCam();
 }
 function dollyCam(f){ cam.dist=Math.max(.3,Math.min(140,cam.dist*f)); applyCam(); }
+// pivot が画面上で動かないズーム: カメラ位置とターゲットを pivot を中心に同じ比率で縮める
+function dollyAbout(pivot,f){
+  var nd=Math.max(.3,Math.min(140,cam.dist*f)); f=nd/cam.dist;
+  cam.target.sub(pivot).multiplyScalar(f).add(pivot);
+  cam.dist=nd; applyCam();
+}
 function tumbleCam(dx,dy){
   cam.theta -= dx*0.0088;
   cam.phi = Math.max(.05, Math.min(Math.PI-.05, cam.phi - dy*0.0088));
@@ -1383,12 +1388,16 @@ canvas.addEventListener("pointerdown",function(e){
       var a=Array.from(pointers.values());
       gesture={mode:"twofinger", live:false, acc:0, d:Math.hypot(a[0].x-a[1].x,a[0].y-a[1].y),
                cx:(a[0].x+a[1].x)/2, cy:(a[0].y+a[1].y)/2};
+      // F を押しながらのピンチ: 選択の中心を画面上で固定したままズーム（パンはしない）
+      if(fHeld){ fChord=true; gesture.zoomOnly=true; gesture.pivot=(pivotWorld()||cam.target.clone()); }
     } else {
       gesture={mode:"idle"};   // 3 本以上はカメラにしない（3 本ダブルタップ = 進む）
     }
     return;
   }
   var l=localXY(e);
+  // F を押しながらのドラッグ = 矩形選択（指でもペンでも。ヒットテストは無視）
+  if(fHeld){ fChord=true; gesture={mode:"tool", moved:false, sx:l.x, sy:l.y}; startMarquee(l); return; }
   if(e.pointerType==="mouse"){
     if(altOn(e)){ gesture={mode: e.button===0?"tumble": e.button===1?"pan":"dolly"}; return; }
     // 右クリック = マーキングメニュー、Shift + 右クリック = 編集メニュー（Maya と同じ）
@@ -1441,8 +1450,12 @@ canvas.addEventListener("pointermove",function(e){
       gesture.d=nd; gesture.cx=ncx; gesture.cy=ncy;   // 確定時点を基準にして飛びを防ぐ
       return;
     }
-    if(gesture.d>0 && nd>0) dollyCam(gesture.d/nd);
-    panCam(ncx-gesture.cx, ncy-gesture.cy);
+    if(gesture.zoomOnly){
+      if(gesture.d>0 && nd>0) dollyAbout(gesture.pivot, gesture.d/nd);
+    } else {
+      if(gesture.d>0 && nd>0) dollyCam(gesture.d/nd);
+      panCam(ncx-gesture.cx, ncy-gesture.cy);
+    }
     gesture.d=nd; gesture.cx=ncx; gesture.cy=ncy;
   }
   else if(gesture.mode==="tool"){
@@ -2493,8 +2506,25 @@ function setDisplay(d){
   toast({wire:"ワイヤーフレーム",shaded:"シェード",shadedWire:"シェード + ワイヤーフレーム",smooth:"スムースシェード"}[d]);
 }
 attachRadialButton(document.getElementById("modeBtn"), {radial:"modes", action:function(){}});
-attachRadialButton(document.getElementById("btnFrame"),
-  {radial:function(e){ return shiftOn(e)? "editmenu" : "selmode"; }, action:frameSelected});
+// F ボタン: タップ = フレーム。押している間は右手の修飾（1 本指 = 矩形選択、ピンチ = 選択中心へズーム）
+var fHeld=false, fChord=false, fDownT=0;
+(function(){
+  var b=document.getElementById("btnFrame"), pid=null;
+  b.addEventListener("contextmenu",function(e){ e.preventDefault(); });
+  b.addEventListener("touchstart",function(e){ e.preventDefault(); },{passive:false});
+  b.addEventListener("pointerdown",function(e){
+    e.preventDefault(); closePop();
+    pid=e.pointerId; fHeld=true; fChord=false; fDownT=performance.now();
+    b.classList.add("held");
+    try{ b.setPointerCapture(e.pointerId); }catch(_){}
+  });
+  function up(e){
+    if(e.pointerId!==pid) return;
+    pid=null; fHeld=false; b.classList.remove("held");
+    if(!fChord && performance.now()-fDownT<600) frameSelected();
+  }
+  b.addEventListener("pointerup",up); b.addEventListener("pointercancel",up);
+})();
 
 function cycleMod(name,btn){
   var s=App.mods[name];
@@ -2567,7 +2597,7 @@ function defaultHint(){
   clearTimeout(toastTimer);
   document.getElementById("hudHint").innerHTML=
     (App.fingerCam? "指1本 <kbd>タンブル</kbd> · ペン <kbd>ツール</kbd>" : "指1本 メッシュ上 <kbd>ツール</kbd> / 外 <kbd>タンブル</kbd> · ペン <kbd>ツール</kbd>")+
-    " · 指2本 <kbd>パン / ズーム</kbd> · 指2本ダブルタップ <kbd>戻る</kbd> · 指3本ダブルタップ <kbd>進む</kbd> · <kbd>F</kbd> 長押し <kbd>メニュー</kbd>"+
+    " · 指2本 <kbd>パン / ズーム</kbd> · 指2本ダブルタップ <kbd>戻る</kbd> · 指3本 <kbd>進む</kbd> · 長押し <kbd>メニュー</kbd><br><kbd>F</kbd> + ドラッグ <kbd>矩形選択</kbd> · <kbd>F</kbd> + ピンチ <kbd>選択中心へズーム</kbd>"+
     "<br>マウス <kbd>Alt+左 タンブル</kbd> <kbd>Alt+中 パン</kbd> <kbd>Alt+右 ズーム</kbd> <kbd>右 マーキングメニュー</kbd>";
 }
 function refreshUI(){
