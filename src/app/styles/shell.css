@@ -131,6 +131,10 @@ button{font-family:inherit; font-size:inherit; color:inherit; background:none; b
   border-radius:var(--radius); box-shadow:0 12px 32px rgba(0,0,0,.5);
   animation:cutin .12s ease-out}
 @keyframes cutin{from{opacity:0; transform:translateX(-8px)} to{opacity:1; transform:none}}
+/* ツールのオプション（21 の 1.1）。右のオプションパネルの中身がここへ移った */
+.cutin.wide{width:236px; padding:8px; gap:0; align-items:stretch; overflow-y:auto; overscroll-behavior:contain}
+.cutin.wide .sect{margin:0 0 8px}
+.cutin.wide .sect:last-child{margin-bottom:0}
 
 /* ---------- icon tool column ---------- */
 .toolcol{display:flex; flex-direction:column; gap:3px; align-items:center}

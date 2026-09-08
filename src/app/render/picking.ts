@@ -4,7 +4,7 @@
  * 面はレイキャスト、頂点とエッジは画面に投影してから距離で判定する。
  * Maya と同じく、近ければ拾えるようにピクセル半径で許容する。
  */
-import { Raycaster, Vector2, Vector3 } from "three";
+import { Matrix3, Raycaster, Vector2, Vector3 } from "three";
 import type { SceneObject } from "../../core/index.js";
 import type { ObjectView } from "./meshView.js";
 import type { Viewport } from "./viewport.js";
@@ -39,11 +39,88 @@ export interface SurfaceHit {
 const raycaster = new Raycaster();
 const scratch = new Vector3();
 
+/** 面が「カメラを向いている」とみなす最小の余弦。真横の面を落とすためのもの。 */
+const FACING_EPS = 1e-6;
+
 export class Picker {
+  /**
+   * カメラベース選択（`21` の 2.1、Maya の Camera based selection）。
+   * オンのとき、**カメラに向いている面**に属するものだけを拾う。
+   * app から差し替える（`picking.ts` は状態を持たない）。
+   */
+  cameraBased: () => boolean = () => false;
+  /** 面がカメラを向いているかの控え。1 回の呼び出しの間だけ持つ。 */
+  private facingCache: { view: ObjectView; front: Uint8Array } | null = null;
+
   constructor(
     private viewport: Viewport,
     private container: HTMLElement,
   ) {}
+
+  /**
+   * 面ごとに「カメラを向いているか」を出す。
+   *
+   * レイを撃って遮蔽を見る方法も試したが、頂点 3000 点で 1 秒近くかかり、
+   * 矩形選択には使えなかった。Maya の Camera based selection も
+   * 「カメラを向いている面のコンポーネントだけ」なので、そちらに合わせている。
+   */
+  private frontFaces(view: ObjectView): Uint8Array {
+    if (this.facingCache?.view === view) return this.facingCache.front;
+    const mesh = view.object.mesh;
+    view.group.updateMatrixWorld();
+    const normalMatrix = new Matrix3().getNormalMatrix(view.group.matrixWorld);
+    const normals = mesh.faceNormals();
+    const front = new Uint8Array(mesh.faceCount);
+    const camera = this.viewport.camera;
+    const forward = new Vector3();
+    camera.getWorldDirection(forward);
+    const perspective = (camera as { isPerspectiveCamera?: boolean }).isPerspectiveCamera === true;
+    const n = new Vector3();
+    const c = new Vector3();
+    for (let f = 0; f < mesh.faceCount; f++) {
+      n.set(normals[f * 3], normals[f * 3 + 1], normals[f * 3 + 2]).applyMatrix3(normalMatrix);
+      // 平行投影は視線が 1 本しかないので、面の位置は要らない
+      let toEye: Vector3;
+      if (perspective) {
+        const center = mesh.faceCenter(f);
+        c.set(center[0], center[1], center[2]).applyMatrix4(view.group.matrixWorld);
+        toEye = c.subVectors(camera.position, c);
+      } else {
+        toEye = c.copy(forward).negate();
+      }
+      // 真横から見た面（内積がほぼ 0）は見えていない。丸め誤差で表になるのを避ける
+      const cos = n.dot(toEye) / Math.max(1e-12, n.length() * toEye.length());
+      front[f] = cos > FACING_EPS ? 1 : 0;
+    }
+    this.facingCache = { view, front };
+    return front;
+  }
+
+  /** この呼び出しの間だけ控えを持つ。選択が終わったら捨てる。 */
+  private withFacing<T>(run: () => T): T {
+    this.facingCache = null;
+    try {
+      return run();
+    } finally {
+      this.facingCache = null;
+    }
+  }
+
+  /** 面がカメラを向いているか。カメラベース選択がオフなら常に真。 */
+  faceVisible(view: ObjectView, face: number): boolean {
+    if (!this.cameraBased()) return true;
+    return this.frontFaces(view)[face] === 1;
+  }
+
+  /** 頂点に、カメラを向いている面が 1 枚でもあるか。 */
+  private vertexVisible(view: ObjectView, vi: number, faces: Map<number, number[]>): boolean {
+    if (!this.cameraBased()) return true;
+    const front = this.frontFaces(view);
+    const around = faces.get(vi);
+    // どの面にも属さない頂点（孤立点）は隠せないので通す
+    if (!around?.length) return true;
+    return around.some((f) => front[f] === 1);
+  }
 
   private get width(): number {
     return this.container.clientWidth || 1;
@@ -97,21 +174,28 @@ export class Picker {
     return { object: view.object, view, face, point: hit.point.clone(), distance: hit.distance };
   }
 
-  /** 半径 radius ピクセル以内で最も近い頂点。見つからなければ -1。 */
-  pickVertex(view: ObjectView, p: ScreenPoint, radius: number): number {
-    let best = -1;
-    let bestD = radius * radius;
-    const n = view.object.mesh.vertexCount;
-    for (let i = 0; i < n; i++) {
-      const s = this.projectVertex(view, i);
-      if (s.z > 1) continue;
-      const d = (s.x - p.x) ** 2 + (s.y - p.y) ** 2;
-      if (d < bestD) {
+  /**
+   * 半径 radius ピクセル以内で最も近い頂点。見つからなければ -1。
+   * カメラベース選択がオンなら、隠れている頂点は飛ばして次に近いものを見る。
+   */
+  pickVertex(view: ObjectView, p: ScreenPoint, radius: number, exclude = -1): number {
+    return this.withFacing(() => {
+      const faces = this.cameraBased() ? view.object.mesh.vertexFaces() : new Map<number, number[]>();
+      let best = -1;
+      let bestD = radius * radius;
+      const n = view.object.mesh.vertexCount;
+      for (let i = 0; i < n; i++) {
+        if (i === exclude) continue;
+        const s = this.projectVertex(view, i);
+        if (s.z > 1) continue;
+        const d = (s.x - p.x) ** 2 + (s.y - p.y) ** 2;
+        if (d >= bestD) continue;
+        if (!this.vertexVisible(view, i, faces)) continue;
         bestD = d;
         best = i;
       }
-    }
-    return best;
+      return best;
+    });
   }
 
   /**
@@ -119,56 +203,64 @@ export class Picker {
    * ターゲットウェルドで「掴んでいる頂点以外の相手」を探すのに使う。
    */
   pickVertexExcept(view: ObjectView, p: ScreenPoint, radius: number, exclude: number): number {
-    let best = -1;
-    let bestD = radius * radius;
-    const n = view.object.mesh.vertexCount;
-    for (let i = 0; i < n; i++) {
-      if (i === exclude) continue;
-      const s = this.projectVertex(view, i);
-      if (s.z > 1) continue;
-      const d = (s.x - p.x) ** 2 + (s.y - p.y) ** 2;
-      if (d < bestD) {
-        bestD = d;
-        best = i;
-      }
-    }
-    return best;
+    return this.pickVertex(view, p, radius, exclude);
   }
 
-  /** 半径 radius ピクセル以内で最も近いエッジと、その上の位置。 */
+  /**
+   * 半径 radius ピクセル以内で最も近いエッジと、その上の位置。
+   * カメラベース選択がオンなら、隠れているエッジは飛ばす（掴んだ点で判定する）。
+   */
   pickEdge(view: ObjectView, p: ScreenPoint, radius: number): EdgeHit {
-    let best = -1;
-    let bestD = radius;
-    let bestT = 0.5;
-    for (let i = 0; i < view.edges.length; i++) {
-      const [ia, ib] = view.edges[i];
-      const a = this.projectVertex(view, ia);
-      const b = this.projectVertex(view, ib);
-      if (a.z > 1 && b.z > 1) continue;
-      const dx = b.x - a.x;
-      const dy = b.y - a.y;
-      const len2 = dx * dx + dy * dy;
-      const t = len2 ? Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2)) : 0;
-      const d = Math.hypot(a.x + dx * t - p.x, a.y + dy * t - p.y);
-      if (d < bestD) {
+    return this.withFacing(() => {
+      const faces = this.cameraBased() ? view.object.mesh.vertexFaces() : new Map<number, number[]>();
+      let best = -1;
+      let bestD = radius;
+      let bestT = 0.5;
+      for (let i = 0; i < view.edges.length; i++) {
+        const [ia, ib] = view.edges[i];
+        const a = this.projectVertex(view, ia);
+        const b = this.projectVertex(view, ib);
+        if (a.z > 1 && b.z > 1) continue;
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const len2 = dx * dx + dy * dy;
+        const t = len2 ? Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2)) : 0;
+        const d = Math.hypot(a.x + dx * t - p.x, a.y + dy * t - p.y);
+        if (d >= bestD) continue;
+        // エッジは両端のどちらかが見えていれば拾える
+        if (!this.vertexVisible(view, ia, faces) && !this.vertexVisible(view, ib, faces)) continue;
         bestD = d;
         best = i;
         bestT = t;
       }
-    }
-    return { edge: best, t: bestT };
+      return { edge: best, t: bestT };
+    });
   }
 
   /** 矩形の中に入っている頂点。矩形選択で使う。 */
   vertsInRect(view: ObjectView, x0: number, y0: number, x1: number, y1: number): number[] {
-    const lo = { x: Math.min(x0, x1), y: Math.min(y0, y1) };
-    const hi = { x: Math.max(x0, x1), y: Math.max(y0, y1) };
-    const out: number[] = [];
-    const n = view.object.mesh.vertexCount;
-    for (let i = 0; i < n; i++) {
-      const s = this.projectVertex(view, i);
-      if (s.z <= 1 && s.x >= lo.x && s.x <= hi.x && s.y >= lo.y && s.y <= hi.y) out.push(i);
-    }
-    return out;
+    return this.withFacing(() => {
+      const lo = { x: Math.min(x0, x1), y: Math.min(y0, y1) };
+      const hi = { x: Math.max(x0, x1), y: Math.max(y0, y1) };
+      const out: number[] = [];
+      const faces = this.cameraBased() ? view.object.mesh.vertexFaces() : new Map<number, number[]>();
+      const n = view.object.mesh.vertexCount;
+      for (let i = 0; i < n; i++) {
+        const s = this.projectVertex(view, i);
+        if (s.z > 1 || s.x < lo.x || s.x > hi.x || s.y < lo.y || s.y > hi.y) continue;
+        if (!this.vertexVisible(view, i, faces)) continue;
+        out.push(i);
+      }
+      return out;
+    });
+  }
+
+  /** 矩形選択で、そのエッジ / 面がカメラを向いているか。 */
+  edgeVisible(view: ObjectView, a: number, b: number): boolean {
+    if (!this.cameraBased()) return true;
+    return this.withFacing(() => {
+      const faces = view.object.mesh.vertexFaces();
+      return this.vertexVisible(view, a, faces) || this.vertexVisible(view, b, faces);
+    });
   }
 }

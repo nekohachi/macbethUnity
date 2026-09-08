@@ -29,6 +29,16 @@ export interface PanelHost {
   onUvAutoChange(key: "angle" | "useHardEdges" | "useCreases" | "usePolygroups" | "symmetric", value: number | boolean): void;
   onUvAutoRun(): void;
   onUvPackingChange(key: "marginTexels" | "textureSize" | "allowRotate", value: number | boolean): void;
+  /** カメラベース選択（`21` の 2.1）。 */
+  onCameraBasedChange(on: boolean): void;
+  /** 回転の刻み（度。0 でなし）。 */
+  onRotateStepChange(deg: number): void;
+  onPreventNegativeScaleChange(on: boolean): void;
+  onPivotEditToggle(): void;
+  onCamOptChange(key: "focal" | "near" | "far", value: number): void;
+  onCamOrthoChange(on: boolean): void;
+  /** 「次に追加するプリミティブ」のパラメータ（`21` の 2.7）。 */
+  onDefaultParamChange(kind: string, key: string, value: number): void;
   onSelect(object: SceneObject): void;
   onRename(object: SceneObject, name: string): void;
   onOutlinerMenu(object: SceneObject, x: number, y: number): void;
@@ -127,6 +137,16 @@ export interface OptionsState {
   compMode: string;
   /** マニピュレータの見た目の大きさ（0.5〜2.0）。 */
   manipSize: number;
+  /** 今のマニピュレータ（`21` の 2.2）。 */
+  manip: "all" | "move" | "rotate" | "scale";
+  pivotEdit: boolean;
+  rotateStep: number;
+  preventNegativeScale: boolean;
+  cameraBased: boolean;
+  cam: { focal: number; near: number; far: number; ortho: boolean };
+  /** 次に追加するプリミティブの種類と、その既定値（`21` の 2.7）。 */
+  nextPrimitive: string;
+  nextPrimitiveParams: Record<string, number>;
   /** UV モードのときだけ。ソルバー、自動の切れ目、スナップ。 */
   uv: {
     method: "lscm" | "projection" | "none";
@@ -211,318 +231,351 @@ function tripleRow(
   parent.appendChild(row);
 }
 
-export function renderOptions(body: HTMLElement, state: OptionsState, host: PanelHost): void {
-  body.textContent = "";
+/* ---- 区画ごとの組み立て（`21` の 3 章） ---------------------------------
+ *
+ * どれも「区画を 1 つ作って返す」だけ。ツール列のカットイン（`openToolOptions`）が
+ * グループごとに必要なものを選んで並べる。右のオプションパネルは無くなった。
+ */
+
+/** トランスフォームの数値入力。選択が無ければ null。 */
+export function transformSection(state: OptionsState, host: PanelHost): HTMLElement | null {
   const o = state.selected;
+  if (!o) return null;
+  const s = section("トランスフォーム", "TRANSFORM");
+  tripleRow(s, "移動", o.transform.position as [number, number, number], 3, (axis, v) =>
+    host.onTransformInput(o, "position", axis, v),
+  );
+  tripleRow(s, "回転", state.rotationEuler, 1, (axis, v) => host.onTransformInput(o, "rotation", axis, v));
+  tripleRow(s, "スケール", o.transform.scale as [number, number, number], 3, (axis, v) =>
+    host.onTransformInput(o, "scale", axis, v),
+  );
+  s.appendChild(el("div", "hint", "回転は度で入れます。数値を打って Enter で確定します。"));
+  return s;
+}
 
-  // UV モードの区画。ソルバーとスナップ（`17` の 1 章と 7.4）
-  if (state.uv) {
-    const s = section("展開", "UNFOLD");
+/** マニピュレータ。大きさのゲージは呼び出し側（app）が足す。 */
+export function manipulatorSection(state: OptionsState, host: PanelHost): HTMLElement {
+  const label = { all: "ユニバーサル", move: "移動", rotate: "回転", scale: "スケール" }[state.manip];
+  const s = section(label, "MANIPULATOR");
+  paramRow(s, {
+    label: "大きさ",
+    value: state.manipSize,
+    min: 0.5,
+    max: 2,
+    step: 0.05,
+    format: (v) => `×${v.toFixed(2)}`,
+    onInput: (v) => host.onManipSizeChange(v),
+  });
+  checkbox(s, "ピボットを移動（D）", state.pivotEdit, () => host.onPivotEditToggle());
+
+  if (state.manip === "rotate" || state.manip === "all") {
     const row = el("div", "row");
+    row.appendChild(el("label", undefined, "刻み"));
     const group = el("div", "segmented");
-    for (const [key, label] of [
-      ["none", "取り込んだまま"],
-      ["lscm", "LSCM"],
-      ["projection", "投影"],
+    for (const [deg, text] of [
+      [0, "なし"],
+      [5, "5°"],
+      [15, "15°"],
+      [45, "45°"],
+      [90, "90°"],
     ] as const) {
       const b = el("button", "seg") as HTMLButtonElement;
-      b.textContent = label;
-      b.setAttribute("aria-pressed", String(state.uv.method === key));
-      b.addEventListener("click", () => host.onUvMethodChange(key));
+      b.textContent = text;
+      b.setAttribute("aria-pressed", String(state.rotateStep === deg));
+      b.addEventListener("click", () => host.onRotateStepChange(deg));
       group.appendChild(b);
     }
     row.appendChild(group);
     s.appendChild(row);
-    s.appendChild(
-      el(
-        "div",
-        "hint",
-        "「取り込んだまま」はメッシュが持っている UV をそのまま見せます。\n「展開」を押すと LSCM に切り替わります。",
-      ),
-    );
-    body.appendChild(s);
-
-    const auto = section("自動 UV", "AUTO");
-    paramRow(auto, {
-      label: "角度",
-      value: state.uv.auto.angle,
-      min: 10,
-      max: 180,
-      step: 1,
-      format: (v) => `${Math.round(v)}°`,
-      onInput: (v) => host.onUvAutoChange("angle", v),
-    });
-    checkbox(auto, "ハードエッジ", state.uv.auto.useHardEdges, (v) => host.onUvAutoChange("useHardEdges", v));
-    checkbox(auto, "クリース", state.uv.auto.useCreases, (v) => host.onUvAutoChange("useCreases", v));
-    checkbox(auto, "ポリグループ", state.uv.auto.usePolygroups, (v) => host.onUvAutoChange("usePolygroups", v));
-    checkbox(auto, "対称 X", state.uv.auto.symmetric, (v) => host.onUvAutoChange("symmetric", v));
-    const run = el("button", "act", "自動 UV を実行");
-    run.addEventListener("click", () => host.onUvAutoRun());
-    auto.appendChild(run);
-    auto.appendChild(
-      el(
-        "div",
-        "hint",
-        "角度・ハードエッジ・クリース・ポリグループで切れ目を置き、\n大きすぎる島と閉じた island を割ってから開きます。手で動かした分は捨てます。",
-      ),
-    );
-    body.appendChild(auto);
-    body.appendChild(packingSection(state.uv, host));
-
-    const sn = section(`スナップ${state.snap.active ? "（効いています）" : ""}`, "SNAP");
-    const srow = el("div", "row");
-    const sgroup = el("div", "segmented");
-    for (const [key, label, step] of [
-      ["grid", "1/8", 1 / 8],
-      ["grid", "1/16", 1 / 16],
-      ["grid", "1/32", 1 / 32],
-      ["vertex", "UV 頂点", 0],
-    ] as const) {
-      const b = el("button", "seg") as HTMLButtonElement;
-      b.textContent = label;
-      const on =
-        key === "vertex"
-          ? state.uv.snapKind === "vertex"
-          : state.uv.snapKind === "grid" && Math.abs(state.uv.snapStep - step) < 1e-9;
-      b.setAttribute("aria-pressed", String(on));
-      b.addEventListener("click", () => {
-        host.onUvSnapChange("kind", key);
-        if (key === "grid") host.onUvSnapChange("step", step);
-      });
-      sgroup.appendChild(b);
-    }
-    srow.appendChild(sgroup);
-    sn.appendChild(srow);
-    body.appendChild(sn);
-    return;
   }
 
-  // 数値入力（トランスフォーム）。選択があるときだけ
-  if (o) {
-    const s = section("トランスフォーム", "TRANSFORM");
-    tripleRow(s, "移動", o.transform.position as [number, number, number], 3, (axis, v) =>
-      host.onTransformInput(o, "position", axis, v),
-    );
-    tripleRow(s, "回転", state.rotationEuler, 1, (axis, v) => host.onTransformInput(o, "rotation", axis, v));
-    tripleRow(s, "スケール", o.transform.scale as [number, number, number], 3, (axis, v) =>
-      host.onTransformInput(o, "scale", axis, v),
-    );
-    s.appendChild(el("div", "hint", "回転は度で入れます。数値を打って Enter で確定します。"));
-    body.appendChild(s);
+  if (state.manip === "scale" || state.manip === "all") {
+    checkbox(s, "負のスケールを防ぐ", state.preventNegativeScale, (v) => host.onPreventNegativeScaleChange(v));
   }
 
-  if (state.tool === "multicut") {
-    const s = section("マルチカット", "MULTI CUT");
-    paramRow(s, {
-      label: "ステップ % スナップ",
-      value: state.cut.snapStep,
-      min: 0,
-      max: 50,
-      step: 5,
-      format: (v) => (v ? `${Math.round(v)}%` : "オフ"),
-      onInput: (v) => host.onCutChange("snapStep", v),
-    });
-    checkbox(s, "エッジフロー", state.cut.edgeFlow, (v) => host.onCutChange("edgeFlow", v));
-    s.appendChild(
-      el(
-        "div",
-        "hint",
-        "ホバーで入る位置を先に見せます。Shift で 50% に固定。\nエッジフローは頂点法線による三次補間で、ループをサーフェスに沿わせます。",
-      ),
-    );
-    body.appendChild(s);
-  }
+  s.appendChild(
+    el(
+      "div",
+      "hint",
+      "長押しで 移動 / 回転 / スケール を切り替えます。\nピボットの移動中は、メッシュではなくピボットだけが動きます。",
+    ),
+  );
+  return s;
+}
 
-  if (state.tool === "bevel" || state.bevelActive) {
-    const s = section("ベベル", "BEVEL");
-    paramRow(s, {
-      label: "幅",
-      value: state.bevel.width,
-      min: 0.005,
-      max: 2,
-      step: 0.005,
-      format: (v) => v.toFixed(3),
-      onInput: (v) => host.onBevelChange("width", v),
-    });
-    paramRow(s, {
-      label: "セグメント",
-      value: state.bevel.segments,
-      min: 1,
-      max: 8,
-      step: 1,
-      onInput: (v) => host.onBevelChange("segments", v),
-    });
-    s.appendChild(
-      el(
-        "div",
-        "hint",
-        state.bevelActive
-          ? "確定したあとでも、ここを動かすとかけ直します。\n別の操作をすると確定します。"
-          : "エッジを選んで左右にドラッグすると幅が決まります。\nセグメント 1 で面取り、2 以上で丸めになります。",
-      ),
-    );
-    body.appendChild(s);
-  }
+/** 選択のオプション。カメラベース選択（`21` の 2.1）。 */
+export function selectSection(state: OptionsState, host: PanelHost): HTMLElement {
+  const s = section("選択", "SELECT");
+  checkbox(s, "カメラベース選択", state.cameraBased, (v) => host.onCameraBasedChange(v));
+  s.appendChild(
+    el(
+      "div",
+      "hint",
+      "オンにすると、カメラから見えているものだけを選びます。\n裏側の頂点やエッジは、タップでも矩形でも拾いません。",
+    ),
+  );
+  return s;
+}
 
-  // 押し出しは面とエッジのメニューから使う。距離をここで決める
-  if (state.compMode === "face" || state.compMode === "edge") {
-    const s = section("押し出し", "EXTRUDE");
-    paramRow(s, {
-      label: "距離",
-      value: state.extrudeDist,
-      min: 0.05,
-      max: 3,
-      step: 0.05,
-      onInput: (v) => host.onExtrudeDistChange(v),
-    });
-    s.appendChild(
-      el("div", "hint", "編集メニューの「押し出し」で使う距離です。\nSHF を押しながらドラッグする場合は距離ではなく動かした量になります。"),
-    );
-    body.appendChild(s);
-  }
+export function multicutSection(state: OptionsState, host: PanelHost): HTMLElement {
+  const s = section("マルチカット", "MULTI CUT");
+  paramRow(s, {
+    label: "ステップ % スナップ",
+    value: state.cut.snapStep,
+    min: 0,
+    max: 50,
+    step: 5,
+    format: (v) => (v ? `${Math.round(v)}%` : "オフ"),
+    onInput: (v) => host.onCutChange("snapStep", v),
+  });
+  checkbox(s, "エッジフロー", state.cut.edgeFlow, (v) => host.onCutChange("edgeFlow", v));
+  s.appendChild(
+    el(
+      "div",
+      "hint",
+      "ホバーで入る位置を先に見せます。Shift で 50% に固定。\nエッジフローは頂点法線による三次補間で、ループをサーフェスに沿わせます。",
+    ),
+  );
+  return s;
+}
 
-  {
-    const s = section(`スナップ${state.snap.active ? "（効いています）" : ""}`, "SNAP");
-    const row = el("div", "row");
-    const group = el("div", "segmented");
-    for (const [key, label] of [
-      ["grid", "グリッド  X"],
-      ["vertex", "頂点  V"],
-      ["edge", "カーブ  C"],
-      ["surface", "面"],
-    ] as const) {
-      const b = el("button", "seg") as HTMLButtonElement;
-      b.textContent = label;
-      b.setAttribute("aria-pressed", String(state.snap.kind === key));
-      b.addEventListener("click", () => host.onSnapChange("kind", key));
-      group.appendChild(b);
-    }
-    row.appendChild(group);
-    s.appendChild(row);
-    paramRow(s, {
-      label: "グリッドの刻み",
-      value: state.snap.step,
-      min: 0.05,
-      max: 2,
-      step: 0.05,
-      onInput: (v) => host.onSnapChange("step", v),
-    });
-    s.appendChild(
-      el(
-        "div",
-        "hint",
-        "ツール列のスナップがオンのとき、または X / V / C を押している間だけ効きます。\n移動のときだけ働き、寄せ先は緑で光ります。",
-      ),
-    );
-    body.appendChild(s);
-  }
+export function bevelSection(state: OptionsState, host: PanelHost): HTMLElement {
+  const s = section("ベベル", "BEVEL");
+  paramRow(s, {
+    label: "幅",
+    value: state.bevel.width,
+    min: 0.005,
+    max: 2,
+    step: 0.005,
+    format: (v) => v.toFixed(3),
+    onInput: (v) => host.onBevelChange("width", v),
+  });
+  paramRow(s, {
+    label: "セグメント",
+    value: state.bevel.segments,
+    min: 1,
+    max: 8,
+    step: 1,
+    onInput: (v) => host.onBevelChange("segments", v),
+  });
+  s.appendChild(
+    el(
+      "div",
+      "hint",
+      state.bevelActive
+        ? "確定したあとでも、ここを動かすとかけ直します。\n別の操作をすると確定します。"
+        : "エッジを選んで左右にドラッグすると幅が決まります。\nセグメント 1 で面取り、2 以上で丸めになります。",
+    ),
+  );
+  return s;
+}
 
-  if (state.compMode === "object") {
-    const s = section("ミラー", "MIRROR");
-    const row = el("div", "row");
-    const group = el("div", "segmented");
-    for (const [axis, label] of [
-      [0, "X"],
-      [1, "Y"],
-      [2, "Z"],
-    ] as const) {
-      const b = el("button", "seg") as HTMLButtonElement;
-      b.textContent = label;
-      b.setAttribute("aria-pressed", String(state.mirrorAxis === axis));
-      b.addEventListener("click", () => host.onMirrorAxisChange(axis));
-      group.appendChild(b);
-    }
-    row.appendChild(group);
-    s.appendChild(row);
-    s.appendChild(
-      el("div", "hint", "編集メニュー（オブジェクト）の「ミラー」で使う軸です。\n境目の頂点は「マージ距離」で溶接します。"),
-    );
-    body.appendChild(s);
-  }
+export function extrudeSection(state: OptionsState, host: PanelHost): HTMLElement {
+  const s = section("押し出し", "EXTRUDE");
+  paramRow(s, {
+    label: "距離",
+    value: state.extrudeDist,
+    min: 0.05,
+    max: 3,
+    step: 0.05,
+    onInput: (v) => host.onExtrudeDistChange(v),
+  });
+  s.appendChild(
+    el(
+      "div",
+      "hint",
+      "編集メニューの「押し出し」で使う距離です。\nSHF を押しながらドラッグする場合は距離ではなく動かした量になります。",
+    ),
+  );
+  return s;
+}
 
-  if (state.compMode === "vertex") {
-    const s = section("頂点", "VERTEX");
-    paramRow(s, {
-      label: "マージ距離",
-      value: state.vertex.mergeDist,
-      min: 0.001,
-      max: 0.5,
-      step: 0.001,
-      format: (v) => v.toFixed(3),
-      onInput: (v) => host.onVertexOptChange("mergeDist", v),
-    });
-    paramRow(s, {
-      label: "押し出しの太さ",
-      value: state.vertex.extrudeWidth,
-      min: 0.05,
-      max: 0.6,
-      step: 0.01,
-      onInput: (v) => host.onVertexOptChange("extrudeWidth", v),
-    });
-    s.appendChild(
-      el(
-        "div",
-        "hint",
-        "マージ距離は「距離でマージ」で使うしきい値です。\n押し出しの太さは、尖らせたときの根元の広がり（辺の長さに対する割合）です。",
-      ),
-    );
-    body.appendChild(s);
-  }
+export function bridgeSection(): HTMLElement {
+  const s = section("ブリッジ", "BRIDGE");
+  s.appendChild(
+    el(
+      "div",
+      "hint",
+      "境界のエッジ列を 2 つ選んで実行します。数が同じでないと繋げません。\n分割数はまだ 1 だけです。",
+    ),
+  );
+  return s;
+}
 
-  if (state.compMode !== "object") {
-    const s = section("ソフト選択", "SOFT SELECT");
-    paramRow(s, {
-      label: "強度",
-      value: state.soft.strength,
-      min: 0,
-      max: 1,
-      step: 0.01,
-      onInput: (v) => host.onSoftChange("strength", v),
-    });
-    paramRow(s, {
-      label: "範囲",
-      value: state.soft.radius,
-      min: 0.05,
-      max: 6,
-      step: 0.05,
-      onInput: (v) => host.onSoftChange("radius", v),
-    });
-    body.appendChild(s);
-  }
+export function connectSection(): HTMLElement {
+  const s = section("コネクト", "CONNECT");
+  s.appendChild(
+    el("div", "hint", "同じ面にある頂点どうしを結んで面を分けます。\nエッジを選んだときは中点を作ってから結びます。"),
+  );
+  return s;
+}
 
-  if (o) {
+export function snapSection(state: OptionsState, host: PanelHost): HTMLElement {
+  const s = section(`スナップ${state.snap.active ? "（効いています）" : ""}`, "SNAP");
+  const row = el("div", "row");
+  const group = el("div", "segmented");
+  for (const [key, label] of [
+    ["grid", "グリッド  X"],
+    ["vertex", "頂点  V"],
+    ["edge", "カーブ  C"],
+    ["surface", "面"],
+  ] as const) {
+    const b = el("button", "seg") as HTMLButtonElement;
+    b.textContent = label;
+    b.setAttribute("aria-pressed", String(state.snap.kind === key));
+    b.addEventListener("click", () => host.onSnapChange("kind", key));
+    group.appendChild(b);
+  }
+  row.appendChild(group);
+  s.appendChild(row);
+  paramRow(s, {
+    label: "グリッドの刻み",
+    value: state.snap.step,
+    min: 0.05,
+    max: 2,
+    step: 0.05,
+    onInput: (v) => host.onSnapChange("step", v),
+  });
+  s.appendChild(
+    el(
+      "div",
+      "hint",
+      "ツール列のスナップがオンのとき、または X / V / C を押している間だけ効きます。\n移動のときだけ働き、寄せ先は緑で光ります。",
+    ),
+  );
+  return s;
+}
+
+export function mirrorSection(state: OptionsState, host: PanelHost): HTMLElement {
+  const s = section("ミラー", "MIRROR");
+  const row = el("div", "row");
+  const group = el("div", "segmented");
+  for (const [axis, label] of [
+    [0, "X"],
+    [1, "Y"],
+    [2, "Z"],
+  ] as const) {
+    const b = el("button", "seg") as HTMLButtonElement;
+    b.textContent = label;
+    b.setAttribute("aria-pressed", String(state.mirrorAxis === axis));
+    b.addEventListener("click", () => host.onMirrorAxisChange(axis));
+    group.appendChild(b);
+  }
+  row.appendChild(group);
+  s.appendChild(row);
+  s.appendChild(
+    el("div", "hint", "編集メニュー（オブジェクト）の「ミラー」で使う軸です。\n境目の頂点は「マージ距離」で溶接します。"),
+  );
+  return s;
+}
+
+export function vertexSection(state: OptionsState, host: PanelHost): HTMLElement {
+  const s = section("頂点", "VERTEX");
+  paramRow(s, {
+    label: "マージ距離",
+    value: state.vertex.mergeDist,
+    min: 0.001,
+    max: 0.5,
+    step: 0.001,
+    format: (v) => v.toFixed(3),
+    onInput: (v) => host.onVertexOptChange("mergeDist", v),
+  });
+  paramRow(s, {
+    label: "押し出しの太さ",
+    value: state.vertex.extrudeWidth,
+    min: 0.05,
+    max: 0.6,
+    step: 0.01,
+    onInput: (v) => host.onVertexOptChange("extrudeWidth", v),
+  });
+  s.appendChild(
+    el(
+      "div",
+      "hint",
+      "マージ距離は「距離でマージ」で使うしきい値です。\n押し出しの太さは、尖らせたときの根元の広がり（辺の長さに対する割合）です。",
+    ),
+  );
+  return s;
+}
+
+export function softSelectSection(state: OptionsState, host: PanelHost): HTMLElement {
+  const s = section("ソフト選択", "SOFT SELECT");
+  paramRow(s, {
+    label: "強度",
+    value: state.soft.strength,
+    min: 0,
+    max: 1,
+    step: 0.01,
+    onInput: (v) => host.onSoftChange("strength", v),
+  });
+  paramRow(s, {
+    label: "範囲",
+    value: state.soft.radius,
+    min: 0.05,
+    max: 6,
+    step: 0.05,
+    onInput: (v) => host.onSoftChange("radius", v),
+  });
+  return s;
+}
+
+/**
+ * プリミティブの入力ノード（`21` の 2.7）。
+ *
+ * 選んでいるオブジェクトがパラメトリックならそれを、そうでなければ
+ * 「次に追加する種類」の既定値を触る。見出しでどちらか分かるようにする。
+ */
+export function primitiveSection(state: OptionsState, host: PanelHost): HTMLElement {
+  const o = state.selected;
+  if (o && o.parametric && PRIMITIVES[o.kind]) {
     const def = PRIMITIVES[o.kind];
-    if (o.parametric && def) {
-      const s = section("入力ノード", def.en.toUpperCase());
-      const title = el("div", "attr-title", o.name);
-      title.appendChild(el("span", undefined, def.en));
-      s.appendChild(title);
-      for (const spec of def.params) {
-        paramRow(s, {
-          label: spec.label,
-          value: o.params[spec.key] ?? spec.value,
-          min: spec.min,
-          max: spec.max,
-          step: spec.step,
-          onInput: (v) => host.onParamInput(o, spec.key, v),
-          onCommit: () => host.onParamCommit(o, `${spec.label} を変更`),
-        });
-      }
-      s.appendChild(
-        el("div", "hint", "パラメトリックなので、値を変えると作り直されます。\n編集すると通常のメッシュになります。"),
-      );
-      body.appendChild(s);
-    } else {
-      const s = section("メッシュ", "MESH");
-      const stats = o.mesh.stats();
-      s.appendChild(el("div", "attr-title", o.name));
-      s.appendChild(
-        el("div", "hint", `頂点 ${stats.vertices} · エッジ ${stats.edges} · 面 ${stats.faces}`),
-      );
-      body.appendChild(s);
+    const s = section("入力ノード", def.en.toUpperCase());
+    const title = el("div", "attr-title", o.name);
+    title.appendChild(el("span", undefined, def.en));
+    s.appendChild(title);
+    for (const spec of def.params) {
+      paramRow(s, {
+        label: spec.label,
+        value: o.params[spec.key] ?? spec.value,
+        min: spec.min,
+        max: spec.max,
+        step: spec.step,
+        onInput: (v) => host.onParamInput(o, spec.key, v),
+        onCommit: () => host.onParamCommit(o, `${spec.label} を変更`),
+      });
     }
+    s.appendChild(
+      el("div", "hint", "パラメトリックなので、値を変えると作り直されます。\n編集すると通常のメッシュになります。"),
+    );
+    return s;
   }
 
+  // 選択がパラメトリックでないときは「次に追加するもの」の既定値
+  const kind = state.nextPrimitive;
+  const def = PRIMITIVES[kind];
+  const s = section(`次の${def?.label ?? kind}`, (def?.en ?? kind).toUpperCase());
+  if (!def) return s;
+  for (const spec of def.params) {
+    paramRow(s, {
+      label: spec.label,
+      value: state.nextPrimitiveParams[spec.key] ?? spec.value,
+      min: spec.min,
+      max: spec.max,
+      step: spec.step,
+      onInput: (v) => host.onDefaultParamChange(kind, spec.key, v),
+    });
+  }
+  s.appendChild(el("div", "hint", "長押しのメニューから追加すると、この値で作られます。"));
+
+  if (o) {
+    const stats = o.mesh.stats();
+    s.appendChild(el("div", "attr-title", o.name));
+    s.appendChild(el("div", "hint", `頂点 ${stats.vertices} · エッジ ${stats.edges} · 面 ${stats.faces}`));
+  }
+  return s;
+}
+
+export function displaySection(state: OptionsState, host: PanelHost): HTMLElement {
   const s = section("表示", "DISPLAY");
   paramRow(s, {
     label: "スムージング角度",
@@ -533,18 +586,124 @@ export function renderOptions(body: HTMLElement, state: OptionsState, host: Pane
     format: (v) => `${Math.round(v)}°`,
     onInput: (v) => host.onSmoothAngleChange(v),
   });
-  paramRow(s, {
-    label: "マニピュレータの大きさ",
-    value: state.manipSize,
-    min: 0.5,
-    max: 2,
-    step: 0.05,
-    format: (v) => `×${v.toFixed(2)}`,
-    onInput: (v) => host.onManipSizeChange(v),
-  });
-  body.appendChild(s);
+  s.appendChild(el("div", "hint", "長押しで ワイヤ / シェード / シェード + ワイヤ / スムース を選べます（4〜7）。"));
+  return s;
+}
 
-  if (!body.children.length) body.appendChild(el("div", "empty", "選択すると内容が出ます"));
+/** カメラ。`openCameraPopup` の中身をここへ移した。 */
+export function cameraSection(state: OptionsState, host: PanelHost): HTMLElement {
+  const s = section("カメラ", "CAMERA");
+  const aov = el("div", "hint");
+  const updateAov = (focal: number) => {
+    // 35mm アカデミーのフィルムゲート幅 24mm から画角を出す
+    const deg = (2 * Math.atan(24 / (2 * focal)) * 180) / Math.PI;
+    aov.textContent = `アングル オブ ビュー  ${deg.toFixed(2)}°\nフィルム ゲート  35mm アカデミー`;
+  };
+  const row = (label: string, key: "focal" | "near" | "far", min: number, max: number, step: number) => {
+    paramRow(s, {
+      label,
+      value: state.cam[key],
+      min,
+      max,
+      step,
+      format: (v) => String(step < 1 ? Number(v.toFixed(2)) : Math.round(v)),
+      onInput: (v) => {
+        host.onCamOptChange(key, v);
+        if (key === "focal") updateAov(v);
+      },
+    });
+  };
+  row("焦点距離", "focal", 10, 200, 1);
+  row("ニア クリップ", "near", 0.01, 1, 0.01);
+  row("ファー クリップ", "far", 50, 2000, 10);
+  updateAov(state.cam.focal);
+  s.appendChild(aov);
+  checkbox(s, "平行投影", state.cam.ortho, (v) => host.onCamOrthoChange(v));
+  return s;
+}
+
+/** UV の展開まわり（方式 / 自動 UV / パッキング）。`20` の T7 で「展開」の長押しへ。 */
+export function uvUnfoldSection(uv: NonNullable<OptionsState["uv"]>, host: PanelHost): HTMLElement[] {
+  const out: HTMLElement[] = [packingSection(uv, host)];
+
+  const s = section("展開", "UNFOLD");
+  const row = el("div", "row");
+  const group = el("div", "segmented");
+  for (const [key, label] of [
+    ["none", "取り込んだまま"],
+    ["lscm", "LSCM"],
+    ["projection", "投影"],
+  ] as const) {
+    const b = el("button", "seg") as HTMLButtonElement;
+    b.textContent = label;
+    b.setAttribute("aria-pressed", String(uv.method === key));
+    b.addEventListener("click", () => host.onUvMethodChange(key));
+    group.appendChild(b);
+  }
+  row.appendChild(group);
+  s.appendChild(row);
+  s.appendChild(
+    el(
+      "div",
+      "hint",
+      "「取り込んだまま」はメッシュが持っている UV をそのまま見せます。\n「展開」を押すと LSCM に切り替わります。",
+    ),
+  );
+  out.push(s);
+
+  const auto = section("自動 UV", "AUTO");
+  paramRow(auto, {
+    label: "角度",
+    value: uv.auto.angle,
+    min: 10,
+    max: 180,
+    step: 1,
+    format: (v) => `${Math.round(v)}°`,
+    onInput: (v) => host.onUvAutoChange("angle", v),
+  });
+  checkbox(auto, "ハードエッジ", uv.auto.useHardEdges, (v) => host.onUvAutoChange("useHardEdges", v));
+  checkbox(auto, "クリース", uv.auto.useCreases, (v) => host.onUvAutoChange("useCreases", v));
+  checkbox(auto, "ポリグループ", uv.auto.usePolygroups, (v) => host.onUvAutoChange("usePolygroups", v));
+  checkbox(auto, "対称 X", uv.auto.symmetric, (v) => host.onUvAutoChange("symmetric", v));
+  const run = el("button", "act", "自動 UV を実行");
+  run.addEventListener("click", () => host.onUvAutoRun());
+  auto.appendChild(run);
+  auto.appendChild(
+    el(
+      "div",
+      "hint",
+      "角度・ハードエッジ・クリース・ポリグループで切れ目を置き、\n大きすぎる島と閉じた island を割ってから開きます。手で動かした分は捨てます。",
+    ),
+  );
+  out.push(auto);
+  return out;
+}
+
+/** UV のスナップ。 */
+export function uvSnapSection(uv: NonNullable<OptionsState["uv"]>, state: OptionsState, host: PanelHost): HTMLElement {
+  const sn = section(`UV スナップ${state.snap.active ? "（効いています）" : ""}`, "SNAP");
+  const srow = el("div", "row");
+  const sgroup = el("div", "segmented");
+  for (const [key, label, step] of [
+    ["grid", "1/8", 1 / 8],
+    ["grid", "1/16", 1 / 16],
+    ["grid", "1/32", 1 / 32],
+    ["vertex", "UV 頂点", 0],
+  ] as const) {
+    const b = el("button", "seg") as HTMLButtonElement;
+    b.textContent = label;
+    const on =
+      key === "vertex" ? uv.snapKind === "vertex" : uv.snapKind === "grid" && Math.abs(uv.snapStep - step) < 1e-9;
+    b.setAttribute("aria-pressed", String(on));
+    b.addEventListener("click", () => {
+      host.onUvSnapChange("kind", key);
+      if (key === "grid") host.onUvSnapChange("step", step);
+    });
+    sgroup.appendChild(b);
+  }
+  srow.appendChild(sgroup);
+  sn.appendChild(srow);
+  return sn;
 }
 
 /** アウトライナを描き直す。 */

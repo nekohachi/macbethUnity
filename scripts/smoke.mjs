@@ -92,6 +92,72 @@ const EMPTY = at(0.15, 0.23);
 /** 面を選んだときに出る +Y のハンドル。メッシュの外側にある。 */
 const ON_HANDLE = at(0.45, 0.34);
 
+/**
+ * ツール列のグループ（`21`）。ボタンは 1 つ = 1 グループで、
+ * 長押しでサークルメニュー、タップで今の中身とそのオプション。
+ * ラジアルの付いたボタンは `click()` を見ないので pointer で叩く。
+ */
+const tapGroup = (id) =>
+  page.evaluate((gid) => {
+    const b = document.querySelector(`#dockLeft .ibtn[data-group="${gid}"]`);
+    if (!b) throw new Error(`グループが無い: ${gid}`);
+    const r = b.getBoundingClientRect();
+    const at = { clientX: r.x + r.width / 2, clientY: r.y + r.height / 2 };
+    for (const type of ["pointerdown", "pointerup"]) {
+      const e = new PointerEvent(type, { pointerId: 7, pointerType: "mouse", bubbles: true, cancelable: true, ...at });
+      (type === "pointerdown" ? b : window).dispatchEvent(e);
+    }
+  }, id);
+
+/** グループを長押しして、サークルメニューの方位を選ぶ。 */
+const pickFromGroup = async (id, direction) => {
+  await page.evaluate((gid) => {
+    const b = document.querySelector(`#dockLeft .ibtn[data-group="${gid}"]`);
+    if (!b) throw new Error(`グループが無い: ${gid}`);
+    const r = b.getBoundingClientRect();
+    b.dispatchEvent(
+      new PointerEvent("pointerdown", {
+        pointerId: 8,
+        pointerType: "mouse",
+        bubbles: true,
+        cancelable: true,
+        clientX: r.x + r.width / 2,
+        clientY: r.y + r.height / 2,
+      }),
+    );
+  }, id);
+  await page.waitForTimeout(260); // 長押しは 200ms
+  await page.evaluate((dir) => {
+    // 輪の中心から方位へ引いて離す。北を 0 として時計回り
+    const order = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
+    const i = order.indexOf(dir);
+    const svg = document.querySelector(".radial svg");
+    if (!svg) throw new Error("サークルメニューが出ていない");
+    // 中心の丸を探す。アイコンにも circle があるので、いちばん大きいものを取る
+    const hub = [...svg.querySelectorAll("circle")].reduce((best, c) =>
+      Number(c.getAttribute("r")) > Number(best.getAttribute("r")) ? c : best,
+    );
+    const cx = Number(hub.getAttribute("cx"));
+    const cy = Number(hub.getAttribute("cy"));
+    const a = ((i * 45 - 90) * Math.PI) / 180;
+    const x = cx + Math.cos(a) * 110;
+    const y = cy + Math.sin(a) * 110;
+    const fire = (type) =>
+      window.dispatchEvent(
+        new PointerEvent(type, { pointerId: 8, pointerType: "mouse", bubbles: true, clientX: x, clientY: y }),
+      );
+    fire("pointermove");
+    fire("pointerup");
+  }, direction);
+  await page.waitForTimeout(60);
+};
+
+/** 開いているカットインを閉じる。 */
+const closeCutin = () =>
+  page.evaluate(() => {
+    document.body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, clientX: 2, clientY: 2 }));
+  });
+
 const state = () => page.evaluate(() => {
   const app = window.macbeth;
   return {
@@ -229,7 +295,9 @@ check(
 
 /* 8. マルチカットで面が増える（予測線 → 確定） */
 await page.keyboard.press("Control+z"); // 選択状態を整える
-await page.click("#dockLeft .ibtn[title^='マルチカット']");
+await pickFromGroup("edit", "N"); // 編集 → マルチカット
+await closeCutin();
+const toolAfterPick = await page.evaluate(() => window.macbeth.state.tool);
 const facesBefore = await page.evaluate(() => window.macbeth.state.selected.mesh.faceCount);
 await page.mouse.move(at(0.4, 0.62).x, at(0.4, 0.62).y); // エッジの近くへホバー
 const previewed = await page.evaluate(() => document.getElementById("hudHint").innerHTML.includes("エッジループ挿入"));
@@ -237,12 +305,17 @@ await page.mouse.move(ON_MESH.x, ON_MESH.y);
 await page.mouse.down();
 await page.mouse.up();
 const facesAfter = await page.evaluate(() => window.macbeth.state.selected.mesh.faceCount);
-check("マルチカットで切れる", facesAfter > facesBefore, `${facesBefore} → ${facesAfter}面 / 予測線 ${previewed ? "あり" : "なし"}`);
+check(
+  "マルチカットで切れる",
+  facesAfter > facesBefore,
+  `${facesBefore} → ${facesAfter}面 / 予測線 ${previewed ? "あり" : "なし"} / ツール ${toolAfterPick}`,
+);
 await page.keyboard.press("Control+z");
-await page.click("#dockLeft .ibtn[title^='選択・変形']");
+await tapGroup("select");
+await closeCutin();
 
 /* 9. プリミティブを足すと 2 つになる */
-await page.click("#dockLeft .ibtn[title^='スフィア']");
+await pickFromGroup("add", "NE"); // 追加 → スフィア（北から時計回りで 立方体 / スフィア / 円柱 …）
 s = await state();
 check("プリミティブを追加", s.objects === 2, s.names.join(","));
 
@@ -277,9 +350,8 @@ check("自動保存が書けている", saved > 0, `${saved} バイト`);
 await page.mouse.click(EMPTY.x, EMPTY.y); // 選択解除
 await page.keyboard.press("F8");
 await page.mouse.click(ON_MESH.x, ON_MESH.y); // オブジェクトを選ぶ
-const outliner = await page.evaluate(() => document.querySelectorAll("#dockRightBottom .olrow").length);
-const sliders = await page.evaluate(() => document.querySelectorAll("#dockRightTop .slider").length);
-check("アウトライナとオプションが出る", outliner >= 1 && sliders >= 1, `行 ${outliner} / スライダー ${sliders}`);
+const outliner = await page.evaluate(() => document.querySelectorAll(".panel[data-panel='outliner'] .olrow").length);
+check("アウトライナが出る", outliner >= 1, `行 ${outliner}`);
 
 /* 14. 編集メニューの操作が効く（面の押し出しと削除） */
 await page.keyboard.press("F11");
@@ -375,7 +447,8 @@ await page.keyboard.press("F10"); // エッジモード
 await page.waitForTimeout(500);
 await page.mouse.click(ON_MESH.x, ON_MESH.y); // 手前の面のどこかのエッジ
 const bevelReady = await page.evaluate(() => window.macbeth.state.comp.size);
-await page.click("#dockLeft .ibtn[title^='ベベル']");
+await pickFromGroup("edit", "E"); // 編集 → ベベル
+await closeCutin();
 const bf0 = await page.evaluate(() => window.macbeth.state.selected.mesh.faceCount);
 await page.mouse.move(ON_MESH.x, ON_MESH.y);
 await page.mouse.down();
@@ -383,14 +456,16 @@ await page.mouse.move(ON_MESH.x + 60, ON_MESH.y, { steps: 6 });
 await page.mouse.up();
 const bf1 = await page.evaluate(() => window.macbeth.state.selected.mesh.faceCount);
 // オプションのセグメントを増やすとかけ直される
+await tapGroup("edit"); // ベベルのオプションがカットインで出る
 const bf2 = await page.evaluate(() => {
   window.macbeth.state.bevel.segments = 3;
-  const sliders = document.querySelectorAll("#dockRightTop .slider");
-  return sliders.length;
+  return document.querySelectorAll('.cutin.wide[data-gauge="edit"] .slider').length;
 });
+await closeCutin();
 await page.keyboard.press("Control+z");
 const bf3 = await page.evaluate(() => window.macbeth.state.selected.mesh.faceCount);
-await page.click("#dockLeft .ibtn[title^='選択・変形']");
+await tapGroup("select");
+await closeCutin();
 check(
   "ベベルできる",
   bevelReady >= 1 && bf1 > bf0 && bf3 === bf0,
@@ -1750,66 +1825,40 @@ const manip = await page.evaluate(async () => {
   const canvas = document.getElementById("gl");
   const rect = canvas.getBoundingClientRect();
 
-  // ツール列のボタンをタップすると、大きさの縦ゲージが横から出る
-  const sizeButton = [...document.querySelectorAll(".toolcol .ibtn")].find((b) =>
-    b.title.startsWith("マニピュレータ"),
-  );
+  // 「変形」をタップすると、マニピュレータのオプションが横からカットインする（`21`）
+  const groupButton = document.querySelector('#dockLeft .ibtn[data-group="xform"]');
   const tapButton = () => {
-    const br = sizeButton.getBoundingClientRect();
+    const b = document.querySelector('#dockLeft .ibtn[data-group="xform"]') ?? groupButton;
+    const br = b.getBoundingClientRect();
     for (const type of ["pointerdown", "pointerup"]) {
-      sizeButton.dispatchEvent(
-        new PointerEvent(type, {
-          pointerId: 22,
-          pointerType: "mouse",
-          isPrimary: true,
-          clientX: br.x + br.width / 2,
-          clientY: br.y + br.height / 2,
-          button: 0,
-          buttons: type === "pointerup" ? 0 : 1,
-          bubbles: true,
-          cancelable: true,
-        }),
-      );
+      const e = new PointerEvent(type, {
+        pointerId: 22,
+        pointerType: "mouse",
+        isPrimary: true,
+        clientX: br.x + br.width / 2,
+        clientY: br.y + br.height / 2,
+        button: 0,
+        buttons: type === "pointerup" ? 0 : 1,
+        bubbles: true,
+        cancelable: true,
+      });
+      (type === "pointerdown" ? b : window).dispatchEvent(e);
     }
   };
   tapButton();
-  const cutin = document.querySelector('.cutin[data-gauge="manipSize"]');
+  const cutin = document.querySelector('.cutin.wide[data-gauge="xform"]');
   const gaugeShown = !!cutin;
-  // ゲージの上のほうを押すと大きくなる
+  // 「大きさ」のスライダーを動かすと、その場でマニピュレータが大きくなる
   let dragged = 0;
   if (cutin) {
-    const g = cutin.querySelector(".gauge");
-    const gr = g.getBoundingClientRect();
-    g.dispatchEvent(
-      new PointerEvent("pointerdown", {
-        pointerId: 23,
-        pointerType: "mouse",
-        isPrimary: true,
-        clientX: gr.x + gr.width / 2,
-        clientY: gr.y + gr.height * 0.1,
-        button: 0,
-        buttons: 1,
-        bubbles: true,
-        cancelable: true,
-      }),
-    );
-    g.dispatchEvent(
-      new PointerEvent("pointerup", {
-        pointerId: 23,
-        pointerType: "mouse",
-        isPrimary: true,
-        clientX: gr.x + gr.width / 2,
-        clientY: gr.y + gr.height * 0.1,
-        buttons: 0,
-        bubbles: true,
-        cancelable: true,
-      }),
-    );
+    const slider = cutin.querySelector(".slider");
+    slider.value = "1.85";
+    slider.dispatchEvent(new Event("input", { bubbles: true }));
     dragged = app.state.manipSize;
   }
   // もう一度タップで閉じる
   tapButton();
-  const gaugeClosed = !document.querySelector('.cutin[data-gauge="manipSize"]');
+  const gaugeClosed = !document.querySelector('.cutin.wide[data-gauge="xform"]');
 
   // 大きく 2 回 → ×1.5625、初期設定に戻すと ×1
   app.setManipSize(1);
@@ -2894,6 +2943,302 @@ check(
     uvHistory.seamsUndone === uvHistory.seamsBefore,
   `U ${uvHistory.before.toFixed(3)} → 移動 ${uvHistory.movedU.toFixed(3)} → 2本指 ${uvHistory.undoneU.toFixed(3)} → ` +
     `3本指 ${uvHistory.redoneU.toFixed(3)} / 切れ目 ${uvHistory.seamsBefore} → ${uvHistory.seamsAfterCut} → ${uvHistory.seamsUndone}`,
+);
+
+/* 44. ツール列のグループ（`21` の 4 章） */
+
+/* 44-1. ボタンは 7 つ、右のオプションパネルは無い */
+const column = await page.evaluate(() => ({
+  buttons: [...document.querySelectorAll("#dockLeft .ibtn")].map((b) => b.dataset.group),
+  options: !!document.querySelector('.panel[data-panel="options"]'),
+}));
+check(
+  "ツール列は 7 つのグループ、オプションパネルは無い",
+  column.buttons.length === 7 && !column.options && column.buttons.includes("xform"),
+  `${column.buttons.join(" / ")}`,
+);
+
+/* 44-2. 変形: 長押しで回転 → アイコンが変わる → タップで刻み → 15° ずつ回る */
+await pickFromGroup("xform", "S"); // 変形 → 回転
+const rotIcon = await page.evaluate(() => window.macbeth.state.manip);
+await tapGroup("xform");
+const rotOptions = await page.evaluate(() => {
+  const cutin = document.querySelector('.cutin.wide[data-gauge="xform"]');
+  if (!cutin) return { shown: false };
+  const seg = [...cutin.querySelectorAll(".seg")].find((b) => b.textContent === "15°");
+  seg?.click();
+  return { shown: true, step: window.macbeth.state.rotateStep };
+});
+await closeCutin();
+const stepped = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const objectsBefore = app.state.doc.objects.length;
+  const object = app.state.doc.addObject("cube");
+  object.transform.position = [0, 0, 0];
+  app.viewport.syncAll();
+  app.viewport.setView("front");
+  app.state.select(object);
+  app.setCompMode("object");
+  app.viewport.frameSelected();
+  await new Promise((r) => setTimeout(r, 60));
+
+  const canvas = document.getElementById("gl");
+  const rect = canvas.getBoundingClientRect();
+  let id = 700;
+  const fire = (type, x, y, pid) =>
+    canvas.dispatchEvent(
+      new PointerEvent(type, {
+        pointerId: pid,
+        pointerType: "pen",
+        isPrimary: true,
+        clientX: x,
+        clientY: y,
+        buttons: type === "pointerup" ? 0 : 1,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+  // 回転リングの当たる点を探す（画面上の半径は一定ではない）
+  const center = app.manipulator.toScreen(app.pivotWorld());
+  let grab = null;
+  for (let r = 24; r <= 220 && !grab; r += 4) {
+    for (const a of [0, 45, 90, 135, 180, 225, 270, 315]) {
+      const t = (a * Math.PI) / 180;
+      const cand = { x: center.x + Math.cos(t) * r, y: center.y + Math.sin(t) * r };
+      if (app.manipulator.pick(cand, app.pivotWorld(), "rotate") >= 10) grab = cand;
+      if (grab) break;
+    }
+  }
+  const angles = [];
+  const dragBy = async (dy) => {
+    fire("pointerdown", rect.x + grab.x, rect.y + grab.y, ++id);
+    for (let i = 1; i <= 12; i++) fire("pointermove", rect.x + grab.x, rect.y + grab.y + (i * dy) / 12, id);
+    fire("pointerup", rect.x + grab.x, rect.y + grab.y + dy, id);
+    await new Promise((r) => setTimeout(r, 40));
+    // 回った量を度で見る（クォータニオンの角度）
+    const q = object.transform.rotation;
+    angles.push((2 * Math.acos(Math.min(1, Math.abs(q[3]))) * 180) / Math.PI);
+  };
+  if (grab) {
+    await dragBy(40);
+    await dragBy(80);
+  }
+  // 刻みを戻して片付ける
+  app.state.rotateStep = 0;
+  app.setManip("all");
+  app.state.select(null);
+  app.state.doc.objects.length = objectsBefore;
+  app.viewport.syncAll();
+  return { grabbed: !!grab, angles };
+});
+check(
+  "変形: 長押しで回転を選び、タップで刻みを 15° にすると 15° ずつ回る",
+  rotIcon === "rotate" &&
+    rotOptions.shown &&
+    rotOptions.step === 15 &&
+    stepped.grabbed &&
+    stepped.angles.length === 2 &&
+    stepped.angles.every((a) => Math.abs(a / 15 - Math.round(a / 15)) < 0.02),
+  `マニピュレータ ${rotIcon} / 刻み ${rotOptions.step}° / 回った角度 ${stepped.angles.map((a) => a.toFixed(2)).join("° · ")}°`,
+);
+
+/* 44-3. マルチカット中に「変形」をタップすると移動に戻り、オプションが出る */
+await pickFromGroup("edit", "N"); // 編集 → マルチカット
+await closeCutin();
+const wasMulticut = await page.evaluate(() => window.macbeth.state.tool);
+await pickFromGroup("xform", "E"); // 変形 → 移動
+await tapGroup("xform");
+const backToMove = await page.evaluate(() => ({
+  tool: window.macbeth.state.tool,
+  manip: window.macbeth.state.manip,
+  cutin: !!document.querySelector('.cutin.wide[data-gauge="xform"]'),
+}));
+await closeCutin();
+check(
+  "マルチカット中に変形をタップすると移動に戻る",
+  wasMulticut === "multicut" && backToMove.tool === "select" && backToMove.manip === "move" && backToMove.cutin,
+  `${wasMulticut} → ${backToMove.tool} / ${backToMove.manip} / カットイン ${backToMove.cutin}`,
+);
+
+/* 44-4. 追加: 長押しで球 → アイコンが球 → タップで入力ノード / 次の既定値 */
+await pickFromGroup("add", "NE"); // 追加 → スフィア
+const added = await page.evaluate(() => ({
+  name: window.macbeth.state.selected?.name,
+  last: window.macbeth.state.lastPrimitive,
+}));
+await tapGroup("add");
+const inputNode = await page.evaluate(() => {
+  const cutin = document.querySelector('.cutin.wide[data-gauge="add"]');
+  return { title: cutin?.querySelector(".attr-title")?.textContent ?? "", sliders: cutin?.querySelectorAll(".slider").length ?? 0 };
+});
+await closeCutin();
+// 選択を外すと「次の◯◯」の既定値になる
+await page.evaluate(() => {
+  window.macbeth.state.select(null);
+  window.macbeth.refresh();
+});
+await tapGroup("add");
+const nextDefaults = await page.evaluate(() => {
+  const cutin = document.querySelector('.cutin.wide[data-gauge="add"]');
+  const head = cutin?.querySelector(".sect-h span")?.textContent ?? "";
+  const slider = cutin?.querySelector(".slider");
+  if (slider) {
+    slider.value = String(Number(slider.value) + 2);
+    slider.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+  return { head, stored: window.macbeth.state.primitiveDefaults.sphere ?? null };
+});
+await closeCutin();
+await page.evaluate(() => {
+  const app = window.macbeth;
+  app.state.doc.objects = app.state.doc.objects.filter((o) => o.kind !== "sphere");
+  app.state.select(null);
+  app.viewport.syncAll();
+});
+check(
+  "追加: 長押しで球を足すとアイコンが球になり、タップで入力ノードが出る",
+  added.last === "sphere" &&
+    inputNode.title.startsWith("Sphere") &&
+    inputNode.sliders >= 2 &&
+    nextDefaults.head.includes("次の") &&
+    !!nextDefaults.stored,
+  `${added.name} / 入力ノード「${inputNode.title}」スライダー ${inputNode.sliders} / 選択なし →「${nextDefaults.head}」`,
+);
+
+/* 44-5. カメラ: 長押しでビュー、タップで焦点距離 */
+await pickFromGroup("camera", "W"); // カメラ → 上
+const camView = await page.evaluate(() => window.macbeth.state.viewName);
+await tapGroup("camera");
+const camOptions = await page.evaluate(() => {
+  const cutin = document.querySelector('.cutin.wide[data-gauge="camera"]');
+  if (!cutin) return { shown: false };
+  const labels = [...cutin.querySelectorAll("label")].map((l) => l.textContent);
+  const slider = cutin.querySelector(".slider");
+  slider.value = "55";
+  slider.dispatchEvent(new Event("input", { bubbles: true }));
+  return { shown: true, labels, focal: window.macbeth.state.camOpts.focal };
+});
+await closeCutin();
+await page.evaluate(() => {
+  window.macbeth.state.camOpts.focal = 35;
+  window.macbeth.setView("persp");
+});
+check(
+  "カメラ: 長押しでビュー、タップで焦点距離",
+  camView === "上" && camOptions.shown && camOptions.labels.includes("焦点距離") && camOptions.focal === 55,
+  `${camView} / ${camOptions.labels?.join(" · ")} / 焦点距離 ${camOptions.focal}`,
+);
+
+/* 44-6. カメラベース選択: 裏の頂点は矩形で拾わない */
+const cameraBased = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const objectsBefore = app.state.doc.objects.length;
+  const object = app.state.doc.addObject("cube");
+  object.transform.position = [0, 0, 0];
+  app.viewport.syncAll();
+  app.state.select(object);
+  app.viewport.setView("front");
+  app.viewport.frameSelected();
+  app.setCompMode("vertex");
+  await new Promise((r) => setTimeout(r, 60));
+
+  const view = app.viewport.viewOf(object);
+  const pane = document.getElementById("vp").getBoundingClientRect();
+  const all = { x0: 0, y0: 0, x1: pane.width, y1: pane.height };
+
+  app.state.cameraBased = false;
+  const off = app.picker.vertsInRect(view, all.x0, all.y0, all.x1, all.y1).length;
+
+  app.state.cameraBased = true;
+  const t0 = performance.now();
+  const on = app.picker.vertsInRect(view, all.x0, all.y0, all.x1, all.y1).length;
+  const ms = performance.now() - t0;
+
+  // 重さの目安。細かい球で 1 回ぶん測る（`21` の 2.1）
+  const heavy = app.state.doc.addObject("sphere");
+  heavy.params.sdAxis = 64;
+  heavy.params.sdHeight = 48;
+  heavy.rebuild();
+  app.viewport.syncAll();
+  app.state.select(heavy);
+  app.viewport.frameSelected();
+  await new Promise((r) => setTimeout(r, 60));
+  const heavyView = app.viewport.viewOf(heavy);
+  const t1 = performance.now();
+  const heavyCount = app.picker.vertsInRect(heavyView, all.x0, all.y0, all.x1, all.y1).length;
+  const heavyMs = performance.now() - t1;
+
+  app.state.cameraBased = false;
+  app.setCompMode("object");
+  app.state.select(null);
+  app.state.doc.objects.length = objectsBefore;
+  app.viewport.syncAll();
+  return { off, on, ms, heavyCount, heavyMs, heavyVerts: heavy.mesh.vertexCount };
+});
+check(
+  "カメラベース選択: 裏の頂点を拾わない",
+  cameraBased.off === 8 && cameraBased.on === 4,
+  `オフ ${cameraBased.off} 点 → オン ${cameraBased.on} 点（${cameraBased.ms.toFixed(0)}ms）/ ` +
+    `球 ${cameraBased.heavyVerts} 点で ${cameraBased.heavyCount} 点・${cameraBased.heavyMs.toFixed(0)}ms`,
+);
+
+/* 44-7. 負のスケールを防ぐ */
+const negScale = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const objectsBefore = app.state.doc.objects.length;
+  const object = app.state.doc.addObject("cube");
+  object.transform.position = [0, 0, 0];
+  app.viewport.syncAll();
+  app.state.select(object);
+  app.setCompMode("object");
+  app.setManip("scale");
+  app.viewport.setView("persp");
+  app.viewport.frameSelected();
+  await new Promise((r) => setTimeout(r, 60));
+
+  const canvas = document.getElementById("gl");
+  const rect = canvas.getBoundingClientRect();
+  let id = 800;
+  const fire = (type, x, y, pid) =>
+    canvas.dispatchEvent(
+      new PointerEvent(type, {
+        pointerId: pid,
+        pointerType: "pen",
+        isPrimary: true,
+        clientX: x,
+        clientY: y,
+        buttons: type === "pointerup" ? 0 : 1,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+  // 中心のハンドル（一様スケール）を掴んで、左へ大きく引く
+  const center = app.manipulator.toScreen(app.pivotWorld());
+  const drag = async () => {
+    fire("pointerdown", rect.x + center.x, rect.y + center.y, ++id);
+    for (let i = 1; i <= 20; i++) fire("pointermove", rect.x + center.x - i * 30, rect.y + center.y, id);
+    fire("pointerup", rect.x + center.x - 600, rect.y + center.y, id);
+    await new Promise((r) => setTimeout(r, 40));
+    const s = object.transform.scale[0];
+    app.doUndo();
+    return s;
+  };
+  app.state.preventNegativeScale = true;
+  const guarded = await drag();
+  app.state.preventNegativeScale = false;
+  const free = await drag();
+
+  app.state.preventNegativeScale = true;
+  app.setManip("all");
+  app.state.select(null);
+  app.state.doc.objects.length = objectsBefore;
+  app.viewport.syncAll();
+  return { guarded, free };
+});
+check(
+  "スケールで 0 を跨がない（オプションを切ると跨ぐ）",
+  negScale.guarded > 0 && negScale.free < 0,
+  `防ぐ ×${negScale.guarded.toFixed(4)} / 切る ×${negScale.free.toFixed(4)}`,
 );
 
 /* 43. 例外が出ていない */

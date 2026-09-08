@@ -269,6 +269,7 @@ export class Selector {
     if (!this.add(e) && !sub) this.state.comp.clear();
     const comp = this.state.comp;
 
+    // カメラベース選択がオンなら、隠れているものは入れない（`21` の 2.1）
     if (this.state.compMode === "vertex") {
       for (const v of this.picker.vertsInRect(view, lo.x, lo.y, hi.x, hi.y)) toggle(comp, v, sub);
     } else if (this.state.compMode === "edge") {
@@ -277,12 +278,13 @@ export class Selector {
         const p0 = o.mesh.getPosition(ed[0]);
         const p1 = o.mesh.getPosition(ed[1]);
         const s = this.picker.project(view, (p0[0] + p1[0]) / 2, (p0[1] + p1[1]) / 2, (p0[2] + p1[2]) / 2);
-        if (inside(s)) toggle(comp, ei, sub);
+        if (inside(s) && this.picker.edgeVisible(view, ed[0], ed[1])) toggle(comp, ei, sub);
       });
     } else if (this.state.compMode === "face") {
       for (let f = 0; f < o.mesh.faceCount; f++) {
         const c = o.mesh.faceCenter(f);
-        if (inside(this.picker.project(view, c[0], c[1], c[2]))) toggle(comp, f, sub);
+        const s = this.picker.project(view, c[0], c[1], c[2]);
+        if (inside(s) && this.picker.faceVisible(view, f)) toggle(comp, f, sub);
       }
     }
     return { changed: true, objectChanged: false };

@@ -239,6 +239,7 @@ export function attachRadialButton(
   button: HTMLElement,
   menu: () => RadialMenu,
   tap?: () => void,
+  list?: () => RadialItem[],
 ): void {
   let timer: ReturnType<typeof setTimeout> | null = null;
   let opened = false;
@@ -251,24 +252,14 @@ export function attachRadialButton(
     timer = null;
   };
 
-  button.addEventListener("touchstart", (e) => e.preventDefault(), { passive: false });
-  button.addEventListener("contextmenu", (e) => e.preventDefault());
-  button.addEventListener("pointerdown", (e) => {
-    e.preventDefault();
-    pid = e.pointerId;
-    sx = e.clientX;
-    sy = e.clientY;
-    opened = false;
-    if (e.pointerType === "mouse" && e.button === 2) {
-      opened = true;
-      openRadial(menu(), sx, sy);
-      return;
-    }
-    timer = setTimeout(() => {
-      opened = true;
-      openRadial(menu(), sx, sy);
-    }, 200);
-  });
+  // 押している間だけ window を見る。ツール列は描き直されるので、
+  // ボタンより長生きする購読を残さない
+  const listen = (on: boolean) => {
+    const fn = on ? window.addEventListener : window.removeEventListener;
+    fn("pointermove", onMove as EventListener);
+    fn("pointerup", onUp as EventListener);
+    fn("pointercancel", onUp as EventListener);
+  };
 
   const onMove = (e: PointerEvent) => {
     if (e.pointerId !== pid) return;
@@ -278,11 +269,29 @@ export function attachRadialButton(
     if (e.pointerId !== pid) return;
     cancel();
     pid = null;
+    listen(false);
     // サークルメニューを開いていたら、決定はそちらが受け取る
     if (!opened) tap?.();
     opened = false;
   };
-  window.addEventListener("pointermove", onMove);
-  window.addEventListener("pointerup", onUp);
-  window.addEventListener("pointercancel", onUp);
+
+  button.addEventListener("touchstart", (e) => e.preventDefault(), { passive: false });
+  button.addEventListener("contextmenu", (e) => e.preventDefault());
+  button.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    pid = e.pointerId;
+    sx = e.clientX;
+    sy = e.clientY;
+    opened = false;
+    listen(true);
+    if (e.pointerType === "mouse" && e.button === 2) {
+      opened = true;
+      openRadial(menu(), sx, sy, list?.() ?? []);
+      return;
+    }
+    timer = setTimeout(() => {
+      opened = true;
+      openRadial(menu(), sx, sy, list?.() ?? []);
+    }, 200);
+  });
 }

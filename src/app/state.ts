@@ -10,6 +10,8 @@ export type Mode = "model" | "uv" | "sculpt" | "material";
 export type CompMode = "object" | "vertex" | "edge" | "face";
 export type Display = "wire" | "shaded" | "shadedWire" | "smooth" | "checker";
 export type Manip = "all" | "move" | "rotate" | "scale";
+/** 「編集」グループの中身（`21` の 2.3）。ツールとコマンドが混ざっている。 */
+export type EditKind = "multicut" | "bevel" | "bridge" | "extrude" | "connect" | "weld";
 /**
  * スナップの行き先。Maya の X（グリッド）/ V（頂点）/ C（カーブ = ここではエッジ）。
  * サーフェスは Maya の Make Live にあたるもので、キーは無い（docs/17 の 7.3）。
@@ -141,6 +143,24 @@ export class AppState {
   cut = { snapStep: 0, edgeFlow: false };
   /** ベベル。segments が 1 なら面取り、2 以上で丸め。 */
   bevel = { width: 0.1, segments: 1 };
+  /**
+   * カメラベース選択（Maya の Camera based selection、`21` の 2.1）。
+   * オンのとき、カメラから見えているものだけを選ぶ。裏側は拾わない。
+   */
+  cameraBased = false;
+  /** 回転の刻み（度）。0 ならなめらか（`21` の 2.2）。 */
+  rotateStep = 0;
+  /** スケールのドラッグで 0 を跨がせない（`21` の 2.2）。 */
+  preventNegativeScale = true;
+  /** 「編集」グループで最後に使ったもの。ボタンのアイコンとタップの中身になる。 */
+  lastEdit: EditKind = "multicut";
+  /** 「追加」グループで最後に追加した種類。 */
+  lastPrimitive = "cube";
+  /**
+   * 次に追加するときのプリミティブのパラメータ。何も選んでいないときに
+   * 「追加」のカットインで触るのはこちら（`21` の 2.7）。
+   */
+  primitiveDefaults: Record<string, Record<string, number>> = {};
   /** Maya の既定と同じ 30°。 */
   smoothAngle = 30;
   camOpts = { focal: 35, near: 0.05, far: 500, ortho: false };

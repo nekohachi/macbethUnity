@@ -99,14 +99,27 @@ export function beginDrag(options: {
  * `snap` を渡すと、移動のときだけ「ピボットの行き先」を通して寄せ先を決める。
  * null が返れば寄せない。軸ドラッグ中は軸の上に留まるよう、寄せた先を軸へ落とし直す。
  */
+export interface DragOptions {
+  /** 移動の寄せ先（スナップ）。null が返れば寄せない。 */
+  snap?: (world: Vector3) => Vector3 | null;
+  /** 回転の刻み（度）。0 でなめらか（`21` の 2.2）。 */
+  rotateStep?: number;
+  /** スケールで 0 を跨がせない（`21` の 2.2）。 */
+  preventNegativeScale?: boolean;
+}
+
+/** 裏返さないときの下限。0 ちょうどだと面が潰れるので、ごく小さい値で止める。 */
+const SCALE_FLOOR = 0.001;
+
 export function updateDrag(
   drag: DragState,
   object: SceneObject,
   point: ScreenPoint,
   ray: Ray,
   cameraPosition: Vector3,
-  snap?: (world: Vector3) => Vector3 | null,
+  options: DragOptions = {},
 ): void {
+  const snap = options.snap;
   if (drag.kind === "move") {
     let delta: Vector3;
     if (drag.axis < 0) {
@@ -131,6 +144,12 @@ export function updateDrag(
 
   if (drag.kind === "rotate") {
     let angle = Math.atan2(point.y - drag.pivotScreen.y, point.x - drag.pivotScreen.x) - drag.a0;
+    // 刻みが決まっていれば、その角度に丸める（Maya のスナップ回転）
+    const step = options.rotateStep ?? 0;
+    if (step > 0) {
+      const rad = (step * Math.PI) / 180;
+      angle = Math.round(angle / rad) * rad;
+    }
     const axis =
       drag.axis < 0
         ? new Vector3().subVectors(cameraPosition, drag.pivot).normalize()
@@ -149,12 +168,14 @@ export function updateDrag(
     return;
   }
 
+  // 「負のスケールを防ぐ」がオフなら 0 を跨いで裏返せる
+  const floor = options.preventNegativeScale === false ? -Infinity : SCALE_FLOOR;
   let factor: Vector3;
   if (drag.axis < 0) {
-    factor = new Vector3(1, 1, 1).multiplyScalar(Math.max(0.02, 1 + (point.x - drag.start.x) * 0.008));
+    factor = new Vector3(1, 1, 1).multiplyScalar(Math.max(floor, 1 + (point.x - drag.start.x) * 0.008));
   } else {
     const t = rayAxisT(ray, drag.pivot, AXES[drag.axis]);
-    const k = Math.max(0.02, 1 + ((t - drag.t0) / Math.max(1e-4, Math.abs(drag.t0))) * 0.6);
+    const k = Math.max(floor, 1 + ((t - drag.t0) / Math.max(1e-4, Math.abs(drag.t0))) * 0.6);
     factor = new Vector3(1, 1, 1);
     factor.setComponent(drag.axis, k);
   }

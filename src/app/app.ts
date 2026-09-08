@@ -9,6 +9,7 @@ import {
   PRIMITIVES,
   PRIMITIVE_ORDER,
   bridgeEdges,
+  defaultParams,
   cloneTransform,
   combineMeshes,
   recipeFromMesh,
@@ -62,6 +63,7 @@ import {
   AppState,
   type CompMode,
   type Display,
+  type EditKind,
   type Manip,
   type Mode,
   type SnapKind,
@@ -87,11 +89,34 @@ import { Layout } from "./ui/layout.js";
 import { byId, el } from "./ui/dom.js";
 import { Gauge } from "./ui/gauges.js";
 import { Hud } from "./ui/hud.js";
-import { panelShell, renderOptions, renderOutliner, type PanelHost } from "./ui/panels.js";
+import {
+  bevelSection,
+  bridgeSection,
+  cameraSection,
+  connectSection,
+  displaySection,
+  extrudeSection,
+  manipulatorSection,
+  mirrorSection,
+  multicutSection,
+  panelShell,
+  primitiveSection,
+  renderOutliner,
+  selectSection,
+  snapSection,
+  softSelectSection,
+  transformSection,
+  uvSnapSection,
+  uvUnfoldSection,
+  vertexSection,
+  type OptionsState,
+  type PanelHost,
+} from "./ui/panels.js";
 import { STUBS, buildStub } from "./ui/stubs.js";
 import { UvMode, type UvSplit, type UvUnit } from "./uv/uvMode.js";
 import { ICONS, iconSvg } from "./ui/icons.js";
 import {
+  DIRECTIONS,
   attachRadialButton,
   closeRadial,
   openRadial,
@@ -148,12 +173,22 @@ const COMP_ICONS: Record<CompMode, string> = {
 };
 
 /** ツール列の 1 項目。モードごとの定義をこの並びで持つ。 */
+/**
+ * ツール列の 1 項目（`21`）。ボタンは 1 つ = 1 グループ。
+ *
+ * - **長押し** … `radial` のサークルメニューで中身を選ぶ
+ * - **タップ** … `onTap` で今の中身を有効にし、`options` があれば横にカットイン
+ * - **アイコン** … `icon()` は今の中身のもの。中身が変わると切り替わる
+ */
 type ToolEntry =
   | { kind: "label"; text: string }
   | { kind: "separator" }
   | {
       kind: "button";
-      icon: string;
+      /** グループの名前。ボタンを描き直したあとに探し直すのに使う。 */
+      id: string;
+      /** 固定のアイコンか、今の中身から決めるもの。 */
+      icon: string | (() => string);
       title: string;
       /** 押されている状態を tool / compMode と照合して出す。 */
       tool?: string;
@@ -162,8 +197,56 @@ type ToolEntry =
       pressed?: () => boolean;
       /** 長押しのサークルメニュー。 */
       radial?: () => RadialMenu;
+      /** 輪の下に並べる一覧（カメラの控え）。 */
+      radialList?: () => RadialItem[];
+      /** タップで出すカットインの中身。無ければ出さない。 */
+      options?: () => HTMLElement[];
       onTap: (button: HTMLElement) => void;
     };
+
+/** 「変形」グループのアイコン。今のマニピュレータで切り替わる。 */
+const MANIP_ICONS: Record<Manip, string> = {
+  all: ICONS.xform,
+  move: ICONS.move,
+  rotate: ICONS.rotate,
+  scale: ICONS.scale,
+};
+
+/** 「編集」グループの中身（`21` の 2.3）。 */
+const EDIT_ICONS: Record<EditKind, string> = {
+  multicut: ICONS.multicut,
+  bevel: ICONS.scale,
+  bridge: ICONS.vEdge,
+  extrude: ICONS.extrude,
+  connect: ICONS.vMulti,
+  weld: ICONS.vVert,
+};
+
+const EDIT_LABELS: Record<EditKind, string> = {
+  multicut: "マルチカット",
+  bevel: "ベベル",
+  bridge: "ブリッジ",
+  extrude: "押し出し",
+  connect: "接続",
+  weld: "ターゲットウェルド",
+};
+
+/** スナップの行き先ごとのアイコン。 */
+const SNAP_ICONS: Record<SnapKind, string> = {
+  grid: ICONS.snap,
+  vertex: ICONS.vVert,
+  edge: ICONS.vEdge,
+  surface: ICONS.vFace,
+};
+
+/** シェーディングごとのアイコン。 */
+const DISPLAY_ICONS: Record<Display, string> = {
+  wire: ICONS.wire,
+  shaded: ICONS.shaded,
+  shadedWire: ICONS.shadedWire,
+  smooth: ICONS.smooth,
+  checker: ICONS.mUV,
+};
 
 const PRIMITIVE_ICONS: Record<string, string> = {
   cube: ICONS.pCube,
@@ -216,9 +299,8 @@ export class App {
   private docking: Docking;
   private layout: Layout;
   /** パネルの置き場所。移したら覚えて、次に開いたときに戻す。 */
-  private zones: Record<string, Zone> = { tools: "left", options: "rightTop", outliner: "rightBottom" };
+  private zones: Record<string, Zone> = { tools: "left", outliner: "rightTop" };
   private toolPanelBody: HTMLElement | null = null;
-  private optionsBody: HTMLElement | null = null;
   private outlinerBody: HTMLElement | null = null;
   /** スライダーを触り始めたときの状態。離したときに履歴へ積む。 */
   private paramSnapshot: ReturnType<History["snapshot"]> | null = null;
@@ -260,6 +342,8 @@ export class App {
     const canvas = byId<HTMLCanvasElement>("gl");
     this.viewport = new Viewport(vp, canvas, this.state);
     this.picker = new Picker(this.viewport, vp);
+    // カメラベース選択（`21` の 2.1）。picking は状態を持たないので、ここから覗かせる
+    this.picker.cameraBased = () => this.state.cameraBased;
     this.selector = new Selector(this.state, this.picker, (id) => {
       const o = this.state.doc.find(id);
       return o ? this.viewport.viewOf(o) : undefined;
@@ -325,6 +409,7 @@ export class App {
     } catch {
       /* 保存が壊れていても既定の配置で始める */
     }
+    this.restoreSettings();
     this.buildToolDock();
     this.buildPanels();
     this.layout = new Layout(byId("stage"), byId("dockColRight"), () => this.viewport.resize());
@@ -973,92 +1058,21 @@ export class App {
     this.hud.toast(`マニピュレータの大きさ ×${this.state.manipSize.toFixed(2)}`);
   }
 
-  /**
-   * マニピュレータの大きさを縦ゲージで。ツール列のボタンをタップすると
-   * 横から出てくる（ユーザー要望）。もう一度タップするか、他を触ると閉じる。
-   */
-  private openManipSizeGauge(anchor: HTMLElement): void {
-    // 出ているときにもう一度押したら閉じる
-    if (this.popup?.dataset.gauge === "manipSize") {
-      this.closePopup();
-      return;
-    }
-    this.closePopup();
-    const r = anchor.getBoundingClientRect();
-    const pop = el("div", "cutin");
-    pop.dataset.gauge = "manipSize";
-    pop.style.left = `${r.right + 8}px`;
-    // ボタンの高さを中心にして、画面からはみ出さない位置に置く
-    const height = 220;
-    const top = Math.max(8, Math.min(window.innerHeight - height - 8, r.top + r.height / 2 - height / 2));
-    pop.style.top = `${top}px`;
-    pop.style.height = `${height}px`;
-
-    pop.appendChild(el("div", "glabel", "サイズ"));
-    const gauge = el("div", "gauge");
-    const fill = el("div", "fill");
-    const knob = el("div", "knob");
-    gauge.append(fill, knob);
-    pop.appendChild(gauge);
-    const value = el("div", "gval");
-    pop.appendChild(value);
-
-    const paint = () => {
-      const t = (this.state.manipSize - MANIP_SIZE_MIN) / (MANIP_SIZE_MAX - MANIP_SIZE_MIN);
-      fill.style.height = `${t * 100}%`;
-      knob.style.bottom = `calc(${t * 100}% - 1px)`;
-      value.textContent = `×${this.state.manipSize.toFixed(2)}`;
-    };
-    const setFromY = (clientY: number) => {
-      const box = gauge.getBoundingClientRect();
-      const t = Math.max(0, Math.min(1, 1 - (clientY - box.top) / box.height));
-      // 0.05 刻み。スライダーの端は 0.5 と 2.0 ちょうどになる
-      const raw = MANIP_SIZE_MIN + t * (MANIP_SIZE_MAX - MANIP_SIZE_MIN);
-      this.state.manipSize = Math.round(raw / 0.05) * 0.05;
-      localStorage.setItem("macbeth.manipSize", String(this.state.manipSize));
-      paint();
-      this.refreshManipulator();
-      this.uv?.refreshManipulator();
-    };
-    let active = false;
-    gauge.addEventListener("touchstart", (e) => e.preventDefault(), { passive: false });
-    gauge.addEventListener("pointerdown", (e) => {
-      e.preventDefault();
-      active = true;
-      try {
-        gauge.setPointerCapture(e.pointerId);
-      } catch {
-        /* 捕捉できないだけなので続ける（Safari と合成イベント） */
-      }
-      setFromY(e.clientY);
-    });
-    gauge.addEventListener("pointermove", (e) => {
-      if (active) setFromY(e.clientY);
-    });
-    for (const t of ["pointerup", "pointercancel"] as const) {
-      gauge.addEventListener(t, () => {
-        if (!active) return;
-        active = false;
-        this.refresh();
-      });
-    }
-    paint();
-    document.body.appendChild(pop);
-    this.popup = pop;
-    this.popupAnchor = anchor;
-  }
-
   /** マニピュレータのサークルメニュー（ツール列の長押し）。 */
   private manipulatorMenu(): RadialMenu {
     return {
-      N: {
+      N: { label: "ユニバーサル", sub: "All  T", icon: ICONS.xform, run: () => this.setManip("all") },
+      NE: {
         label: this.state.pivotEdit ? "ピボットの移動を終える" : "ピボットを移動",
         sub: "Pivot  D",
         icon: ICONS.pivot,
         run: () => this.togglePivotEdit(),
       },
-      NE: { label: "選択の中心へ戻す", sub: "Center", icon: ICONS.vObj, run: () => this.resetPivot() },
-      S: {
+      E: { label: "移動", sub: "Move  W", icon: ICONS.move, run: () => this.setManip("move") },
+      SE: { label: "ピボットを戻す", sub: "Center", icon: ICONS.vObj, run: () => this.resetPivot() },
+      S: { label: "回転", sub: "Rotate  E", icon: ICONS.rotate, run: () => this.setManip("rotate") },
+      W: { label: "スケール", sub: "Scale  R", icon: ICONS.scale, run: () => this.setManip("scale") },
+      NW: {
         label: "初期設定に戻す",
         sub: "Reset",
         icon: ICONS.xform,
@@ -1152,7 +1166,11 @@ export class App {
     if (!drag || !o) return;
     void e;
     const snapping = this.state.snapping && drag.kind === "move";
-    updateDrag(drag, o, p, this.ray(p), this.cameraPosition(), snapping ? (w) => this.snapPoint(w) : undefined);
+    updateDrag(drag, o, p, this.ray(p), this.cameraPosition(), {
+      snap: snapping ? (w) => this.snapPoint(w) : undefined,
+      rotateStep: this.state.rotateStep,
+      preventNegativeScale: this.state.preventNegativeScale,
+    });
     if (snapping) this.showSnapTarget();
     else this.updateWeldTarget(p, e, o);
     if (drag.target.kind === "object") {
@@ -1512,12 +1530,14 @@ export class App {
     for (const b of document.querySelectorAll<HTMLElement>("[data-tool]")) {
       b.setAttribute("aria-pressed", String(b.dataset.tool === tool));
     }
+    this.renderToolColumn();
     this.hud.toast(tool === "multicut" ? "マルチカット" : "選択・変形");
     this.hud.defaultHint();
   }
 
   setDisplay(display: Display): void {
     this.state.display = display;
+    this.renderToolColumn();
     // 「シェード」はすべてハードエッジなので、法線を作り直す必要がある
     this.viewport.syncAll();
     this.refresh();
@@ -1532,79 +1552,10 @@ export class App {
     );
   }
 
-  private cycleDisplay(): void {
-    const order: Display[] = ["wire", "shaded", "shadedWire", "smooth", "checker"];
-    this.setDisplay(order[(order.indexOf(this.state.display) + 1) % order.length]);
-  }
-
-  /** カメラ設定。Maya のカメラアトリビュートに合わせてある。 */
-  private openCameraPopup(anchor: HTMLElement): void {
-    this.closePopup();
-    const r = anchor.getBoundingClientRect();
-    const pop = el("div", "panel floating");
-    pop.style.left = `${r.right + 6}px`;
-    pop.style.top = `${r.top}px`;
-    const body = el("div", "pbody");
-
-    const aov = el("div", "hint");
-    const updateAov = () => {
-      // 35mm アカデミーのフィルムゲート幅 24mm から画角を出す
-      const deg = (2 * Math.atan(24 / (2 * this.state.camOpts.focal)) * 180) / Math.PI;
-      aov.textContent = `アングル オブ ビュー  ${deg.toFixed(2)}°\nフィルム ゲート  35mm アカデミー`;
-    };
-
-    const row = (label: string, key: "focal" | "near" | "far", min: number, max: number, step: number) => {
-      const wrap = el("div", "row");
-      wrap.appendChild(el("label", undefined, label));
-      const num = el("input", "num") as HTMLInputElement;
-      num.type = "text";
-      num.readOnly = true;
-      num.value = String(this.state.camOpts[key]);
-      wrap.appendChild(num);
-      const slider = el("input", "slider") as HTMLInputElement;
-      slider.type = "range";
-      slider.min = String(min);
-      slider.max = String(max);
-      slider.step = String(step);
-      slider.value = String(this.state.camOpts[key]);
-      slider.addEventListener("input", () => {
-        const v = Number(slider.value);
-        this.state.camOpts[key] = v;
-        num.value = String(v);
-        this.viewport.applyCamera();
-        updateAov();
-        this.refreshManipulator();
-      });
-      wrap.appendChild(slider);
-      body.appendChild(wrap);
-    };
-
-    row("焦点距離", "focal", 10, 200, 1);
-    row("ニア クリップ", "near", 0.01, 1, 0.01);
-    row("ファー クリップ", "far", 50, 2000, 10);
-    updateAov();
-    body.appendChild(aov);
-
-    const ortho = el("button", "chk");
-    ortho.setAttribute("aria-pressed", String(this.state.camOpts.ortho));
-    ortho.appendChild(el("i"));
-    ortho.appendChild(el("span", undefined, "平行投影"));
-    ortho.addEventListener("click", () => {
-      this.state.camOpts.ortho = !this.state.camOpts.ortho;
-      ortho.setAttribute("aria-pressed", String(this.state.camOpts.ortho));
-      this.viewport.applyCamera();
-      this.refresh();
-    });
-    body.appendChild(ortho);
-
-    pop.appendChild(body);
-    document.body.appendChild(pop);
-    this.popup = pop;
-  }
-
   setManip(manip: Manip): void {
     this.state.manip = manip;
     this.manipulator.clear();
+    this.renderToolColumn();
     this.refreshManipulator();
     this.hud.toast(`マニピュレータ: ${{ all: "ユニバーサル", move: "移動", rotate: "回転", scale: "スケール" }[manip]}`);
   }
@@ -1784,15 +1735,6 @@ export class App {
   }
 
   /** マニピュレータの種類。長押しで出す。 */
-  private manipMenu(): RadialMenu {
-    return {
-      N: { label: "ユニバーサル", sub: "All  T", icon: ICONS.xform, run: () => this.setManip("all") },
-      E: { label: "移動", sub: "Move  W", icon: ICONS.move, run: () => this.setManip("move") },
-      S: { label: "回転", sub: "Rotate  E", icon: ICONS.rotate, run: () => this.setManip("rotate") },
-      W: { label: "スケール", sub: "Scale  R", icon: ICONS.scale, run: () => this.setManip("scale") },
-    };
-  }
-
   private modeMenu(): RadialMenu {
     const go = (m: Mode) => () => this.setMode(m);
     return {
@@ -1836,50 +1778,96 @@ export class App {
     this.hud.toast(MODE_LABELS[mode]);
   }
 
-  /** UV モードのツール列。選択の単位と、よく使う操作だけ。 */
+  /**
+   * UV モードのツール列（`21` の 3 章）。
+   * 選択とマニピュレータとスナップはグループ、毎回使うものはコマンドのまま。
+   */
   private uvToolColumn(): ToolEntry[] {
     const uv = this.uv;
     if (!uv) return [];
-    const unit = (id: UvUnit, icon: string, title: string): ToolEntry => ({
+    const UNIT_ICONS: Record<UvUnit, string> = {
+      vertex: ICONS.vVert,
+      edge: ICONS.vEdge,
+      shell: ICONS.vFace,
+    };
+    const cmd = (id: string, icon: string, title: string, run: () => void): ToolEntry => ({
       kind: "button",
+      id,
       icon,
       title,
-      compMode: (uv.unit === id ? id : `${id}_off`) as CompMode,
-      onTap: () => {
-        uv.setUnit(id);
-        this.renderToolColumn();
-      },
+      onTap: run,
     });
     return [
       { kind: "label", text: "選択" },
-      unit("vertex", ICONS.vVert, "UV 頂点"),
-      unit("edge", ICONS.vEdge, "UV エッジ"),
-      unit("shell", ICONS.vFace, "UV シェル"),
-      { kind: "separator" },
-      { kind: "label", text: "UV" },
-      { kind: "button", icon: ICONS.smooth, title: "展開（レシピから開き直す）", onTap: () => uv.unfold() },
-      { kind: "button", icon: ICONS.mUV, title: "自動 UV（経験則で切れ目を引き直す）", onTap: () => uv.autoUnwrap() },
-      { kind: "button", icon: ICONS.multicut, title: "カット（選んだところを切る）", onTap: () => uv.cutOrSew(true) },
-      { kind: "button", icon: ICONS.vEdge, title: "ソー（選んだ切れ目を縫う）", onTap: () => uv.cutOrSew(false) },
       {
         kind: "button",
-        icon: ICONS.pivot,
-        title: "マニピュレータ（タップで大きさのスライダー · 長押しでピボット）",
-        pressed: () => this.state.pivotEdit,
-        radial: () => this.manipulatorMenu(),
-        onTap: (b) => this.openManipSizeGauge(b),
+        id: "select",
+        icon: () => UNIT_ICONS[uv.unit],
+        title: "UV の選択（長押しで 頂点 / エッジ / シェル）",
+        radial: () => ({
+          E: { label: "UV 頂点", sub: "Vertex", icon: ICONS.vVert, run: () => this.setUvUnit("vertex") },
+          S: { label: "UV エッジ", sub: "Edge", icon: ICONS.vEdge, run: () => this.setUvUnit("edge") },
+          W: { label: "UV シェル", sub: "Shell", icon: ICONS.vFace, run: () => this.setUvUnit("shell") },
+        }),
+        options: () => [selectSection(this.optionsState(), this.panelHost())],
+        onTap: () => {},
       },
       {
         kind: "button",
-        icon: ICONS.snap,
-        title: "スナップ（長押しで グリッド / UV 頂点）",
+        id: "xform",
+        icon: () => (this.state.pivotEdit ? ICONS.pivot : MANIP_ICONS[this.state.manip]),
+        title: "変形（長押しで マニピュレータ / ピボット）",
+        pressed: () => this.state.pivotEdit,
+        radial: () => this.manipulatorMenu(),
+        options: () => this.xformOptions(),
+        onTap: () => {},
+      },
+      {
+        kind: "button",
+        id: "snap",
+        icon: () => (this.state.uvSnap.kind === "vertex" ? ICONS.vVert : ICONS.snap),
+        title: "スナップ（タップでオン / オフ · 長押しで種類）",
         pressed: () => this.state.snapOn,
         radial: () => this.uvSnapMenu(),
         onTap: () => this.toggleSnap(),
       },
       { kind: "separator" },
-      { kind: "button", icon: ICONS.frame, title: "選択にフレーム", onTap: () => uv.frame() },
+      { kind: "label", text: "UV" },
+      {
+        kind: "button",
+        id: "unfold",
+        icon: ICONS.smooth,
+        title: "展開（タップで開き直す · 長押しで自動 UV と方式）",
+        radial: () => ({
+          N: { label: "展開", sub: "Unfold", icon: ICONS.smooth, run: () => uv.unfold() },
+          E: { label: "自動 UV", sub: "Auto", icon: ICONS.mUV, run: () => uv.autoUnwrap() },
+          S: { label: "整列", sub: "Layout", icon: ICONS.vMulti, run: () => uv.repack() },
+          W: {
+            label: "オプション…",
+            sub: "Options",
+            icon: ICONS.mUV,
+            run: () => this.openGroupOptions("unfold", () => this.uvUnfoldOptions()),
+          },
+        }),
+        onTap: () => uv.unfold(),
+      },
+      cmd("cut", ICONS.multicut, "カット（選んだところを切る）", () => uv.cutOrSew(true)),
+      cmd("sew", ICONS.vEdge, "ソー（選んだ切れ目を縫う）", () => uv.cutOrSew(false)),
+      { kind: "separator" },
+      cmd("frame", ICONS.frame, "選択にフレーム", () => uv.frame()),
     ];
+  }
+
+  private setUvUnit(unit: UvUnit): void {
+    this.uv?.setUnit(unit);
+    this.renderToolColumn();
+  }
+
+  private uvUnfoldOptions(): HTMLElement[] {
+    const state = this.optionsState();
+    if (!state.uv) return [];
+    const host = this.panelHost();
+    return [...uvUnfoldSection(state.uv, host), uvSnapSection(state.uv, state, host)];
   }
 
   /* ---- UV モード -------------------------------------------------------- */
@@ -2113,6 +2101,7 @@ export class App {
   private setSnapKind(kind: SnapKind): void {
     this.state.snap.kind = kind;
     this.state.snapOn = true;
+    this.renderToolColumn();
     this.syncToggleButtons();
     this.refresh();
     this.hud.toast(`スナップ: ${SNAP_LABEL[kind]}`);
@@ -2124,6 +2113,12 @@ export class App {
       E: { label: "頂点", sub: "Point  V", icon: ICONS.vVert, run: () => this.setSnapKind("vertex") },
       S: { label: "カーブ / エッジ", sub: "Curve  C", icon: ICONS.vEdge, run: () => this.setSnapKind("edge") },
       W: { label: "サーフェス", sub: "Surface", icon: ICONS.vFace, run: () => this.setSnapKind("surface") },
+      SE: {
+        label: "オプション…",
+        sub: "Options",
+        icon: ICONS.snap,
+        run: () => this.openGroupOptions("snap", () => [snapSection(this.optionsState(), this.panelHost())]),
+      },
       SW: {
         label: "オフ",
         sub: "Off",
@@ -2818,93 +2813,211 @@ export class App {
     if (this.state.mode === "uv") return this.uvToolColumn();
     if (this.state.mode !== "model") return [];
 
-    const entries: ToolEntry[] = [
-      { kind: "label", text: "変形" },
+    return [
+      { kind: "label", text: "選択" },
       {
         kind: "button",
-        icon: ICONS.xform,
-        title: "選択・変形（長押しで 移動 / 回転 / スケール）",
-        tool: "select",
-        radial: () => this.manipMenu(),
-        onTap: () => {
-          this.setTool("select");
-          this.setManip("all");
-        },
+        id: "select",
+        icon: () => COMP_ICONS[this.state.compMode],
+        title: "選択（長押しで オブジェクト / 頂点 / エッジ / フェース）",
+        pressed: () => this.state.tool === "select",
+        radial: () => this.selectGroupMenu(),
+        options: () => this.selectOptions(),
+        onTap: () => this.setTool("select"),
       },
       {
         kind: "button",
-        icon: ICONS.multicut,
-        title: "マルチカット（エッジループ挿入）",
-        tool: "multicut",
-        onTap: () => this.setTool("multicut"),
-      },
-      {
-        kind: "button",
-        icon: ICONS.scale,
-        title: "ベベル（エッジを選んで左右にドラッグ）",
-        tool: "bevel",
-        onTap: () => this.setTool("bevel"),
-      },
-      {
-        kind: "button",
-        icon: ICONS.pivot,
-        title: "マニピュレータ（タップで大きさのスライダー · 長押しでピボット）",
+        id: "xform",
+        icon: () => (this.state.pivotEdit ? ICONS.pivot : MANIP_ICONS[this.state.manip]),
+        title: "変形（長押しで ユニバーサル / 移動 / 回転 / スケール / ピボット）",
         pressed: () => this.state.pivotEdit,
         radial: () => this.manipulatorMenu(),
-        onTap: (b) => this.openManipSizeGauge(b),
+        options: () => this.xformOptions(),
+        onTap: () => this.setTool("select"),
       },
       {
         kind: "button",
-        icon: ICONS.snap,
-        title: "スナップ（長押しで グリッド / 頂点 / カーブ / サーフェス）",
+        id: "edit",
+        icon: () => EDIT_ICONS[this.state.lastEdit],
+        title: "編集（長押しで マルチカット / ベベル / ブリッジ / 押し出し / 接続 / ウェルド）",
+        pressed: () => this.state.tool === "multicut" || this.state.tool === "bevel",
+        radial: () => this.editGroupMenu(),
+        options: () => this.editOptions(),
+        onTap: () => this.activateEdit(this.state.lastEdit),
+      },
+      {
+        kind: "button",
+        id: "snap",
+        icon: () => SNAP_ICONS[this.state.snap.kind],
+        title: "スナップ（タップでオン / オフ · 長押しで種類とオプション）",
         pressed: () => this.state.snapOn,
         radial: () => this.snapMenu(),
         onTap: () => this.toggleSnap(),
       },
       { kind: "separator" },
-      { kind: "label", text: "選択" },
-    ];
-
-    for (const m of COMP_MODES) {
-      entries.push({
-        kind: "button",
-        icon: COMP_ICONS[m.id],
-        title: `${m.label} (${m.key})`,
-        compMode: m.id,
-        onTap: () => this.setCompMode(m.id),
-      });
-    }
-
-    entries.push(
-      { kind: "separator" },
       { kind: "label", text: "表示" },
       {
         kind: "button",
-        icon: ICONS.shade,
-        title: "シェーディング（長押しで切り替え。4–7）",
+        id: "display",
+        icon: () => DISPLAY_ICONS[this.state.display],
+        title: "シェーディング（長押しで切り替え。4–8）",
         radial: () => this.shadingMenu(),
-        onTap: () => this.cycleDisplay(),
+        options: () => [displaySection(this.optionsState(), this.panelHost())],
+        onTap: () => {},
       },
       {
         kind: "button",
+        id: "camera",
         icon: ICONS.camera,
-        title: "カメラ設定",
-        onTap: (el) => this.openCameraPopup(el),
+        title: "カメラ（長押しでビューの切り替え · タップで設定）",
+        pressed: () => this.state.camOpts.ortho,
+        radial: () => this.cameraMenu(),
+        radialList: () => this.savedCameraItems(),
+        options: () => [cameraSection(this.optionsState(), this.panelHost())],
+        onTap: () => {},
       },
       { kind: "separator" },
       { kind: "label", text: "追加" },
-    );
-
-    for (const id of PRIMITIVE_ORDER) {
-      const def = PRIMITIVES[id];
-      entries.push({
+      {
         kind: "button",
+        id: "add",
+        icon: () => PRIMITIVE_ICONS[this.primitiveIconKind()] ?? ICONS.prim,
+        title: "追加（長押しでプリミティブを選ぶ · タップで入力ノード）",
+        radial: () => this.primitiveMenu(),
+        options: () => [primitiveSection(this.optionsState(), this.panelHost())],
+        onTap: () => {},
+      },
+    ];
+  }
+
+  /** 「追加」のアイコンに出す種類。選択がパラメトリックならそれ、無ければ最後に足したもの。 */
+  private primitiveIconKind(): string {
+    const o = this.state.selected;
+    if (o?.parametric && PRIMITIVES[o.kind]) return o.kind;
+    return this.state.lastPrimitive;
+  }
+
+  /* ---- グループのサークルメニュー（`21` の 2 章） ------------------------ */
+
+  private selectGroupMenu(): RadialMenu {
+    return {
+      N: { label: "オブジェクト", sub: "Object  F8", icon: ICONS.vObj, run: () => this.setCompMode("object") },
+      E: { label: "頂点", sub: "Vertex  F9", icon: ICONS.vVert, run: () => this.setCompMode("vertex") },
+      S: { label: "エッジ", sub: "Edge  F10", icon: ICONS.vEdge, run: () => this.setCompMode("edge") },
+      W: { label: "フェース", sub: "Face  F11", icon: ICONS.vFace, run: () => this.setCompMode("face") },
+      NW: this.state.modOn("ctrl")
+        ? { label: "選択を縮小", sub: "Shrink  <", icon: ICONS.vMulti, run: () => this.growOrShrink(false) }
+        : { label: "選択を拡張", sub: "Grow  >", icon: ICONS.vMulti, run: () => this.growOrShrink(true) },
+    };
+  }
+
+  private editGroupMenu(): RadialMenu {
+    const item = (kind: EditKind, sub: string): RadialItem => ({
+      label: EDIT_LABELS[kind],
+      sub,
+      icon: EDIT_ICONS[kind],
+      run: () => this.activateEdit(kind, true),
+    });
+    return {
+      N: item("multicut", "Multi Cut"),
+      E: item("bevel", "Bevel"),
+      S: item("bridge", "Bridge"),
+      W: item("extrude", "Extrude"),
+      NW: item("connect", "Connect"),
+      SW: item("weld", "Target Weld"),
+    };
+  }
+
+  private primitiveMenu(): RadialMenu {
+    const menu: RadialMenu = {};
+    PRIMITIVE_ORDER.forEach((id, i) => {
+      const def = PRIMITIVES[id];
+      if (!def || i >= DIRECTIONS.length) return;
+      menu[DIRECTIONS[i]] = {
+        label: def.label,
+        sub: def.en,
         icon: PRIMITIVE_ICONS[id] ?? ICONS.prim,
-        title: `${def.label} を原点に追加`,
-        onTap: () => this.addPrimitive(id),
-      });
+        run: () => this.addPrimitive(id),
+      };
+    });
+    return menu;
+  }
+
+  /**
+   * 「編集」の中身を有効にする。ツールならそれになり、コマンドなら
+   * `run` が真のときだけ実行する（タップはオプションを出すだけ。`21` の 2.3）。
+   */
+  private activateEdit(kind: EditKind, run = false): void {
+    this.state.lastEdit = kind;
+    if (kind === "multicut" || kind === "bevel") {
+      this.setTool(kind);
+      return;
     }
-    return entries;
+    this.setTool("select");
+    if (!run) {
+      this.renderToolColumn();
+      return;
+    }
+    if (kind === "bridge") this.doBridge();
+    else if (kind === "extrude") this.doExtrudeForMode();
+    else if (kind === "connect") this.doConnectForMode();
+    else this.hud.toast("頂点を掴んで、別の頂点の近くで離すと溶接します");
+    this.renderToolColumn();
+  }
+
+  /** 今の選択モードに合う押し出し。 */
+  private doExtrudeForMode(): void {
+    if (this.state.compMode === "face") this.doExtrudeFaces();
+    else if (this.state.compMode === "edge") this.doExtrudeEdgesMenu();
+    else if (this.state.compMode === "vertex") this.doExtrudeVertices();
+    else this.hud.toast("面・エッジ・頂点を選んでください");
+  }
+
+  /** 今の選択モードに合う接続。 */
+  private doConnectForMode(): void {
+    if (this.state.compMode === "edge") this.doConnectEdges();
+    else if (this.state.compMode === "vertex") this.doConnectVertices();
+    else this.hud.toast("エッジか頂点を選んでください");
+  }
+
+  /* ---- グループのオプション（カットインの中身） ------------------------- */
+
+  private selectOptions(): HTMLElement[] {
+    const state = this.optionsState();
+    const host = this.panelHost();
+    const out = [selectSection(state, host)];
+    if (this.state.compMode !== "object") out.push(softSelectSection(state, host));
+    if (this.state.compMode === "vertex") out.push(vertexSection(state, host));
+    if (this.state.compMode === "object") out.push(mirrorSection(state, host));
+    return out;
+  }
+
+  private xformOptions(): HTMLElement[] {
+    const state = this.optionsState();
+    const host = this.panelHost();
+    const out = [manipulatorSection(state, host)];
+    const t = transformSection(state, host);
+    if (t) out.push(t);
+    return out;
+  }
+
+  private editOptions(): HTMLElement[] {
+    const state = this.optionsState();
+    const host = this.panelHost();
+    switch (this.state.lastEdit) {
+      case "multicut":
+        return [multicutSection(state, host)];
+      case "bevel":
+        return [bevelSection(state, host)];
+      case "bridge":
+        return [bridgeSection()];
+      case "connect":
+        return [connectSection()];
+      case "extrude":
+        return [extrudeSection(state, host)];
+      default:
+        return [vertexSection(state, host)];
+    }
   }
 
   private buildToolDock(): void {
@@ -2932,7 +3045,8 @@ export class App {
         continue;
       }
       const b = el("button", "ibtn");
-      b.innerHTML = iconSvg(entry.icon);
+      b.dataset.group = entry.id;
+      b.innerHTML = iconSvg(typeof entry.icon === "function" ? entry.icon() : entry.icon);
       b.title = entry.title;
       if (entry.tool) {
         b.dataset.tool = entry.tool;
@@ -2946,11 +3060,24 @@ export class App {
         b.dataset.toggle = "1";
         b.setAttribute("aria-pressed", String(entry.pressed()));
       }
+      // タップは「今の中身を有効にする」と「オプションを出す」を同時に行う（`21` の 1.1）
+      const tap = (): void => {
+        const open = entry.options && this.popup?.dataset.gauge === entry.id;
+        entry.onTap(b);
+        if (!entry.options) return;
+        if (open) {
+          this.closePopup();
+          return;
+        }
+        // onTap がツール列を描き直していることがあるので、ボタンを探し直す
+        const anchor = this.toolPanelBody?.querySelector<HTMLElement>(`[data-group="${entry.id}"]`) ?? b;
+        this.openToolOptions(anchor, entry.id, entry.options);
+      };
       if (entry.radial) {
         b.dataset.radial = "1";
-        attachRadialButton(b, entry.radial, () => entry.onTap(b));
+        attachRadialButton(b, entry.radial, tap, entry.radialList);
       } else {
-        b.addEventListener("click", () => entry.onTap(b));
+        b.addEventListener("click", tap);
       }
       col.appendChild(b);
     }
@@ -2959,15 +3086,79 @@ export class App {
 
   /* ---- 右のパネル ------------------------------------------------------ */
 
-  private buildPanels(): void {
-    const options = panelShell("options", "オプション");
-    this.docking.attach(options.panel);
-    this.docking.place(options.panel, this.zones.options ?? "rightTop");
-    this.optionsBody = options.body;
+  /**
+   * グループのオプションをボタンの横にカットインで出す（`21` の 1.1）。
+   * 同じグループをもう一度タップすると閉じる（呼び出し側で見ている）。
+   */
+  private openToolOptions(anchor: HTMLElement, id: string, build: () => HTMLElement[]): void {
+    this.closePopup();
+    const sections = build();
+    if (!sections.length) return;
+    const r = anchor.getBoundingClientRect();
+    const pop = el("div", "cutin wide");
+    pop.dataset.gauge = id;
+    pop.style.left = `${r.right + 8}px`;
+    // ボタンの高さを中心に置いて、画面からはみ出さないところまで戻す
+    pop.style.top = `${Math.max(8, Math.min(window.innerHeight - 120, r.top))}px`;
+    pop.style.maxHeight = `${window.innerHeight - Math.max(8, r.top) - 16}px`;
+    for (const s of sections) pop.appendChild(s);
+    document.body.appendChild(pop);
+    this.popup = pop;
+    this.popupAnchor = anchor;
+  }
 
+  /** 長押しメニューの「オプション…」から、そのグループのカットインを開く。 */
+  private openGroupOptions(id: string, build: () => HTMLElement[]): void {
+    const anchor = this.toolPanelBody?.querySelector<HTMLElement>(`[data-group="${id}"]`);
+    if (!anchor) return;
+    this.openToolOptions(anchor, id, build);
+  }
+
+  /** カットインの中身に渡す今の状態。旧オプションパネルの引数をそのまま持ってきたもの。 */
+  private optionsState(): OptionsState {
+    const kind = this.primitiveIconKind();
+    return {
+      tool: this.state.tool,
+      selected: this.state.selected,
+      soft: this.state.soft,
+      cut: this.state.cut,
+      bevel: this.state.bevel,
+      bevelActive: this.bevel.active,
+      extrudeDist: this.state.toolOpts.extrudeDist,
+      vertex: this.state.vertexOpts,
+      snap: { ...this.state.snap, active: this.state.snapping },
+      mirrorAxis: this.state.mirrorAxis,
+      rotationEuler: this.state.selected
+        ? this.eulerOf(this.state.selected.transform.rotation as [number, number, number, number])
+        : [0, 0, 0],
+      smoothAngle: this.state.smoothAngle,
+      compMode: this.state.compMode,
+      manipSize: this.state.manipSize,
+      manip: this.state.manip,
+      pivotEdit: this.state.pivotEdit,
+      rotateStep: this.state.rotateStep,
+      preventNegativeScale: this.state.preventNegativeScale,
+      cameraBased: this.state.cameraBased,
+      cam: this.state.camOpts,
+      nextPrimitive: kind,
+      nextPrimitiveParams: this.state.primitiveDefaults[kind] ?? defaultParams(kind),
+      uv:
+        this.state.mode === "uv" && this.state.selected?.uv
+          ? {
+              method: this.state.selected.uv.method,
+              snapKind: this.state.uvSnap.kind,
+              snapStep: this.state.uvSnap.step,
+              auto: { ...this.state.selected.uv.autoSeamParams },
+              packing: { ...this.state.selected.uv.packing },
+            }
+          : null,
+    };
+  }
+
+  private buildPanels(): void {
     const outliner = panelShell("outliner", "アウトライナ");
     this.docking.attach(outliner.panel);
-    this.docking.place(outliner.panel, this.zones.outliner ?? "rightBottom");
+    this.docking.place(outliner.panel, this.zones.outliner ?? "rightTop");
     this.outlinerBody = outliner.body;
     this.renderPanels();
 
@@ -3077,6 +3268,38 @@ export class App {
         this.syncToggleButtons();
         this.refresh();
       },
+      onCameraBasedChange: (on) => {
+        this.state.cameraBased = on;
+        this.remember("cameraBased", on);
+        this.hud.toast(on ? "カメラベース選択: オン" : "カメラベース選択: オフ");
+      },
+      onRotateStepChange: (deg) => {
+        this.state.rotateStep = deg;
+        this.remember("rotateStep", deg);
+        this.reopenToolOptions("xform");
+      },
+      onPreventNegativeScaleChange: (on) => {
+        this.state.preventNegativeScale = on;
+        this.remember("preventNegativeScale", on);
+      },
+      onPivotEditToggle: () => {
+        this.togglePivotEdit();
+        this.reopenToolOptions("xform");
+      },
+      onCamOptChange: (key, value) => {
+        this.state.camOpts[key] = value;
+        this.viewport.applyCamera();
+        this.refreshManipulator();
+      },
+      onCamOrthoChange: (on) => {
+        this.state.camOpts.ortho = on;
+        this.viewport.applyCamera();
+        this.refresh();
+      },
+      onDefaultParamChange: (kind, key, value) => {
+        const params = (this.state.primitiveDefaults[kind] ??= defaultParams(kind));
+        params[key] = value;
+      },
       onSelect: (o) => {
         this.state.select(o);
         this.viewport.applyDisplayAll();
@@ -3129,51 +3352,62 @@ export class App {
   }
 
   private renderPanels(): void {
-    const host = this.panelHost();
-    if (this.optionsBody) {
-      renderOptions(
-        this.optionsBody,
-        {
-          tool: this.state.tool,
-          selected: this.state.selected,
-          soft: this.state.soft,
-          cut: this.state.cut,
-          bevel: this.state.bevel,
-          bevelActive: this.bevel.active,
-          extrudeDist: this.state.toolOpts.extrudeDist,
-          vertex: this.state.vertexOpts,
-          snap: { ...this.state.snap, active: this.state.snapping },
-          mirrorAxis: this.state.mirrorAxis,
-          rotationEuler: this.state.selected
-            ? this.eulerOf(this.state.selected.transform.rotation as [number, number, number, number])
-            : [0, 0, 0],
-          smoothAngle: this.state.smoothAngle,
-          compMode: this.state.compMode,
-          manipSize: this.state.manipSize,
-          uv:
-            this.state.mode === "uv" && this.state.selected?.uv
-              ? {
-                  method: this.state.selected.uv.method,
-                  snapKind: this.state.uvSnap.kind,
-                  snapStep: this.state.uvSnap.step,
-                  auto: { ...this.state.selected.uv.autoSeamParams },
-                  packing: { ...this.state.selected.uv.packing },
-                }
-              : null,
-        },
-        host,
-      );
-    }
     if (this.outlinerBody) {
-      renderOutliner(this.outlinerBody, this.state.doc.objects, this.state.selected, host);
+      renderOutliner(this.outlinerBody, this.state.doc.objects, this.state.selected, this.panelHost());
+    }
+  }
+
+  /** 開いているカットインを、中身を作り直して開き直す（トグルを押したときなど）。 */
+  private reopenToolOptions(id: string): void {
+    if (this.popup?.dataset.gauge !== id) return;
+    const anchor = this.popupAnchor;
+    const entry = this.toolColumn().find((e) => e.kind === "button" && e.id === id);
+    if (!anchor || !entry || entry.kind !== "button" || !entry.options) return;
+    this.renderToolColumn();
+    const fresh = this.toolPanelBody?.querySelector<HTMLElement>(`[data-group="${id}"]`) ?? anchor;
+    this.openToolOptions(fresh, id, entry.options);
+  }
+
+  /** 前に触った設定を戻す（`21` の 3 章）。壊れていても既定で始める。 */
+  private restoreSettings(): void {
+    const read = (key: string): string | null => {
+      try {
+        return localStorage.getItem(`macbeth.${key}`);
+      } catch {
+        return null;
+      }
+    };
+    this.state.cameraBased = read("cameraBased") === "true";
+    this.state.preventNegativeScale = read("preventNegativeScale") !== "false";
+    const step = Number(read("rotateStep"));
+    if (Number.isFinite(step) && step >= 0) this.state.rotateStep = step;
+    const kind = read("lastPrimitive");
+    if (kind && PRIMITIVES[kind]) this.state.lastPrimitive = kind;
+  }
+
+  /** 触った設定を次に開いたときのために残す。 */
+  private remember(key: string, value: string | number | boolean): void {
+    try {
+      localStorage.setItem(`macbeth.${key}`, String(value));
+    } catch {
+      /* 保存できなくても動作には影響しない */
     }
   }
 
   private addPrimitive(kind: string): void {
     this.history.push(`${PRIMITIVES[kind].label} を追加`);
     const o = this.state.doc.addObject(kind);
+    // 「追加」のカットインで触った既定値で作る（`21` の 2.7）
+    const defaults = this.state.primitiveDefaults[kind];
+    if (defaults) {
+      o.params = { ...defaults };
+      o.rebuild();
+    }
+    this.state.lastPrimitive = kind;
+    this.remember("lastPrimitive", kind);
     this.state.select(o);
     this.viewport.syncAll();
+    this.renderToolColumn();
     this.refresh();
     this.hud.toast(`${o.name} を追加しました`);
   }

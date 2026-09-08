@@ -43,6 +43,29 @@ const scenes = {
     app.uv.refreshHighlight();
     app.uv.view.frameUnit();
   },
+  /** T8: ツール列のグループと、変形のカットイン。 */
+  "20-t8-toolgroups": async () => {
+    const app = window.macbeth;
+    app.state.select(app.state.doc.objects[0]);
+    app.setCompMode("face");
+    app.setManip("rotate");
+    app.refresh();
+    // 「変形」をタップしてオプションを出す
+    const b = document.querySelector('#dockLeft .ibtn[data-group="xform"]');
+    const r = b.getBoundingClientRect();
+    for (const type of ["pointerdown", "pointerup"]) {
+      const e = new PointerEvent(type, {
+        pointerId: 5,
+        pointerType: "mouse",
+        bubbles: true,
+        cancelable: true,
+        clientX: r.x + r.width / 2,
+        clientY: r.y + r.height / 2,
+      });
+      (type === "pointerdown" ? b : window).dispatchEvent(e);
+    }
+  },
+
   /** T3: 球の自動 UV。島どうしが離れている。 */
   "20-t3-margin": async () => {
     const app = window.macbeth;
@@ -93,9 +116,11 @@ await page.waitForFunction(() => window.macbeth?.state.doc.objects.length > 0, n
 
 await page.evaluate(scene);
 // 「両方」の表示にして、2D と 3D の両方が写るようにする
-await page.evaluate(() => {
-  document.querySelector('#uvSwitch [data-split="both"]')?.click();
-});
+if (NAME.startsWith("20-t2") || NAME.startsWith("20-t3")) {
+  await page.evaluate(() => {
+    document.querySelector('#uvSwitch [data-split="both"]')?.click();
+  });
+}
 await page.waitForTimeout(400);
 
 mkdirSync("docs/img", { recursive: true });
