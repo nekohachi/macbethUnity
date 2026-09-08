@@ -15,6 +15,7 @@ export interface PanelHost {
   onParamCommit(object: SceneObject, label: string): void;
   onSoftChange(which: "strength" | "radius", value: number): void;
   onExtrudeDistChange(value: number): void;
+  onVertexOptChange(key: "mergeDist" | "extrudeWidth", value: number): void;
   onBevelChange(key: "width" | "segments", value: number): void;
   onCutChange(key: "snapStep" | "edgeFlow", value: number | boolean): void;
   onSmoothAngleChange(value: number): void;
@@ -107,6 +108,7 @@ export interface OptionsState {
   /** ベベルを確定した直後か。作り直せる間だけ出す。 */
   bevelActive: boolean;
   extrudeDist: number;
+  vertex: { mergeDist: number; extrudeWidth: number };
   smoothAngle: number;
   compMode: string;
 }
@@ -182,6 +184,35 @@ export function renderOptions(body: HTMLElement, state: OptionsState, host: Pane
     });
     s.appendChild(
       el("div", "hint", "編集メニューの「押し出し」で使う距離です。\nSHF を押しながらドラッグする場合は距離ではなく動かした量になります。"),
+    );
+    body.appendChild(s);
+  }
+
+  if (state.compMode === "vertex") {
+    const s = section("頂点", "VERTEX");
+    paramRow(s, {
+      label: "マージ距離",
+      value: state.vertex.mergeDist,
+      min: 0.001,
+      max: 0.5,
+      step: 0.001,
+      format: (v) => v.toFixed(3),
+      onInput: (v) => host.onVertexOptChange("mergeDist", v),
+    });
+    paramRow(s, {
+      label: "押し出しの太さ",
+      value: state.vertex.extrudeWidth,
+      min: 0.05,
+      max: 0.6,
+      step: 0.01,
+      onInput: (v) => host.onVertexOptChange("extrudeWidth", v),
+    });
+    s.appendChild(
+      el(
+        "div",
+        "hint",
+        "マージ距離は「距離でマージ」で使うしきい値です。\n押し出しの太さは、尖らせたときの根元の広がり（辺の長さに対する割合）です。",
+      ),
     );
     body.appendChild(s);
   }

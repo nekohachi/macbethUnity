@@ -10,6 +10,9 @@ import {
   PRIMITIVE_ORDER,
   bridgeEdges,
   cloneTransform,
+  dissolveVertices,
+  extrudeVertices,
+  mergeByDistance,
   collapseFaces,
   compact,
   deleteFaces,
@@ -560,8 +563,19 @@ export class App {
       this.viewport.rebuildOverlay();
       return true;
     }
-    this.hud.toast("頂点の押し出しは未対応です（そのまま移動します）");
-    return false;
+    // 頂点: 長さ 0 で尖らせて、できた先端をそのままドラッグで引っぱる
+    const r = extrudeVertices(o.mesh, this.state.comp, 0, this.state.vertexOpts.extrudeWidth);
+    if (!r) {
+      this.hud.toast("押し出せる頂点がありません（まわりの面が輪になっている必要があります）");
+      return false;
+    }
+    o.mesh = r.mesh;
+    o.markTopologyChanged();
+    this.viewport.rebuildObject(o);
+    this.state.comp.clear();
+    for (const tip of r.tips) this.state.comp.add(tip);
+    this.viewport.rebuildOverlay();
+    return true;
   }
 
   private moveTool(p: ScreenPoint, e: PointerEvent): void {
@@ -1151,14 +1165,14 @@ export class App {
     }
     if (this.state.compMode === "vertex") {
       return {
-        N: { label: "マージ", sub: "Merge", icon: ICONS.vVert, run: () => this.doMergeVertices() },
+        N: { label: "距離でマージ", sub: "Merge", icon: ICONS.vVert, run: () => this.doMergeByDistance() },
         NE: { label: "中心にマージ", sub: "To Center", icon: ICONS.vObj, run: () => this.doMergeVertices() },
         E: { label: "面取り", sub: "Chamfer", icon: ICONS.scale, run: todo("面取り") },
         SE: { label: "接続", sub: "Connect", icon: ICONS.vMulti, run: todo("接続") },
-        S: { label: "削除", sub: "Delete", icon: ICONS.del, run: todo("頂点の削除") },
+        S: { label: "削除", sub: "Delete", icon: ICONS.del, run: () => this.doDissolveVertices() },
         SW: { label: "平均化", sub: "Average", icon: ICONS.smooth, run: todo("平均化") },
         W: { label: "分離", sub: "Detach", icon: ICONS.vVertFace, run: todo("分離") },
-        NW: { label: "押し出し", sub: "Extrude", icon: ICONS.extrude, run: todo("頂点の押し出し") },
+        NW: { label: "押し出し", sub: "Extrude", icon: ICONS.extrude, run: () => this.doExtrudeVertices() },
       };
     }
     return {
@@ -1321,6 +1335,76 @@ export class App {
         return true;
       },
       () => "頂点をマージ",
+    );
+  }
+
+  /** 距離でマージ。選択が 2 つ以上なら選択の中だけ、1 つ以下ならメッシュ全体。 */
+  private doMergeByDistance(): void {
+    const o = this.state.selected;
+    if (!o || this.state.compMode !== "vertex") {
+      this.hud.toast("頂点モードで実行してください");
+      return;
+    }
+    const threshold = this.state.vertexOpts.mergeDist;
+    const scope = this.state.comp.size >= 2 ? [...this.state.comp] : undefined;
+    const r = mergeByDistance(o.mesh, threshold, scope);
+    if (!r) {
+      this.hud.toast(`${threshold.toFixed(3)} 以内に重なる頂点がありません`);
+      return;
+    }
+    this.applyTopologyChange(
+      o,
+      "距離でマージ",
+      () => {
+        o.mesh = compact(r.mesh);
+        return true;
+      },
+      () => `${r.merged} 頂点をマージ（${threshold.toFixed(3)} 以内）`,
+    );
+  }
+
+  /** 頂点を消して、囲んでいた面を 1 枚にする。 */
+  private doDissolveVertices(): void {
+    const o = this.requireComponents("vertex");
+    if (!o) return;
+    const r = dissolveVertices(o.mesh, this.state.comp);
+    if (!r) {
+      this.hud.toast("消せる頂点がありません（面が繋がっていない頂点です）");
+      return;
+    }
+    this.applyTopologyChange(
+      o,
+      "頂点を削除",
+      () => {
+        o.mesh = compact(r.mesh);
+        return true;
+      },
+      () => `${r.removed} 頂点を削除`,
+    );
+  }
+
+  /** 頂点を尖らせる。距離はオプションの押し出し距離、太さは頂点オプション。 */
+  private doExtrudeVertices(): void {
+    const o = this.requireComponents("vertex");
+    if (!o) return;
+    const r = extrudeVertices(
+      o.mesh,
+      this.state.comp,
+      this.state.toolOpts.extrudeDist,
+      this.state.vertexOpts.extrudeWidth,
+    );
+    if (!r) {
+      this.hud.toast("押し出せる頂点がありません（まわりの面が輪になっている必要があります）");
+      return;
+    }
+    this.applyTopologyChange(
+      o,
+      "頂点を押し出し",
+      () => {
+        o.mesh = r.mesh;
+        return true;
+      },
+      () => `頂点を押し出し — ${r.faces} 面`,
     );
   }
 
@@ -1646,6 +1730,9 @@ export class App {
       onExtrudeDistChange: (value) => {
         this.state.toolOpts.extrudeDist = value;
       },
+      onVertexOptChange: (key, value) => {
+        this.state.vertexOpts[key] = value;
+      },
       onBevelChange: (key, value) => {
         if (key === "segments") this.state.bevel.segments = value;
         else this.state.bevel.width = value;
@@ -1723,6 +1810,7 @@ export class App {
           bevel: this.state.bevel,
           bevelActive: this.bevel.active,
           extrudeDist: this.state.toolOpts.extrudeDist,
+          vertex: this.state.vertexOpts,
           smoothAngle: this.state.smoothAngle,
           compMode: this.state.compMode,
         },

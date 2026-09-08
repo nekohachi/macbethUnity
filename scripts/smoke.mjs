@@ -974,7 +974,61 @@ const noMenu = await page.evaluate(async (center) => {
 }, ON_MESH);
 check("つまんだときは長押しメニューを出さない", noMenu === 0, `輪 ${noMenu} 個`);
 
-/* 25. 例外が出ていない */
+/* 25. 頂点の操作（距離マージ・削除・押し出し） */
+const vertexOps = await page.evaluate(() => {
+  const app = window.macbeth;
+  const objectsBefore = app.state.doc.objects.length;
+  const object = app.state.doc.addObject("cube");
+  app.viewport.syncAll();
+  app.state.select(object);
+  app.setCompMode("vertex");
+
+  // 押し出し: 角 1 つを尖らせる
+  app.state.comp.clear();
+  app.state.comp.add(0);
+  const before = { verts: object.mesh.vertexCount, faces: object.mesh.faceCount };
+  app.doExtrudeVertices();
+  const spike = { verts: object.mesh.vertexCount, faces: object.mesh.faceCount };
+  app.history.undo();
+
+  // 削除: 角 1 つを消して、まわりの 3 枚を 1 枚にする
+  app.state.comp.clear();
+  app.state.comp.add(0);
+  app.doDissolveVertices();
+  const dissolved = { verts: object.mesh.vertexCount, faces: object.mesh.faceCount };
+  app.history.undo();
+
+  // 距離マージ: 頂点 1 を頂点 0 のすぐ隣へ寄せてからまとめる
+  const p = object.mesh.getPosition(0);
+  object.mesh.setPosition(1, p[0] + 0.01, p[1], p[2]);
+  app.state.vertexOpts.mergeDist = 0.05;
+  app.state.comp.clear();
+  app.doMergeByDistance();
+  const merged = object.mesh.vertexCount;
+  app.history.undo();
+
+  // 後始末。足した立方体を外す（履歴の巻き戻しでは戻らない）
+  app.state.select(null);
+  app.state.doc.objects.length = objectsBefore;
+  app.viewport.syncAll();
+
+  return { before, spike, dissolved, merged, objectsBefore, objects: app.state.doc.objects.length };
+});
+check(
+  "頂点を尖らせる / 消す / 距離でまとめる",
+  vertexOps.before.verts === 8 &&
+    vertexOps.spike.verts === 12 &&
+    vertexOps.spike.faces === 9 &&
+    vertexOps.dissolved.verts === 7 &&
+    vertexOps.dissolved.faces === 4 &&
+    vertexOps.merged === 7 &&
+    vertexOps.objects === vertexOps.objectsBefore,
+  `押し出し ${vertexOps.before.verts}→${vertexOps.spike.verts}点 ${vertexOps.spike.faces}面 / ` +
+    `削除 ${vertexOps.dissolved.verts}点 ${vertexOps.dissolved.faces}面 / マージ ${vertexOps.merged}点 / ` +
+    `オブジェクト ${vertexOps.objectsBefore} → ${vertexOps.objects}`,
+);
+
+/* 26. 例外が出ていない */
 check("例外なし", errors.length === 0, errors.join(" / "));
 
 await page.screenshot({ path: SHOT });

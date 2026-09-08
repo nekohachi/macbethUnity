@@ -103,6 +103,8 @@ export class AppState {
 
   soft = { strength: 0, radius: 1.0 };
   toolOpts = { extrudeDist: 0.35 };
+  /** 頂点まわり。mergeDist は距離マージのしきい値、extrudeWidth は尖らせるときの根元の太さ。 */
+  vertexOpts = { mergeDist: 0.05, extrudeWidth: 0.25 };
   /** マルチカット。snapStep は % で 0 ならオフ。 */
   cut = { snapStep: 0, edgeFlow: false };
   /** ベベル。segments が 1 なら面取り、2 以上で丸め。 */
