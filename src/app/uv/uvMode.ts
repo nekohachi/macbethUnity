@@ -16,7 +16,14 @@ import {
   type SceneObject,
   type UvRecipe,
 } from "../../core/index.js";
-import { GestureRouter, type GestureDelta, type GestureHandlers } from "../input/gestures.js";
+import {
+  GestureRouter,
+  TAP_DURATION,
+  TAP_MOVE,
+  TOOL_MOVE,
+  type GestureDelta,
+  type GestureHandlers,
+} from "../input/gestures.js";
 import type { ScreenPoint } from "../render/picking.js";
 import { UvView } from "./uvView.js";
 
@@ -64,6 +71,9 @@ export class UvMode {
     chart: number;
     snapshot: unknown;
     moved: boolean;
+    /** ペンと指は動きが確かになるまで待つ（docs/17 の 3 章）。 */
+    pending: boolean;
+    t0: number;
   } | null = null;
   private gesture: { base: Map<CornerKey, [number, number]>; chart: number; snapshot: unknown; moved: boolean } | null =
     null;
@@ -441,7 +451,7 @@ export class UvMode {
 
     // すでに選んでいるものの上を押したら、そのまま動かす
     if (hit >= 0 && this.chosen.has(hit) && !add && !sub) {
-      this.beginDrag(p);
+      this.beginDrag(p, e);
       return;
     }
     if (hit < 0) {
@@ -459,7 +469,7 @@ export class UvMode {
     }
     this.refreshHighlight();
     this.host.syncToView(this.facesOfSelection());
-    this.beginDrag(p);
+    this.beginDrag(p, e);
   }
 
   private pick(p: ScreenPoint, object: SceneObject): number {
@@ -470,7 +480,7 @@ export class UvMode {
     return this.view.uvTopology?.chartOfFace.get(face) ?? -1;
   }
 
-  private beginDrag(p: ScreenPoint): void {
+  private beginDrag(p: ScreenPoint, e: PointerEvent): void {
     const { corners, chart } = this.selectedCorners();
     if (!corners.length) return;
     this.drag = {
@@ -479,12 +489,21 @@ export class UvMode {
       chart,
       snapshot: this.host.snapshot(),
       moved: false,
+      pending: e.pointerType !== "mouse",
+      t0: performance.now(),
     };
   }
 
   private move(p: ScreenPoint): void {
     const drag = this.drag;
     if (!drag) return;
+    // 待たせている間は UV を触らない。離せばただのタップになる
+    if (drag.pending) {
+      const d = Math.hypot(p.x - drag.start.x, p.y - drag.start.y);
+      const held = performance.now() - drag.t0;
+      if (d <= TAP_MOVE && !(d > TOOL_MOVE && held > TAP_DURATION)) return;
+      drag.pending = false;
+    }
     const k = this.view.pixelToUv();
     const du = (p.x - drag.start.x) * k;
     const dv = -(p.y - drag.start.y) * k;

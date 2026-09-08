@@ -35,7 +35,14 @@ import {
   writeObj,
   type SceneObject,
 } from "../core/index.js";
-import { GestureRouter, type GestureDelta, type GestureHandlers } from "./input/gestures.js";
+import {
+  GestureRouter,
+  TAP_DURATION,
+  TAP_MOVE,
+  TOOL_MOVE,
+  type GestureDelta,
+  type GestureHandlers,
+} from "./input/gestures.js";
 import { Picker, type ScreenPoint } from "./render/picking.js";
 import { STANDARD_VIEWS, Viewport, type ViewName } from "./render/viewport.js";
 import {
@@ -191,6 +198,17 @@ export class App {
   /** スライダーを触り始めたときの状態。離したときに履歴へ積む。 */
   private paramSnapshot: ReturnType<History["snapshot"]> | null = null;
   private drag: DragState | null = null;
+  /**
+   * ペンと指で掴んだが、まだ動きが確かでないもの（docs/17 の 3 章）。
+   * ここに居る間はメッシュもピボットも触らないので、離せばただのタップになる。
+   */
+  private pendingDrag: {
+    handle: number;
+    point: ScreenPoint;
+    t0: number;
+    shift: boolean;
+    ctrl: boolean;
+  } | null = null;
   /** ドラッグ開始前のスナップショット。動いたときだけ履歴に積む。 */
   private dragSnapshot: ReturnType<History["snapshot"]> | null = null;
   private raycaster = new Raycaster();
@@ -320,6 +338,7 @@ export class App {
       abort: () => {
         this.endMarquee();
         this.drag = null;
+        this.pendingDrag = null;
         this.dragSnapshot = null;
         this.manipulator.hot = -1;
         this.multicut.clear();
@@ -590,16 +609,42 @@ export class App {
       return;
     }
 
+    // ペンと指は、着地のぶれでマニピュレータを掴んでしまう（ダブルクリックの
+    // 2 回目がそれ）。動きが確かになるまでドラッグを始めない。マウスは即時
+    if (e.pointerType !== "mouse") {
+      this.pendingDrag = {
+        handle,
+        point: p,
+        t0: performance.now(),
+        shift: this.state.modOn("shift") || e.shiftKey,
+        ctrl: this.state.modOn("ctrl") || e.ctrlKey || e.metaKey,
+      };
+      this.manipulator.hot = handle;
+      this.refreshManipulator();
+      return;
+    }
+
+    this.beginToolDrag(handle, p, this.state.modOn("shift") || e.shiftKey, this.state.modOn("ctrl") || e.ctrlKey || e.metaKey);
+  }
+
+  /**
+   * ドラッグを実際に始める。押した点を起点にするので、生きるまでに動いた分は
+   * 最初の 1 フレームで追いつく（ずれは最大 12px）。
+   */
+  private beginToolDrag(handle: number, p: ScreenPoint, shift: boolean, ctrl: boolean): void {
+    const o = this.state.selected;
+    const pivot = this.pivotWorld();
+    if (!o || !pivot) {
+      this.startMarquee(p);
+      return;
+    }
+
     const snapshot = this.history.snapshot();
     let label = { move: "移動", rotate: "回転", scale: "スケール" }[handleKind(handle) ?? "move"];
 
-    // Shift + 移動 = 押し出してから移動（Maya と同じ）
-    if (
-      handleKind(handle) === "move" &&
-      this.state.compMode !== "object" &&
-      this.state.comp.size &&
-      (this.state.modOn("shift") || e.shiftKey)
-    ) {
+    // Shift + 移動 = 押し出してから移動（Maya と同じ）。
+    // 生きた時点で行うので、Shift + タップでは押し出さない
+    if (handleKind(handle) === "move" && this.state.compMode !== "object" && this.state.comp.size && shift && !ctrl) {
       if (this.extrudeForDrag(o)) label = "押し出し";
     }
 
@@ -675,6 +720,15 @@ export class App {
     if (this.state.tool === "multicut") return this.updateCutPreview(p, e);
     if (this.state.tool === "bevel") return this.dragBevel(p);
     if (this.marquee) return this.updateMarquee(p);
+    // 待たせているドラッグがあれば、生かすかどうかをここで決める
+    if (this.pendingDrag) {
+      const pend = this.pendingDrag;
+      const d = Math.hypot(p.x - pend.point.x, p.y - pend.point.y);
+      const held = performance.now() - pend.t0;
+      if (d <= TAP_MOVE && !(d > TOOL_MOVE && held > TAP_DURATION)) return;
+      this.pendingDrag = null;
+      this.beginToolDrag(pend.handle, pend.point, pend.shift, pend.ctrl);
+    }
     const drag = this.drag;
     const o = this.state.selected;
     if (!drag || !o) return;
@@ -835,6 +889,14 @@ export class App {
       this.endBevel(moved);
       return;
     }
+    // 生きないまま離した = タップ。何も変えていないので選択として扱う
+    if (this.pendingDrag) {
+      this.pendingDrag = null;
+      this.manipulator.hot = -1;
+      this.refreshManipulator();
+      this.applySelectResult(this.selector.click(p, e));
+      return;
+    }
     const m = this.marquee;
     if (m) {
       this.endMarquee();
@@ -848,8 +910,8 @@ export class App {
       // 動かさずに離したなら、何も変えていないので選択として扱う。
       // マニピュレータの中心は選択の中心に出るので、これがないと
       // 選び直しやダブルクリックがハンドルに吸われてしまう。
-      // ただし Shift 押し出しは押した時点でメッシュが変わっているので確定する。
-      if (!moved && drag.label !== "押し出し") {
+      // ペンと指は生きた時点で既に動いているので、ここに来るのはマウスだけ
+      if (!moved) {
         this.dragSnapshot = null;
         this.applySelectResult(this.selector.click(p, e));
       } else if (this.dragSnapshot) {

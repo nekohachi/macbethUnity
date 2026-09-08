@@ -1648,7 +1648,102 @@ check(
   `${modAfterTap} → 選択 ${compAfterFirst} → ${modStill.comp}（${modStill.state}）→ ${modOff}`,
 );
 
-/* 31. 例外が出ていない */
+/* 31. ペンのタップ保護: 着地のぶれでマニピュレータを掴んで動かない（docs/17 の 3 章） */
+const tapGuard = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const canvas = document.getElementById("gl");
+  const rect = canvas.getBoundingClientRect();
+  // カメラを既定のパースに戻し、画面の真ん中で手前に見えている面を 1 枚選ぶ。
+  // 画面比率や objects[0] の決め打ちだと、それまでの試験のカメラと選択に左右される
+  app.viewport.syncAll();
+  app.viewport.setView("persp");
+  app.state.select(app.state.doc.objects[0]);
+  app.viewport.frameSelected();
+  app.setCompMode("face");
+  app.state.comp.clear();
+  app.viewport.rebuildOverlay();
+  const front = app.picker.pickSurface({ x: rect.width / 2, y: rect.height / 2 });
+  const object = front ? front.object : app.state.doc.objects[0];
+  app.state.select(object);
+  app.state.comp.clear();
+  if (front) app.state.comp.add(front.face);
+  app.viewport.rebuildOverlay();
+  app.refreshManipulator();
+
+  const fire = (type, x, y, id) =>
+    canvas.dispatchEvent(
+      new PointerEvent(type, {
+        pointerId: id,
+        pointerType: "pen",
+        isPrimary: true,
+        clientX: x,
+        clientY: y,
+        button: 0,
+        buttons: type === "pointerup" ? 0 : 1,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+  // ピボット（= 選択の中心）の画面位置。ここがいちばん吸われやすい
+  const at = app.manipulator.toScreen(app.pivotWorld());
+  const x = rect.x + at.x;
+  const y = rect.y + at.y;
+  // メッシュ全体の頂点で見る。選択が変わっても比べられる
+  const snapshot = () => [...object.mesh.positions];
+  const before = snapshot();
+  const picked = app.state.comp.size;
+
+  // 6px ずらして 2 回タップ（ダブルクリックの窓の中）
+  let id = 40;
+  for (const step of [0, 1]) {
+    fire("pointerdown", x, y, ++id);
+    for (let i = 1; i <= 3; i++) fire("pointermove", x + i * 2, y + i * 2, id);
+    fire("pointerup", x + 6, y + 6, id);
+    if (step === 0) await new Promise((r) => setTimeout(r, 90));
+  }
+  await new Promise((r) => setTimeout(r, 40));
+  const after = snapshot();
+  const still = before.length === after.length && before.every((v, i) => Math.abs(v - after[i]) < 1e-6);
+  // ダブルタップが効いてシェル全体（そのメッシュの全面）になっている
+  const shell = app.state.comp.size;
+  const faceCount = object.mesh.faceCount;
+
+  // 一方、はっきり引けば動く
+  app.refreshManipulator();
+  const at2 = app.manipulator.toScreen(app.pivotWorld());
+  const moveBefore = [...object.mesh.positions];
+  fire("pointerdown", rect.x + at2.x, rect.y + at2.y, ++id);
+  for (let i = 1; i <= 10; i++) fire("pointermove", rect.x + at2.x + i * 6, rect.y + at2.y, id);
+  fire("pointerup", rect.x + at2.x + 60, rect.y + at2.y, id);
+  await new Promise((r) => setTimeout(r, 40));
+  const dragged = moveBefore.some((v, i) => Math.abs(v - object.mesh.positions[i]) > 0.05);
+  if (dragged) app.doUndo();
+
+  // SHF を立ててタップしても押し出さない（生きるまでメッシュを触らない）
+  const facesBefore = object.mesh.faceCount;
+  app.state.mods.shift = "on";
+  app.refreshManipulator();
+  const at3 = app.manipulator.toScreen(app.pivotWorld());
+  fire("pointerdown", rect.x + at3.x, rect.y + at3.y, ++id);
+  fire("pointerup", rect.x + at3.x + 2, rect.y + at3.y + 2, id);
+  await new Promise((r) => setTimeout(r, 40));
+  const facesAfter = object.mesh.faceCount;
+  app.state.mods.shift = "off";
+
+  return { picked, still, shell, faceCount, dragged, facesBefore, facesAfter };
+});
+check(
+  "ペンの軽いタップではマニピュレータが動かない",
+  tapGuard.picked === 1 &&
+    tapGuard.still &&
+    tapGuard.shell === tapGuard.faceCount &&
+    tapGuard.dragged &&
+    tapGuard.facesAfter === tapGuard.facesBefore,
+  `タップ後 選択 ${tapGuard.shell}/${tapGuard.faceCount} 面・移動なし ${tapGuard.still} / ` +
+    `ドラッグは効く ${tapGuard.dragged} / SHF タップ ${tapGuard.facesBefore} → ${tapGuard.facesAfter} 面`,
+);
+
+/* 32. 例外が出ていない */
 check("例外なし", errors.length === 0, errors.join(" / "));
 
 await page.screenshot({ path: SHOT });

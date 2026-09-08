@@ -181,12 +181,15 @@ interface Gesture {
 const TUMBLE_DEADZONE = 5;
 /** 複数指のカメラ操作 / 変形が確定する動き（px）。2 本指でも 3 本指でも同じ。 */
 const CLUSTER_DEADZONE = 10;
-const TAP_MOVE = 12;
+/** タップと見なせる動きの上限（px）。これを越えたら長押しもタップも消える。 */
+export const TAP_MOVE = 12;
 const TAP_LAND_WINDOW = 120;
-const TAP_DURATION = 300;
+/** タップと見なせる長さ（ms）。 */
+export const TAP_DURATION = 300;
 const DOUBLE_TAP_WINDOW = 400;
 const HOLD_DELAY = 400;
-const TOOL_MOVE = 3;
+/** ツールのドラッグが「動いた」と見なす量（px）。 */
+export const TOOL_MOVE = 3;
 
 export class GestureRouter {
   private pointers = new Map<number, PointerRecord>();
