@@ -222,8 +222,8 @@ button{font-family:inherit; font-size:inherit; color:inherit; background:none; b
 /* ---------- radial ---------- */
 .radial{position:fixed; inset:0; z-index:60; touch-action:none}
 .radial svg{position:absolute; inset:0; width:100%; height:100%}
-.radial text{font-family:"IBM Plex Sans",sans-serif; font-size:10.5px; fill:#dfe5ea; pointer-events:none}
-.radial .sub{font-size:8.5px; fill:#93a0ab}
+.radial text{font-family:"IBM Plex Sans",sans-serif; font-size:13px; fill:#dfe5ea; pointer-events:none}
+.radial .sub{font-size:10px; fill:#93a0ab}
 @media (prefers-reduced-motion:no-preference){
   .radial{animation:pop .09s ease-out}
   @keyframes pop{from{opacity:0}to{opacity:1}}

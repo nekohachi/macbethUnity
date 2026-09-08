@@ -161,23 +161,29 @@ export function updateDrag(
 }
 
 /**
- * 3 本指のスケール。マニピュレータを触らずに、選択そのものを拡大縮小する。
+ * 3 本指の変形。マニピュレータを触らずに、選択そのものを動かす。
  *
- * **拡大縮小だけ**を行う。基点は選択の中心（ピボット）で、そこは動かさない。
- * 指がずれても形が流れないよう、平行移動と回転は意図的に扱わない
- * （それはマニピュレータの仕事）。
+ * できるのは 2 つだけ。**ピボット（選択の中心）を動かさない拡大縮小**と、
+ * **1 本の軸に沿った平行移動**。どちらか一方しか渡ってこない（呼び出し側で決まる）。
+ * 回転と、画面に沿った自由な移動は扱わない — それはマニピュレータの仕事で、
+ * 指がずれたときに形が流れてしまうため。
  *
  * 開始時点の控えに毎回当て直すので、行ったり来たりしてもずれない。
  * ソフト選択の重みと対称編集は、コンポーネントの控えにそのまま入っている。
  */
-export function applyGestureTransform(drag: DragState, object: SceneObject, scale: number): void {
+export function applyGestureTransform(
+  drag: DragState,
+  object: SceneObject,
+  t: { scale?: number; move?: Vector3 },
+): void {
   // 裏返らないように下限を置く
-  const s = Math.max(0.02, scale);
+  const s = Math.max(0.02, t.scale ?? 1);
+  const move = t.move ?? new Vector3();
   const pivot = drag.pivot;
   const target = drag.target;
 
-  /** ピボットからの距離を s 倍する。ピボットそのものは動かない。 */
-  const place = (p: Vector3): Vector3 => p.clone().sub(pivot).multiplyScalar(s).add(pivot);
+  /** ピボットからの距離を s 倍して、軸に沿って動かす。 */
+  const place = (p: Vector3): Vector3 => p.clone().sub(pivot).multiplyScalar(s).add(pivot).add(move);
 
   if (target.kind === "object") {
     const t0 = target.transform;

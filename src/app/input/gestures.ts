@@ -4,15 +4,16 @@
  * 指の本数で役割が分かれる:
  *   1 本 … ツール（メッシュの上）/ タンブル（外）
  *   2 本 … カメラ（パン / ズーム）
- *   3 本 … 選択そのものの拡大縮小（**スケールだけ**。回転と移動はしない）
+ *   3 本 … 選択そのものの操作。つまむ = 拡大縮小、スワイプ = 軸に沿った平行移動
+ *          （どちらか一方に決まり、途中で入れ替わらない。回転はしない）
  *
  * しきい値は実機（iPad mini + Apple Pencil、Wacom MovinkPad 14）で
  * 確かめた値なので、変えるときは必ず実機で確かめ直すこと。
  *   - 指を置いた直後 5px はタンブルしない（置いたときのブレ）
  *   - 2 本指は、重心の移動と広がりの変化の合計が 10px を越えるまで何もしない
- *   - 3 本指は、広がりの変化だけを同じ 10px の物差しで見る（つまむまで何も起きない）
+ *   - 3 本指は、つまみ量と重心の移動を同じ 10px の物差しで見て、大きい方に決める
  *   - 複数指タップ = 120ms 以内に全部着地、どれも 12px 以内、300ms 以内に全部離れる
- *   - 長押しは 400ms。指 1 本ならマーキングメニュー、**2 本ならカメラ / 編集メニュー**
+ *   - 長押しは 400ms。指 1 本ならマーキングメニュー、2 本ならカメラ / 編集、**3 本ならカメラ**
  * カメラ操作は「動いた時点」で確定し、タップは「動いていないこと」が条件なので
  * 両者は排他になる。
  */
@@ -34,20 +35,23 @@ export interface GestureHandlers {
    * 何も選んでいなければカメラ、選んでいれば編集（アプリ側で決める）。
    */
   openTwoFingerMenu(clientX: number, clientY: number): void;
+  /** 指 3 本の長押しで開くサークルメニュー。いつでもカメラ。 */
+  openCameraMenu(clientX: number, clientY: number): void;
   undo(): void;
   redo(): void;
   /** 進行中の操作（矩形選択、ドラッグ、予測線）を確定させずに片付ける。 */
   abort(): void;
 
   /**
-   * 3 本指の拡大縮小を始める。選んでいるものが無ければ false を返す。
+   * 3 本指の変形を始める。選んでいるものが無ければ false を返す。
    * false のときは何もしない（カメラには化けさせない）。
    */
   transformBegin(): boolean;
   /**
-   * 3 本指の拡大縮小。倍率は開始時点からの累積で渡す（差分の積み上げではない）。
+   * 3 本指の変形。値は開始時点からの累積で渡す（差分の積み上げではない）。
+   * つまむかスワイプかは始まった時点で決まり、途中で入れ替わらない。
    */
-  transformUpdate(scale: number): void;
+  transformUpdate(t: GestureDelta): void;
   transformEnd(): void;
 
   /**
@@ -69,6 +73,14 @@ export interface GestureHandlers {
   shiftOn(e: PointerEvent): boolean;
   altOn(e: PointerEvent): boolean;
 }
+
+/**
+ * 3 本指のジェスチャが何をしているか。始まった時点で決まって、そのまま最後まで変わらない。
+ * `pixels` は開始時点からの画面上の移動量（符号つき）。
+ */
+export type GestureDelta =
+  | { kind: "scale"; scale: number }
+  | { kind: "swipe"; axis: "vertical" | "horizontal"; pixels: number };
 
 interface PointerRecord {
   x: number;
@@ -157,6 +169,8 @@ interface Gesture {
   last?: Cluster;
   /** そのフレームで動いた指。全員そろってから測るために使う（3 本指）。 */
   fresh?: Set<number>;
+  /** 3 本指で確定した中身。一度決まったら変えない（誤操作防止）。 */
+  delta?: { kind: "scale" } | { kind: "swipe"; axis: "vertical" | "horizontal" };
   zoomOnly?: boolean;
   pivot?: Vector3;
   moved?: boolean;
@@ -249,9 +263,11 @@ export class GestureRouter {
       this.cancelHold();
       if (this.pointers.size === 3 && this.touchCount() === 3) {
         // 3 本指は選択の変形。デッドゾーンを越えるまでは何も起こさないので、
-        // 3 本指ダブルタップ（やり直す）と両立する
+        // 3 本指ダブルタップ（やり直す）とも長押しとも両立する
         const c = clusterOf(this.pointers);
         this.gesture = { mode: "threefinger", live: false, acc: 0, basis: c, last: c };
+        // 指 3 本の長押し = カメラ。選択の有無に関わらずいつでも出せる
+        this.startHold(3, () => this.h.openCameraMenu(c.cx, c.cy));
         return;
       }
       if (this.pointers.size === 2) {
@@ -378,6 +394,7 @@ export class GestureRouter {
     if (g.mode === "threefinger") {
       if (this.pointers.size !== 3) return;
       const now = clusterOf(this.pointers);
+      const basis = g.basis ?? now;
       if (!g.live) {
         // 指ごとに別々の pointermove が来るので、全員が動いてから測る。
         // 1 本だけ動いた途中の姿で測ると、まっすぐ滑らせただけでも広がりが揺れて拾ってしまう
@@ -385,23 +402,48 @@ export class GestureRouter {
         fresh.add(e.pointerId);
         if (fresh.size < this.pointers.size) return;
         fresh.clear();
-        // 開始時からのつまみ量。積み上げないので、揺れが溜まって暴発することもない
         g.last = now;
-        if (spreadMotion(g.basis ?? now, now) < CLUSTER_DEADZONE) return;
+
+        // つまみとスワイプを同じ物差しで測って、大きい方に決める。
+        // 開始時からの量なので、揺れが溜まって暴発することはない
+        const pinch = spreadMotion(basis, now);
+        const dx = now.cx - basis.cx;
+        const dy = now.cy - basis.cy;
+        const swipe = Math.hypot(dx, dy);
+        if (pinch < CLUSTER_DEADZONE && swipe < CLUSTER_DEADZONE) return;
+
         // 選ぶものが無ければ変形しない。カメラにも化けさせない
         if (!this.h.transformBegin()) {
           this.gesture = { mode: "idle" };
           return;
         }
         g.live = true;
-        // 拡大縮小として確定したので、タップ（やり直す）にはしない
+        // 変形として確定したので、タップ（やり直す）にも長押し（カメラ）にもしない
         this.tap.moved = true;
+        this.cancelHold();
+        // ここで中身を 1 つに決める。以後は入れ替わらない
+        g.delta =
+          pinch >= swipe
+            ? { kind: "scale" }
+            : { kind: "swipe", axis: Math.abs(dy) >= Math.abs(dx) ? "vertical" : "horizontal" };
         // 確定した時点を基準にし直して飛びを防ぐ
         g.basis = now;
         return;
       }
-      const basis = g.basis ?? now;
-      this.h.transformUpdate(basis.spread > 1e-6 ? now.spread / basis.spread : 1);
+
+      const kind = g.delta ?? { kind: "scale" as const };
+      if (kind.kind === "scale") {
+        this.h.transformUpdate({
+          kind: "scale",
+          scale: basis.spread > 1e-6 ? now.spread / basis.spread : 1,
+        });
+      } else {
+        this.h.transformUpdate({
+          kind: "swipe",
+          axis: kind.axis,
+          pixels: kind.axis === "vertical" ? now.cy - basis.cy : now.cx - basis.cx,
+        });
+      }
       return;
     }
 

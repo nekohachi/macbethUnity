@@ -53,8 +53,9 @@ export class Hud {
       (this.state.fingerCam
         ? "指1本 <kbd>タンブル</kbd> · ペン <kbd>ツール</kbd>"
         : "指1本 メッシュ上 <kbd>ツール</kbd> / 外 <kbd>タンブル</kbd> · ペン <kbd>ツール</kbd>") +
-      " · 指2本 <kbd>パン / ズーム</kbd> · <b>指3本でつまむ <kbd>選択を拡大縮小</kbd></b>" +
-      "<br>指2本長押し <kbd>カメラ / 編集メニュー</kbd> · 指2本ダブルタップ <kbd>戻る</kbd> · 指3本ダブルタップ <kbd>進む</kbd>" +
+      " · 指2本 <kbd>パン / ズーム</kbd>" +
+      "<br><b>指3本 つまむ <kbd>選択を拡大縮小</kbd> · 上下 <kbd>Y へ移動</kbd> · 左右 <kbd>X / Z へ移動</kbd></b>" +
+      "<br>長押し 指2本 <kbd>カメラ / 編集メニュー</kbd> 指3本 <kbd>カメラ</kbd> · ダブルタップ 指2本 <kbd>戻る</kbd> 指3本 <kbd>進む</kbd>" +
       "<br><kbd>F</kbd> + ドラッグ <kbd>矩形選択</kbd> · <kbd>F</kbd> + ピンチ <kbd>選択中心へズーム</kbd>" +
       "<br>マウス <kbd>Alt+左 タンブル</kbd> <kbd>Alt+中 パン</kbd> <kbd>Alt+右 ズーム</kbd>";
   }

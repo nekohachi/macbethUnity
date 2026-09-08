@@ -25,7 +25,7 @@ import {
   writeObj,
   type SceneObject,
 } from "../core/index.js";
-import { GestureRouter, type GestureHandlers } from "./input/gestures.js";
+import { GestureRouter, type GestureDelta, type GestureHandlers } from "./input/gestures.js";
 import { Picker, type ScreenPoint } from "./render/picking.js";
 import { STANDARD_VIEWS, Viewport, type ViewName } from "./render/viewport.js";
 import {
@@ -139,6 +139,8 @@ export class App {
   private weldTarget: number | null = null;
   /** 3 本指の変形。ジェスチャ中だけ生きている。 */
   private gestureDrag: DragState | null = null;
+  /** 3 本指のジェスチャ中に固定しておくカメラ由来の値。 */
+  private gestureView: { pixelToWorld: number; horizontal: Vector3 } | null = null;
   private gestureMoved = false;
   /** ベベル確定後、オプションで作り直すための控え。 */
   private bevelSnapshot: ReturnType<History["snapshot"]> | null = null;
@@ -263,6 +265,7 @@ export class App {
         this.preselect.clear();
         this.weldTarget = null;
         this.gestureDrag = null;
+        this.gestureView = null;
         this.gestureMoved = false;
         if (this.bevel.active) {
           this.bevel.cancel();
@@ -271,6 +274,10 @@ export class App {
       },
       openMarkingMenu: (x, y, edit) => this.openMarkingMenu(x, y, edit),
       openTwoFingerMenu: (x, y) => this.openTwoFingerMenu(x, y),
+      openCameraMenu: (x, y) => {
+        this.closePopup();
+        openRadial(this.cameraMenu(), x, y, this.savedCameraItems());
+      },
       undo: () => this.doUndo(),
       redo: () => this.doRedo(),
       abort: () => {
@@ -282,6 +289,7 @@ export class App {
         this.preselect.clear();
         this.weldTarget = null;
         this.gestureDrag = null;
+        this.gestureView = null;
         this.gestureMoved = false;
         if (this.bevel.active) {
           this.bevel.cancel();
@@ -304,17 +312,37 @@ export class App {
       dolly: (f) => this.viewport.dolly(f),
       dollyAbout: (pivot, f) => this.viewport.dollyAbout(pivot, f),
       transformBegin: () => this.beginGestureTransform(),
-      transformUpdate: (scale) => this.updateGestureTransform(scale),
+      transformUpdate: (t) => this.updateGestureTransform(t),
       transformEnd: () => this.endGestureTransform(),
       shiftOn: (e) => this.state.modOn("shift") || e.shiftKey,
       altOn: (e) => this.state.modOn("alt") || e.altKey,
     };
   }
 
-  /* ---- 3 本指の拡大縮小 ------------------------------------------------ */
+  /* ---- 3 本指の変形 ------------------------------------------------------ */
+
+  /** 画面 1px が、その点で何ワールド単位にあたるか。 */
+  private pixelToWorldAt(pivot: Vector3): number {
+    const right = new Vector3().setFromMatrixColumn(this.viewport.camera.matrix, 0);
+    const a = this.manipulator.toScreen(pivot);
+    const b = this.manipulator.toScreen(pivot.clone().add(right));
+    const d = Math.hypot(b.x - a.x, b.y - a.y);
+    return d > 1e-6 ? 1 / d : 0.01;
+  }
 
   /**
-   * 3 本指で選択を拡大縮小し始める。選ぶものが無ければ false。
+   * 画面の右方向に一番近いワールド軸（X か Z）。左右スワイプの行き先。
+   * 今見ているカメラの向きで決まるので、ジェスチャ中は固定する。
+   */
+  private screenRightAxis(): Vector3 {
+    const right = new Vector3().setFromMatrixColumn(this.viewport.camera.matrix, 0);
+    return Math.abs(right.x) >= Math.abs(right.z)
+      ? new Vector3(Math.sign(right.x) || 1, 0, 0)
+      : new Vector3(0, 0, Math.sign(right.z) || 1);
+  }
+
+  /**
+   * 3 本指で選択を動かし始める。選ぶものが無ければ false。
    * カメラには化けさせないので、呼び出し側はそのまま何もしない。
    */
   private beginGestureTransform(): boolean {
@@ -335,17 +363,37 @@ export class App {
       pivotScreen,
       ray: this.ray(pivotScreen),
       cameraPosition: this.cameraPosition(),
-      label: "スケール",
+      label: "変形",
     });
+    // カメラの向きはジェスチャ中固定。途中で軸や縮尺が変わらないようにする
+    this.gestureView = { pixelToWorld: this.pixelToWorldAt(pivot), horizontal: this.screenRightAxis() };
     this.gestureMoved = false;
     return true;
   }
 
-  private updateGestureTransform(scale: number): void {
+  private updateGestureTransform(t: GestureDelta): void {
     const drag = this.gestureDrag;
+    const view = this.gestureView;
     const o = this.state.selected;
-    if (!drag || !o) return;
-    applyGestureTransform(drag, o, scale);
+    if (!drag || !view || !o) return;
+
+    let note: string;
+    if (t.kind === "scale") {
+      applyGestureTransform(drag, o, { scale: t.scale });
+      note = `スケール <kbd>×${t.scale.toFixed(2)}</kbd>`;
+    } else if (t.axis === "vertical") {
+      // 画面の上がプラス Y
+      const amount = -t.pixels * view.pixelToWorld;
+      applyGestureTransform(drag, o, { move: new Vector3(0, amount, 0) });
+      note = `移動 <kbd>Y ${amount >= 0 ? "+" : ""}${amount.toFixed(2)}</kbd>`;
+    } else {
+      const amount = t.pixels * view.pixelToWorld;
+      const axis = view.horizontal;
+      applyGestureTransform(drag, o, { move: axis.clone().multiplyScalar(amount) });
+      const name = axis.x !== 0 ? "X" : "Z";
+      const signed = amount * (axis.x !== 0 ? axis.x : axis.z);
+      note = `移動 <kbd>${name} ${signed >= 0 ? "+" : ""}${signed.toFixed(2)}</kbd>`;
+    }
     this.gestureMoved = true;
 
     if (drag.target.kind === "object") {
@@ -360,14 +408,15 @@ export class App {
     this.viewport.rebuildOverlay();
     this.refreshManipulator();
     this.hud.refreshStats();
-    byId("hudHint").innerHTML = `スケール <kbd>×${scale.toFixed(2)}</kbd> · 指 3 本`;
+    byId("hudHint").innerHTML = `${note} · 指 3 本`;
   }
 
   private endGestureTransform(): void {
     const moved = this.gestureMoved;
     this.gestureDrag = null;
+    this.gestureView = null;
     this.gestureMoved = false;
-    if (moved && this.dragSnapshot) this.history.commit("スケール", this.dragSnapshot);
+    if (moved && this.dragSnapshot) this.history.commit("変形", this.dragSnapshot);
     this.dragSnapshot = null;
     this.refresh();
     this.hud.defaultHint();

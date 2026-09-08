@@ -546,16 +546,13 @@ check(
   `選択 ${facePinch.comp} 面 / 動いた成分 ${facePinch.moved}`,
 );
 
-/* 21c. 3 本指をそのまま滑らせても動かない（スケール専用。移動と回転はしない） */
+/* 21c. 3 本指の上下スワイプ = Y に沿った平行移動、左右 = X か Z */
 await page.keyboard.press("F8");
 await page.waitForTimeout(500);
 await page.mouse.click(ON_MESH.x, ON_MESH.y);
-const slide = await page.evaluate(async (center) => {
+const swipe = await page.evaluate(async (center) => {
   const canvas = document.getElementById("gl");
   const app = window.macbeth;
-  const before = app.state.selected.transform.position.slice();
-  const beforeScale = app.state.selected.transform.scale.slice();
-  const beforeLabel = app.history.undoLabel;
   const fire = (type, id, x, y) =>
     canvas.dispatchEvent(
       new PointerEvent(type, {
@@ -573,41 +570,55 @@ const slide = await page.evaluate(async (center) => {
     x: center.x + Math.cos((k / 3) * Math.PI * 2) * r,
     y: center.y + Math.sin((k / 3) * Math.PI * 2) * r,
   });
-  // 3 本の間隔は変えずに、まとめて右下へ 120px 運ぶ（つまんでいない）
-  for (let k = 0; k < 3; k++) {
-    const p = at(k, 60);
-    fire("pointerdown", k + 51, p.x, p.y);
-  }
-  for (let step = 1; step <= 12; step++) {
+  /** 3 本の間隔を変えずに、まとめて (dx, dy) だけ運ぶ。 */
+  const drag = async (base, dx, dy) => {
     for (let k = 0; k < 3; k++) {
       const p = at(k, 60);
-      fire("pointermove", k + 51, p.x + step * 10, p.y + step * 6);
+      fire("pointerdown", k + base, p.x, p.y);
     }
-  }
-  for (let k = 0; k < 3; k++) {
-    const p = at(k, 60);
-    fire("pointerup", k + 51, p.x + 120, p.y + 72);
-  }
-  await new Promise((r) => setTimeout(r, 60));
-  return {
-    before,
-    beforeScale,
-    beforeLabel,
-    after: app.state.selected.transform.position.slice(),
-    afterScale: app.state.selected.transform.scale.slice(),
-    afterLabel: app.history.undoLabel,
+    for (let step = 1; step <= 12; step++) {
+      for (let k = 0; k < 3; k++) {
+        const p = at(k, 60);
+        fire("pointermove", k + base, p.x + (dx * step) / 12, p.y + (dy * step) / 12);
+      }
+    }
+    for (let k = 0; k < 3; k++) {
+      const p = at(k, 60);
+      fire("pointerup", k + base, p.x + dx, p.y + dy);
+    }
+    await new Promise((r) => setTimeout(r, 60));
   };
+
+  const start = app.state.selected.transform.position.slice();
+  const scale0 = app.state.selected.transform.scale[0];
+  await drag(51, 0, -120); // 上へ
+  const up = app.state.selected.transform.position.slice();
+  const scaleAfterSwipe = app.state.selected.transform.scale[0];
+  app.doUndo();
+
+  await drag(61, 140, 0); // 右へ
+  const right = app.state.selected.transform.position.slice();
+  app.doUndo();
+  return { start, up, right, scale0, scaleAfterSwipe };
 }, ON_MESH);
+const upDelta = swipe.up.map((v, i) => v - swipe.start[i]);
+const rightDelta = swipe.right.map((v, i) => v - swipe.start[i]);
 check(
-  "3 本指を滑らせても選択は動かない",
-  slide.before.every((v, i) => Math.abs(v - slide.after[i]) < 1e-6) &&
-    slide.beforeScale.every((v, i) => Math.abs(v - slide.afterScale[i]) < 1e-6) &&
-    slide.beforeLabel === slide.afterLabel,
-  `位置 ${slide.after.map((n) => n.toFixed(2)).join(",")} / 履歴 ${slide.beforeLabel ?? "なし"} → ${slide.afterLabel ?? "なし"} / 拡大 ${slide.beforeScale[0].toFixed(3)} → ${slide.afterScale[0].toFixed(3)}`,
+  "3 本指の上下スワイプは Y、左右は X か Z に沿って動く",
+  upDelta[1] > 0.2 &&
+    Math.abs(upDelta[0]) < 1e-6 &&
+    Math.abs(upDelta[2]) < 1e-6 &&
+    Math.abs(swipe.scaleAfterSwipe - swipe.scale0) < 1e-6 &&
+    Math.abs(rightDelta[1]) < 1e-6 &&
+    (Math.abs(rightDelta[0]) > 0.2) !== (Math.abs(rightDelta[2]) > 0.2),
+  `上 ${upDelta.map((n) => n.toFixed(2)).join(",")} / 右 ${rightDelta.map((n) => n.toFixed(2)).join(",")}`,
 );
 
 /* 21d. つまんでも選択の中心は動かない（基点は選択の中心） */
 await page.keyboard.press("F11");
+await page.waitForTimeout(500);
+// 何も選んでいない状態の 1 回目はオブジェクトが選ばれるだけ。間を空けてもう一度
+await page.mouse.click(ON_MESH.x, ON_MESH.y);
 await page.waitForTimeout(500);
 await page.mouse.click(ON_MESH.x, ON_MESH.y);
 const pivotHeld = await page.evaluate(async (center) => {
@@ -667,7 +678,11 @@ const pivotHeld = await page.evaluate(async (center) => {
   }
   await new Promise((r) => setTimeout(r, 60));
   const after = measure();
-  return { before, after, comp: app.state.comp.size };
+  return {
+    before,
+    after,
+    comp: app.state.comp.size,
+  };
 }, ON_MESH);
 await page.keyboard.press("Control+z");
 check(
@@ -772,7 +787,11 @@ const bridged = await page.evaluate(() => {
   app.history.undo(); // ブリッジ
   const undone = object.mesh.faceCount;
   app.history.undo(); // 面の削除
-  app.history.undo(); // 立方体の追加
+
+  // 後始末。足した立方体を外す（履歴の巻き戻しでは戻らない）
+  app.state.select(null);
+  app.state.doc.objects.length = objectsBefore;
+  app.viewport.syncAll();
   return { holes, opened, picked, after, undone, objectsBefore, objects: app.state.doc.objects.length };
 });
 check(
@@ -973,6 +992,70 @@ const noMenu = await page.evaluate(async (center) => {
   return opened;
 }, ON_MESH);
 check("つまんだときは長押しメニューを出さない", noMenu === 0, `輪 ${noMenu} 個`);
+
+/* 24d. 指 3 本の長押しは、選択があってもカメラ */
+await page.keyboard.press("F11");
+await page.waitForTimeout(500);
+await page.mouse.click(ON_MESH.x, ON_MESH.y);
+await page.waitForTimeout(500);
+await page.mouse.click(ON_MESH.x, ON_MESH.y);
+const camHold = await page.evaluate(async (center) => {
+  const canvas = document.getElementById("gl");
+  const app = window.macbeth;
+  const fire = (type, id, x, y) =>
+    canvas.dispatchEvent(
+      new PointerEvent(type, {
+        pointerId: id,
+        pointerType: "touch",
+        isPrimary: id === 111,
+        clientX: x,
+        clientY: y,
+        buttons: type === "pointerup" ? 0 : 1,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const at = (k, r) => ({
+    x: center.x + Math.cos((k / 3) * Math.PI * 2) * r,
+    y: center.y + Math.sin((k / 3) * Math.PI * 2) * r,
+  });
+  const comp = app.state.comp.size;
+  const start = app.state.selected.mesh.positions.slice();
+
+  for (let k = 0; k < 3; k++) {
+    const p = at(k, 55);
+    fire("pointerdown", k + 111, p.x, p.y);
+  }
+  await wait(520);
+  const labels = [...document.querySelectorAll(".radial text")].map((t) => t.textContent);
+  // 南（前ビュー）へ運んで離す
+  window.dispatchEvent(
+    new PointerEvent("pointermove", { clientX: center.x, clientY: center.y + 100, bubbles: true }),
+  );
+  await wait(20);
+  window.dispatchEvent(
+    new PointerEvent("pointerup", { clientX: center.x, clientY: center.y + 100, bubbles: true }),
+  );
+  for (let k = 0; k < 3; k++) {
+    const p = at(k, 55);
+    fire("pointerup", k + 111, p.x, p.y);
+  }
+  await wait(60);
+  let moved = 0;
+  const now = app.state.selected.mesh.positions;
+  for (let i = 0; i < start.length; i++) if (Math.abs(start[i] - now[i]) > 1e-5) moved++;
+  return { comp, labels, moved, viewName: app.state.viewName };
+}, ON_MESH);
+check(
+  "指 3 本の長押しは選択があってもカメラ",
+  camHold.comp === 1 &&
+    camHold.labels.includes("パース") &&
+    camHold.viewName === "前" &&
+    camHold.moved === 0,
+  `選択 ${camHold.comp} / ${camHold.viewName} / 動いた成分 ${camHold.moved}`,
+);
+await page.evaluate(() => window.macbeth.setView("persp"));
 
 /* 25. 頂点の操作（距離マージ・削除・押し出し） */
 const vertexOps = await page.evaluate(() => {

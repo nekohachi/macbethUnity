@@ -20,10 +20,11 @@ export interface RadialItem {
 export type RadialMenu = Partial<Record<Direction, RadialItem>>;
 
 const NS = "http://www.w3.org/2000/svg";
-const RING_OUTER = 132;
-const RING_INNER = 40;
+// 指 2 本・3 本で開くので、指と手のひらで隠れないだけの大きさが要る（実機の要望）
+const RING_OUTER = 176;
+const RING_INNER = 56;
 /** 中心からこれ以内はキャンセル扱い。 */
-const DEAD_RADIUS = 30;
+const DEAD_RADIUS = 42;
 
 interface Slice {
   path: SVGPathElement;
@@ -40,8 +41,8 @@ interface Row {
   top: number;
 }
 
-const ROW_WIDTH = 176;
-const ROW_HEIGHT = 26;
+const ROW_WIDTH = 208;
+const ROW_HEIGHT = 32;
 /** 輪の下端から一覧までの間。 */
 const ROW_GAP = 14;
 
@@ -127,7 +128,7 @@ export function openRadial(
     const ty = cy + Math.sin(mid) * tr;
 
     const g = document.createElementNS(NS, "g");
-    g.setAttribute("transform", `translate(${tx - 10},${ty - 23}) scale(0.84)`);
+    g.setAttribute("transform", `translate(${tx - 12},${ty - 28}) scale(1)`);
     g.setAttribute("fill", "none");
     g.setAttribute("stroke", "#dfe5ea");
     g.setAttribute("stroke-width", "1.6");
@@ -135,8 +136,8 @@ export function openRadial(
     g.setAttribute("stroke-linejoin", "round");
     g.innerHTML = item.icon ?? "";
     svg.appendChild(g);
-    svg.appendChild(text(null, tx, ty + 10, item.label));
-    svg.appendChild(text("sub", tx, ty + 21, item.sub ?? ""));
+    svg.appendChild(text(null, tx, ty + 12, item.label));
+    svg.appendChild(text("sub", tx, ty + 26, item.sub ?? ""));
     slices.push({ path, icon: g, item, index: i });
   }
 
@@ -162,7 +163,7 @@ export function openRadial(
     rect.setAttribute("fill", "#2c3238");
     rect.setAttribute("stroke", "#171a1e");
     svg.appendChild(rect);
-    const label = text(null, cx, top + ROW_HEIGHT / 2 + 4, item.label);
+    const label = text(null, cx, top + ROW_HEIGHT / 2 + 5, item.label);
     svg.appendChild(label);
     rows.push({ rect, label, item, top });
   });
