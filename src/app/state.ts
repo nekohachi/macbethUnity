@@ -70,6 +70,17 @@ function gauge(
   };
 }
 
+/** 名前を付けて控えたカメラ。視点そのものを丸ごと持つ。 */
+export interface SavedCamera {
+  name: string;
+  theta: number;
+  phi: number;
+  distance: number;
+  target: [number, number, number];
+  focal: number;
+  ortho: boolean;
+}
+
 export class AppState {
   doc = new Document();
   /** 選択中のオブジェクト。 */
@@ -99,6 +110,13 @@ export class AppState {
   /** Maya の既定と同じ 30°。 */
   smoothAngle = 30;
   camOpts = { focal: 35, near: 0.05, far: 500, ortho: false };
+  /** 今のビューの名前。HUD に出す。標準ビュー名か、控えたカメラの名前。 */
+  viewName = "パース";
+  /**
+   * 名前を付けて控えたカメラ（Maya の camera1、camera2 …）。
+   * 今のところ画面の状態なので、開き直すと消える。`.mbz` へ入れるのは配布フェーズ。
+   */
+  cameras: SavedCamera[] = [];
 
   gauge(which: "g1" | "g2"): GaugeDef {
     return GAUGES[this.mode][which];

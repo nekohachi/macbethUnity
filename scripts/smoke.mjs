@@ -786,7 +786,195 @@ check(
   `選択 ${bridged.picked} エッジ / ${bridged.opened} → ${bridged.after}面 → 取り消し ${bridged.undone}面`,
 );
 
-/* 24. 例外が出ていない */
+/* 24. 指 2 本の長押しでカメラメニュー、選択があれば編集メニュー */
+await page.keyboard.press("F8");
+await page.waitForTimeout(500);
+await page.mouse.click(EMPTY.x, EMPTY.y); // 選択を解除
+const camMenu = await page.evaluate(async (center) => {
+  const canvas = document.getElementById("gl");
+  const app = window.macbeth;
+  const fire = (type, id, x, y) =>
+    canvas.dispatchEvent(
+      new PointerEvent(type, {
+        pointerId: id,
+        pointerType: "touch",
+        isPrimary: id === 71,
+        clientX: x,
+        clientY: y,
+        buttons: type === "pointerup" ? 0 : 1,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  // 2 本置いて、動かさずに 400ms 待つ
+  fire("pointerdown", 71, center.x - 40, center.y);
+  fire("pointerdown", 72, center.x + 40, center.y);
+  await wait(520);
+  const labels = [...document.querySelectorAll(".radial text")].map((t) => t.textContent);
+  const opened = labels.length > 0;
+  const selected = app.state.selected;
+
+  // 西（上ビュー）へ運んで離す。輪の中心は 2 本の真ん中
+  const cx = center.x;
+  const cy = center.y;
+  window.dispatchEvent(new PointerEvent("pointermove", { clientX: cx - 90, clientY: cy, bubbles: true }));
+  await wait(20);
+  window.dispatchEvent(new PointerEvent("pointerup", { clientX: cx - 90, clientY: cy, bubbles: true }));
+  fire("pointerup", 71, center.x - 40, center.y);
+  fire("pointerup", 72, center.x + 40, center.y);
+  await wait(60);
+  return {
+    opened,
+    labels,
+    hadSelection: !!selected,
+    ortho: app.state.camOpts.ortho,
+    viewName: app.state.viewName,
+  };
+}, ON_MESH);
+check(
+  "指 2 本の長押しでカメラメニューが出て、上ビューに切り替わる",
+  camMenu.opened &&
+    !camMenu.hadSelection &&
+    camMenu.labels.includes("パース") &&
+    camMenu.labels.includes("新規カメラ") &&
+    camMenu.ortho === true &&
+    camMenu.viewName === "上",
+  `${camMenu.labels.filter((t) => t.length > 1).slice(0, 4).join(" / ")} → ${camMenu.viewName}`,
+);
+
+/* 24b. 選択があるときは編集メニューになる */
+await page.keyboard.press("F11");
+await page.waitForTimeout(500);
+await page.mouse.click(ON_MESH.x, ON_MESH.y);
+const editMenu = await page.evaluate(async (center) => {
+  const canvas = document.getElementById("gl");
+  const app = window.macbeth;
+  const fire = (type, id, x, y) =>
+    canvas.dispatchEvent(
+      new PointerEvent(type, {
+        pointerId: id,
+        pointerType: "touch",
+        isPrimary: id === 81,
+        clientX: x,
+        clientY: y,
+        buttons: type === "pointerup" ? 0 : 1,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const hadSelection = !!app.state.selected;
+  fire("pointerdown", 81, center.x - 40, center.y);
+  fire("pointerdown", 82, center.x + 40, center.y);
+  await wait(520);
+  const labels = [...document.querySelectorAll(".radial text")].map((t) => t.textContent);
+  // 中心で離してキャンセル
+  window.dispatchEvent(new PointerEvent("pointerup", { clientX: center.x, clientY: center.y, bubbles: true }));
+  fire("pointerup", 81, center.x - 40, center.y);
+  fire("pointerup", 82, center.x + 40, center.y);
+  await wait(60);
+  return { hadSelection, labels, faces: app.state.selected?.mesh.faceCount ?? 0 };
+}, ON_MESH);
+check(
+  "選択があるときは指 2 本の長押しで編集メニュー",
+  editMenu.hadSelection && editMenu.labels.includes("押し出し") && editMenu.labels.includes("ブリッジ"),
+  editMenu.labels.filter((t) => t.length > 1).slice(0, 4).join(" / "),
+);
+
+/* 24b2. 新規カメラを控えて、一覧から呼び戻せる */
+await page.keyboard.press("F8");
+await page.waitForTimeout(500);
+await page.mouse.click(EMPTY.x, EMPTY.y);
+const savedCam = await page.evaluate(async (center) => {
+  const canvas = document.getElementById("gl");
+  const app = window.macbeth;
+  const fire = (type, id, x, y) =>
+    canvas.dispatchEvent(
+      new PointerEvent(type, {
+        pointerId: id,
+        pointerType: "touch",
+        isPrimary: id === 101,
+        clientX: x,
+        clientY: y,
+        buttons: type === "pointerup" ? 0 : 1,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  // 今の視点（上ビューのまま）を控える
+  app.setView("front");
+  app.addCamera();
+  const names = app.state.cameras.map((c) => c.name);
+  // 別のビューへ移してから、一覧で呼び戻す
+  app.setView("top");
+  const moved = app.state.viewName;
+
+  fire("pointerdown", 101, center.x - 40, center.y);
+  fire("pointerdown", 102, center.x + 40, center.y);
+  await wait(520);
+  const rows = [...document.querySelectorAll(".radial rect")];
+  const box = rows[0]?.getBoundingClientRect();
+  const listed = rows.length;
+  if (box) {
+    const rx = box.x + box.width / 2;
+    const ry = box.y + box.height / 2;
+    window.dispatchEvent(new PointerEvent("pointermove", { clientX: rx, clientY: ry, bubbles: true }));
+    await wait(20);
+    window.dispatchEvent(new PointerEvent("pointerup", { clientX: rx, clientY: ry, bubbles: true }));
+  }
+  fire("pointerup", 101, center.x - 40, center.y);
+  fire("pointerup", 102, center.x + 40, center.y);
+  await wait(60);
+  return { names, listed, moved, back: app.state.viewName, ortho: app.state.camOpts.ortho };
+}, ON_MESH);
+check(
+  "新規カメラを控えて一覧から呼び戻せる",
+  savedCam.names.length === 1 &&
+    savedCam.names[0] === "camera1" &&
+    savedCam.listed === 1 &&
+    savedCam.moved === "上" &&
+    savedCam.back === "camera1",
+  `${savedCam.names.join(",")} / 一覧 ${savedCam.listed} 行 / ${savedCam.moved} → ${savedCam.back}`,
+);
+
+/* 24c. 動かしてしまったら長押しにしない（カメラ操作と排他） */
+const noMenu = await page.evaluate(async (center) => {
+  const canvas = document.getElementById("gl");
+  const fire = (type, id, x, y) =>
+    canvas.dispatchEvent(
+      new PointerEvent(type, {
+        pointerId: id,
+        pointerType: "touch",
+        isPrimary: id === 91,
+        clientX: x,
+        clientY: y,
+        buttons: type === "pointerup" ? 0 : 1,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  fire("pointerdown", 91, center.x - 40, center.y);
+  fire("pointerdown", 92, center.x + 40, center.y);
+  // つまむ（カメラのズーム）。長押しの時間は過ぎても輪は出ないはず
+  for (let step = 1; step <= 8; step++) {
+    fire("pointermove", 91, center.x - 40 - step * 5, center.y);
+    fire("pointermove", 92, center.x + 40 + step * 5, center.y);
+  }
+  await wait(520);
+  const opened = document.querySelectorAll(".radial").length;
+  fire("pointerup", 91, center.x - 80, center.y);
+  fire("pointerup", 92, center.x + 80, center.y);
+  await wait(40);
+  return opened;
+}, ON_MESH);
+check("つまんだときは長押しメニューを出さない", noMenu === 0, `輪 ${noMenu} 個`);
+
+/* 25. 例外が出ていない */
 check("例外なし", errors.length === 0, errors.join(" / "));
 
 await page.screenshot({ path: SHOT });

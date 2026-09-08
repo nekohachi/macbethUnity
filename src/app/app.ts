@@ -24,7 +24,7 @@ import {
 } from "../core/index.js";
 import { GestureRouter, type GestureHandlers } from "./input/gestures.js";
 import { Picker, type ScreenPoint } from "./render/picking.js";
-import { Viewport } from "./render/viewport.js";
+import { STANDARD_VIEWS, Viewport, type ViewName } from "./render/viewport.js";
 import {
   HANDLE_GESTURE,
   HANDLE_TWEAK,
@@ -32,7 +32,7 @@ import {
   TOUCH_TOLERANCE,
   handleKind,
 } from "./render/manipulator.js";
-import { AppState, type CompMode, type Display, type Manip, type Mode } from "./state.js";
+import { AppState, type CompMode, type Display, type Manip, type Mode, type SavedCamera } from "./state.js";
 import { History } from "./history.js";
 import { Autosave } from "./storage/autosave.js";
 import { openFile, saveAs, saveMethodLabel } from "./storage/files.js";
@@ -57,7 +57,13 @@ import { Hud } from "./ui/hud.js";
 import { panelShell, renderOptions, renderOutliner, type PanelHost } from "./ui/panels.js";
 import { STUBS, buildStub } from "./ui/stubs.js";
 import { ICONS, iconSvg } from "./ui/icons.js";
-import { attachRadialButton, closeRadial, openRadial, type RadialMenu } from "./ui/radial.js";
+import {
+  attachRadialButton,
+  closeRadial,
+  openRadial,
+  type RadialItem,
+  type RadialMenu,
+} from "./ui/radial.js";
 
 const COMP_MODES: Array<{ id: CompMode; label: string; key: string }> = [
   { id: "object", label: "オブジェクト", key: "F8" },
@@ -261,6 +267,7 @@ export class App {
         }
       },
       openMarkingMenu: (x, y, edit) => this.openMarkingMenu(x, y, edit),
+      openTwoFingerMenu: (x, y) => this.openTwoFingerMenu(x, y),
       undo: () => this.doUndo(),
       redo: () => this.doRedo(),
       abort: () => {
@@ -954,6 +961,83 @@ export class App {
   private openMarkingMenu(x: number, y: number, edit: boolean): void {
     this.closePopup();
     openRadial(edit ? this.editMenu() : this.selectModeMenu(), x, y);
+  }
+
+  /**
+   * 指 2 本の長押し。
+   * 何も選んでいなければカメラ、選んでいれば編集メニュー（ユーザー要望）。
+   */
+  private openTwoFingerMenu(x: number, y: number): void {
+    this.closePopup();
+    if (this.state.selected) {
+      openRadial(this.editMenu(), x, y);
+      return;
+    }
+    openRadial(this.cameraMenu(), x, y, this.savedCameraItems());
+  }
+
+  /** カメラのサークルメニュー。並びは Maya のビュー切り替えに合わせる。 */
+  private cameraMenu(): RadialMenu {
+    const go = (name: ViewName): RadialItem => ({
+      label: STANDARD_VIEWS[name].label,
+      sub: STANDARD_VIEWS[name].sub,
+      icon: ICONS.camera,
+      run: () => this.setView(name),
+    });
+    return {
+      N: go("persp"),
+      NE: { label: "新規カメラ", sub: "New Camera", icon: ICONS.camera, run: () => this.addCamera() },
+      E: go("right"),
+      SE: go("bottom"),
+      S: go("front"),
+      SW: go("back"),
+      W: go("top"),
+      NW: go("left"),
+    };
+  }
+
+  /** 控えたカメラ。輪の下に一覧で並べる。 */
+  private savedCameraItems(): RadialItem[] {
+    return this.state.cameras.map((c) => ({ label: c.name, run: () => this.recallCamera(c) }));
+  }
+
+  private setView(name: ViewName): void {
+    this.viewport.setView(name);
+    this.state.viewName = STANDARD_VIEWS[name].label;
+    this.refresh();
+    this.hud.toast(`${STANDARD_VIEWS[name].label}ビュー`);
+  }
+
+  /** 今の視点に名前を付けて控える（Maya の camera1、camera2 …）。 */
+  private addCamera(): void {
+    const cam = this.viewport.cam;
+    const saved: SavedCamera = {
+      name: `camera${this.state.cameras.length + 1}`,
+      theta: cam.theta,
+      phi: cam.phi,
+      distance: cam.distance,
+      target: [cam.target.x, cam.target.y, cam.target.z],
+      focal: this.state.camOpts.focal,
+      ortho: this.state.camOpts.ortho,
+    };
+    this.state.cameras.push(saved);
+    this.state.viewName = saved.name;
+    this.refresh();
+    this.hud.toast(`${saved.name} を控えました`);
+  }
+
+  private recallCamera(c: SavedCamera): void {
+    const cam = this.viewport.cam;
+    cam.theta = c.theta;
+    cam.phi = c.phi;
+    cam.distance = c.distance;
+    cam.target.set(c.target[0], c.target[1], c.target[2]);
+    this.state.camOpts.focal = c.focal;
+    this.state.camOpts.ortho = c.ortho;
+    this.viewport.applyCamera();
+    this.state.viewName = c.name;
+    this.refresh();
+    this.hud.toast(`${c.name} に切り替えました`);
   }
 
   /** マニピュレータの種類。長押しで出す。 */

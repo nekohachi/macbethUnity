@@ -43,6 +43,24 @@ export interface OrbitCamera {
   distance: number;
 }
 
+export type ViewName = "persp" | "top" | "bottom" | "front" | "back" | "right" | "left";
+
+/**
+ * Maya と同じ標準ビュー。パース以外は平行投影にする。
+ *
+ * 真上・真下は視線が上方向ベクトルと重なって向きが決まらなくなるので、
+ * φ をわずかにずらしてある（画面の上が Maya と同じ向きになる値）。
+ */
+export const STANDARD_VIEWS: Record<ViewName, { label: string; sub: string; theta: number; phi: number; ortho: boolean }> = {
+  persp: { label: "パース", sub: "Persp", theta: 0.72, phi: 1.12, ortho: false },
+  top: { label: "上", sub: "Top", theta: 0, phi: 0.001, ortho: true },
+  bottom: { label: "下", sub: "Bottom", theta: 0, phi: Math.PI - 0.001, ortho: true },
+  front: { label: "前", sub: "Front", theta: 0, phi: Math.PI / 2, ortho: true },
+  back: { label: "後", sub: "Back", theta: Math.PI, phi: Math.PI / 2, ortho: true },
+  right: { label: "右", sub: "Right", theta: Math.PI / 2, phi: Math.PI / 2, ortho: true },
+  left: { label: "左", sub: "Left", theta: -Math.PI / 2, phi: Math.PI / 2, ortho: true },
+};
+
 const MIN_DIST = 0.3;
 const MAX_DIST = 140;
 
@@ -138,6 +156,15 @@ export class Viewport {
     this.ortho.updateProjectionMatrix();
 
     this.camera = opts.ortho ? this.ortho : this.persp;
+  }
+
+  /** 標準ビューへ向きだけ切り替える。注視点と距離はそのまま。 */
+  setView(name: ViewName): void {
+    const v = STANDARD_VIEWS[name];
+    this.cam.theta = v.theta;
+    this.cam.phi = v.phi;
+    this.state.camOpts.ortho = v.ortho;
+    this.applyCamera();
   }
 
   tumble(dx: number, dy: number): void {

@@ -32,12 +32,28 @@ interface Slice {
   index: number;
 }
 
+/** 輪の下に並べる一覧の 1 行。カメラのように数が決まらないものに使う。 */
+interface Row {
+  rect: SVGRectElement;
+  label: SVGTextElement;
+  item: RadialItem;
+  top: number;
+}
+
+const ROW_WIDTH = 176;
+const ROW_HEIGHT = 26;
+/** 輪の下端から一覧までの間。 */
+const ROW_GAP = 14;
+
 let open: {
   host: HTMLElement;
   slices: Array<Slice | null>;
+  rows: Row[];
   cx: number;
   cy: number;
   selected: number;
+  /** 一覧の選択。方位とは排他。 */
+  selectedRow: number;
 } | null = null;
 
 function arcPath(cx: number, cy: number, r0: number, r1: number, a0: number, a1: number): string {
@@ -62,11 +78,24 @@ function text(cls: string | null, x: number, y: number, content: string): SVGTex
   return t;
 }
 
-export function openRadial(menu: RadialMenu, clientX: number, clientY: number): void {
+/**
+ * サークルメニューを開く。
+ * `list` を渡すと輪の下に一覧を並べる（数が決まらないもの。カメラなど）。
+ */
+export function openRadial(
+  menu: RadialMenu,
+  clientX: number,
+  clientY: number,
+  list: RadialItem[] = [],
+): void {
   closeRadial();
-  // 画面の端で切れないように中心を寄せる
+  // 画面の端で切れないように中心を寄せる。一覧がある分だけ下の余白も見る
+  const below = list.length ? ROW_GAP + list.length * ROW_HEIGHT : 0;
   const cx = Math.max(RING_OUTER + 16, Math.min(window.innerWidth - RING_OUTER - 16, clientX));
-  const cy = Math.max(RING_OUTER + 16, Math.min(window.innerHeight - RING_OUTER - 16, clientY));
+  const cy = Math.max(
+    RING_OUTER + 16,
+    Math.min(window.innerHeight - RING_OUTER - below - 16, clientY),
+  );
 
   const host = document.createElement("div");
   host.className = "radial";
@@ -120,7 +149,25 @@ export function openRadial(menu: RadialMenu, clientX: number, clientY: number): 
   svg.appendChild(hub);
   svg.appendChild(text("sub", cx, cy + 4, "キャンセル"));
 
-  open = { host, slices, cx, cy, selected: -1 };
+  // 輪の下の一覧
+  const rows: Row[] = [];
+  const listTop = cy + RING_OUTER + ROW_GAP;
+  list.forEach((item, i) => {
+    const top = listTop + i * ROW_HEIGHT;
+    const rect = document.createElementNS(NS, "rect");
+    rect.setAttribute("x", String(cx - ROW_WIDTH / 2));
+    rect.setAttribute("y", String(top));
+    rect.setAttribute("width", String(ROW_WIDTH));
+    rect.setAttribute("height", String(ROW_HEIGHT));
+    rect.setAttribute("fill", "#2c3238");
+    rect.setAttribute("stroke", "#171a1e");
+    svg.appendChild(rect);
+    const label = text(null, cx, top + ROW_HEIGHT / 2 + 4, item.label);
+    svg.appendChild(label);
+    rows.push({ rect, label, item, top });
+  });
+
+  open = { host, slices, rows, cx, cy, selected: -1, selectedRow: -1 };
   window.addEventListener("pointermove", onMove);
   window.addEventListener("pointerup", onUp);
   window.addEventListener("pointercancel", onUp);
@@ -130,8 +177,20 @@ function onMove(e: PointerEvent): void {
   if (!open) return;
   const dx = e.clientX - open.cx;
   const dy = e.clientY - open.cy;
+
+  // 一覧の上に居るならそちらが優先。方位の選択は外す
+  let row = -1;
+  if (Math.abs(dx) <= ROW_WIDTH / 2) {
+    row = open.rows.findIndex((r) => e.clientY >= r.top && e.clientY < r.top + ROW_HEIGHT);
+  }
+  if (row !== open.selectedRow) {
+    open.rows.forEach((r, i) => r.rect.setAttribute("fill", i === row ? "#2f5f7d" : "#2c3238"));
+    open.selectedRow = row;
+    if (row >= 0) navigator.vibrate?.(6);
+  }
+
   let sel = -1;
-  if (Math.hypot(dx, dy) >= DEAD_RADIUS) {
+  if (row < 0 && Math.hypot(dx, dy) >= DEAD_RADIUS) {
     // 北を 0 にして 45° ごとに割る。22.5° 足してから割ると境界が方位の真ん中に来る
     const deg = ((Math.atan2(dy, dx) * 180) / Math.PI + 90 + 360 + 22.5) % 360;
     const i = Math.floor(deg / 45);
@@ -151,9 +210,10 @@ function onMove(e: PointerEvent): void {
 
 function onUp(): void {
   if (!open) return;
-  const { selected, slices } = open;
+  const { selected, selectedRow, slices, rows } = open;
   closeRadial();
-  if (selected >= 0) slices[selected]?.item.run();
+  if (selectedRow >= 0) rows[selectedRow]?.item.run();
+  else if (selected >= 0) slices[selected]?.item.run();
 }
 
 export function closeRadial(): void {

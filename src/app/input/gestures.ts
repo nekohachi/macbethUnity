@@ -12,7 +12,7 @@
  *   - 2 本指は、重心の移動と広がりの変化の合計が 10px を越えるまで何もしない
  *   - 3 本指は、広がりの変化だけを同じ 10px の物差しで見る（つまむまで何も起きない）
  *   - 複数指タップ = 120ms 以内に全部着地、どれも 12px 以内、300ms 以内に全部離れる
- *   - 長押しは 400ms
+ *   - 長押しは 400ms。指 1 本ならマーキングメニュー、**2 本ならカメラ / 編集メニュー**
  * カメラ操作は「動いた時点」で確定し、タップは「動いていないこと」が条件なので
  * 両者は排他になる。
  */
@@ -29,6 +29,11 @@ export interface GestureHandlers {
   hoverLeave(): void;
   /** マーキングメニューを開く。edit なら Shift 側（編集メニュー）。 */
   openMarkingMenu(clientX: number, clientY: number, edit: boolean): void;
+  /**
+   * 指 2 本の長押しで開くサークルメニュー。
+   * 何も選んでいなければカメラ、選んでいれば編集（アプリ側で決める）。
+   */
+  openTwoFingerMenu(clientX: number, clientY: number): void;
   undo(): void;
   redo(): void;
   /** 進行中の操作（矩形選択、ドラッグ、予測線）を確定させずに片付ける。 */
@@ -173,8 +178,6 @@ export class GestureRouter {
   private pointers = new Map<number, PointerRecord>();
   private gesture: Gesture | null = null;
   private holdTimer: ReturnType<typeof setTimeout> | null = null;
-  private holdX = 0;
-  private holdY = 0;
   /** 複数指ダブルタップの計測。 */
   private tap = { t0: 0, maxN: 0, moved: false, stagger: false, lastN: 0, lastT: 0 };
 
@@ -254,6 +257,10 @@ export class GestureRouter {
       if (this.pointers.size === 2) {
         const c = clusterOf(this.pointers);
         this.gesture = { mode: "twofinger", live: false, acc: 0, last: c };
+        // 指 2 本の長押し = カメラ / 編集のサークルメニュー。中心は 2 本の真ん中
+        if (this.touchCount() === 2) {
+          this.startHold(2, () => this.h.openTwoFingerMenu(c.cx, c.cy));
+        }
         // F を押しながらのピンチ: 選択の中心を画面上で固定したままズーム
         if (this.fHeld) {
           this.fChord = true;
@@ -297,13 +304,13 @@ export class GestureRouter {
       const onMesh = !this.fingerCam && this.h.isOnMesh(p, e);
       if (!onMesh) {
         this.gesture = { mode: "tumble", live: false, acc: 0 };
-        this.startHold(e.clientX, e.clientY, this.h.shiftOn(e));
+        this.startMarkingHold(e);
         return;
       }
     }
 
     this.gesture = { mode: "tool", moved: false, sx: p.x, sy: p.y };
-    if (e.pointerType !== "mouse") this.startHold(e.clientX, e.clientY, this.h.shiftOn(e));
+    if (e.pointerType !== "mouse") this.startMarkingHold(e);
     this.h.toolDown(p, e);
   }
 
@@ -318,8 +325,12 @@ export class GestureRouter {
     const py = rec.y;
     rec.x = e.clientX;
     rec.y = e.clientY;
-    if (Math.hypot(e.clientX - this.holdX, e.clientY - this.holdY) > TAP_MOVE) this.cancelHold();
-    if (Math.hypot(e.clientX - rec.x0, e.clientY - rec.y0) > TAP_MOVE) this.tap.moved = true;
+    // 長押しは「指がその場に留まっていること」が条件。
+    // 起点は指ごとの着地点で見る（2 本指のときは真ん中との距離では測れない）
+    if (Math.hypot(e.clientX - rec.x0, e.clientY - rec.y0) > TAP_MOVE) {
+      this.tap.moved = true;
+      this.cancelHold();
+    }
 
     const g = this.gesture;
     if (!g) return;
@@ -348,6 +359,9 @@ export class GestureRouter {
         // 確定した時点を基準にし直して飛びを防ぐ
         g.live = true;
         this.tap.moved = true;
+        // つまむだけだと指ごとの移動が小さく、長押しが生き残ることがある。
+        // カメラが動き出した時点で長押しは無し
+        this.cancelHold();
         return;
       }
       const factor = last.spread > 1e-6 && now.spread > 1e-6 ? last.spread / now.spread : 1;
@@ -468,16 +482,24 @@ export class GestureRouter {
 
   /* ---- 長押し --------------------------------------------------------- */
 
-  private startHold(x: number, y: number, shift: boolean): void {
-    this.holdX = x;
-    this.holdY = y;
+  /**
+   * 長押しの見張り。`fingers` 本のまま HOLD_DELAY 続いたら run を呼ぶ。
+   * どれか 1 本でも TAP_MOVE を越えて動いたら move() で取り消される。
+   */
+  /** 指 1 本の長押し。SHF ラッチが立っていれば編集メニュー側を開く。 */
+  private startMarkingHold(e: PointerEvent): void {
+    const shift = this.h.shiftOn(e);
+    const { clientX, clientY } = e;
+    this.startHold(1, () => this.h.openMarkingMenu(clientX, clientY, shift));
+  }
+
+  private startHold(fingers: number, run: () => void): void {
     this.cancelHold();
     this.holdTimer = setTimeout(() => {
-      if (this.pointers.size !== 1) return;
+      if (this.pointers.size !== fingers) return;
       this.h.abort();
       this.gesture = null;
-      // SHF ラッチ + 長押し = 編集メニュー
-      this.h.openMarkingMenu(x, y, shift);
+      run();
     }, HOLD_DELAY);
   }
 
