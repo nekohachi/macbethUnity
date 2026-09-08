@@ -608,7 +608,51 @@ check(
 );
 await page.keyboard.press("Control+z");
 
-/* 23. 例外が出ていない */
+/* 23. ブリッジ（境界の 2 列を面で繋ぐ） */
+const bridged = await page.evaluate(() => {
+  const app = window.macbeth;
+  // 触っていない立方体を 1 つ足して、そこで試す
+  const objectsBefore = app.state.doc.objects.length;
+  const object = app.state.doc.addObject("cube");
+  app.viewport.syncAll();
+  app.state.select(object);
+  app.setCompMode("face");
+
+  // 上面と下面を落として、縁を 2 つ作る
+  app.state.comp.clear();
+  for (let f = 0; f < object.mesh.faceCount; f++) {
+    const c = object.mesh.faceCenter(f);
+    if (Math.abs(Math.abs(c[1]) - 0.5) < 1e-6) app.state.comp.add(f);
+  }
+  const holes = app.state.comp.size;
+  app.doDeleteFaces();
+  const opened = object.mesh.faceCount;
+
+  // 境界を選んでブリッジ
+  app.setCompMode("edge");
+  app.selectBoundary();
+  const picked = app.state.comp.size;
+  app.doBridge();
+  const after = object.mesh.faceCount;
+
+  app.history.undo(); // ブリッジ
+  const undone = object.mesh.faceCount;
+  app.history.undo(); // 面の削除
+  app.history.undo(); // 立方体の追加
+  return { holes, opened, picked, after, undone, objectsBefore, objects: app.state.doc.objects.length };
+});
+check(
+  "境界の 2 列をブリッジできる",
+  bridged.holes === 2 &&
+    bridged.opened === 4 &&
+    bridged.picked === 8 &&
+    bridged.after === 8 &&
+    bridged.undone === 4 &&
+    bridged.objects === bridged.objectsBefore,
+  `選択 ${bridged.picked} エッジ / ${bridged.opened} → ${bridged.after}面 → 取り消し ${bridged.undone}面`,
+);
+
+/* 24. 例外が出ていない */
 check("例外なし", errors.length === 0, errors.join(" / "));
 
 await page.screenshot({ path: SHOT });

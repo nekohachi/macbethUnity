@@ -8,6 +8,7 @@ import { Matrix4, Raycaster, Vector3 } from "three";
 import {
   PRIMITIVES,
   PRIMITIVE_ORDER,
+  bridgeEdges,
   cloneTransform,
   collapseFaces,
   compact,
@@ -1076,7 +1077,7 @@ export class App {
       return {
         N: { label: "押し出し", sub: "Extrude", icon: ICONS.extrude, run: () => this.doExtrudeEdgesMenu() },
         NE: { label: "ベベル", sub: "Bevel", icon: ICONS.scale, run: () => this.setTool("bevel") },
-        E: { label: "ブリッジ", sub: "Bridge", icon: ICONS.vEdge, run: todo("ブリッジ") },
+        E: { label: "ブリッジ", sub: "Bridge", icon: ICONS.vEdge, run: () => this.doBridge() },
         SE: {
           label: "エッジループ挿入",
           sub: "Insert Loop",
@@ -1285,6 +1286,32 @@ export class App {
         return true;
       },
       () => `エッジを削除 — ${merged} 面を結合`,
+    );
+  }
+
+  /**
+   * ブリッジ。境界エッジの 2 列を面で繋ぐ。
+   * 繋げない選び方（本数違い、枝分かれ、境界でない）のときは理由を出して何もしない。
+   */
+  private doBridge(): void {
+    const o = this.requireComponents("edge", 2);
+    if (!o) return;
+    const view = this.viewport.viewOf(o);
+    if (!view) return;
+    const edges = [...this.state.comp].map((i) => view.edges[i]).filter(Boolean);
+    const r = bridgeEdges(o.mesh, edges);
+    if (!r) {
+      this.hud.toast("ブリッジできません（境界エッジの 2 列を同じ本数だけ選んでください）");
+      return;
+    }
+    this.applyTopologyChange(
+      o,
+      "ブリッジ",
+      () => {
+        o.mesh = r.mesh;
+        return true;
+      },
+      () => `ブリッジ — ${r.faces} 面`,
     );
   }
 

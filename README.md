@@ -6,7 +6,7 @@ Maya のポリゴン編集精度、ZBrush のスカルプト、Substance Painter
 
 ## 現在の状態
 
-**土台の実装フェーズ。** ジオメトリコア（`src/core/`）、`.mbz` 形式、アプリ本体（`src/app/`）ができました。テスト 76 件に加えて、実際の Chromium で描画から選択・取り消し・自動保存まで通す確認（`npm run smoke`）が通ります。残りの機能はプロトタイプから順に移植中です（`docs/12-roadmap-v2.md`）。
+**土台の実装フェーズ。** ジオメトリコア（`src/core/`）、`.mbz` 形式、アプリ本体（`src/app/`）ができました。テスト 85 件に加えて、実際の Chromium で描画から選択・取り消し・自動保存まで通す確認（`npm run smoke`）が通ります。残りの機能はプロトタイプから順に移植中です（`docs/12-roadmap-v2.md`）。
 
 アプリが入口になりました。`https://nekohachi.github.io/macbethUnity/` を開くとアプリに転送されます。プロトタイプは操作感を見比べるための参考として残してあります。
 
@@ -17,7 +17,7 @@ Maya のポリゴン編集精度、ZBrush のスカルプト、Substance Painter
 ```
 npm install
 npm run dev        # 開発サーバー。入口は web/index.html（ルート /）
-npm test           # core のテスト（76 件）
+npm test           # core のテスト（85 件）
 npm run typecheck
 npm run build
 npm run smoke      # ビルド後、実際のブラウザで通し確認（要 npm run build）
@@ -33,6 +33,7 @@ npm run smoke      # ビルド後、実際のブラウザで通し確認（要 n
 | `src/core/selection.ts` | エッジループ / リング、シェル、拡張と縮小 |
 | `src/core/subdivide.ts` | Catmull-Clark（UV とクリースも細分割。頂点点の規則にも折り目が効く）。`SubdivPlan` は動いた頂点の周りだけ計算し直せる |
 | `src/core/bevel.ts` | ベベル（面取り / 丸め）。四角形メッシュ向け |
+| `src/core/bridge.ts` | ブリッジ。境界エッジの 2 列を面で繋ぐ |
 | `src/core/multires.ts` | マルチ解像度スタック。接空間デルタ（docs/03）。ベースの編集は差分更新 |
 | `src/core/document.ts` | シーンの層構造（`docs/11`） |
 | `src/core/io/` | OBJ、メッシュのバイナリ、`.mbz`、トポロジハッシュ |

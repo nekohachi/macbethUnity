@@ -8,6 +8,7 @@ export * from "./mesh.js";
 export * from "./primitives.js";
 export * from "./topology.js";
 export * from "./bevel.js";
+export * from "./bridge.js";
 export * from "./selection.js";
 export * from "./subdivide.js";
 export * from "./multires.js";
