@@ -2784,6 +2784,11 @@ export class App {
     this.viewport.syncAll();
     this.selector.reset();
     this.syncCompModeButtons();
+    // UV モードなら 2D も作り直す。レシピが戻っているので切れ目と島も戻る（`19` の 1.3）
+    if (this.state.mode === "uv" && this.uv) {
+      this.uv.rebuild();
+      this.pushSelectionToUv();
+    }
     this.refresh();
   }
 

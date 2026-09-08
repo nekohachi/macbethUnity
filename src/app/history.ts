@@ -5,7 +5,7 @@
  * スカルプトレイヤーは参照で持つ（delta は書き換えず必ず作り直す約束なので、
  * 参照を共有しても壊れない）。
  */
-import { cloneTransform, type Mesh, type SceneObject, type Transform } from "../core/index.js";
+import { cloneRecipe, cloneTransform, type Mesh, type SceneObject, type Transform } from "../core/index.js";
 import type { AppState, CompMode } from "./state.js";
 
 interface ObjectSnapshot {
@@ -18,6 +18,11 @@ interface ObjectSnapshot {
   visible: boolean;
   activeLevel: number;
   mesh: Mesh;
+  /**
+   * UV のレシピ（`19` の 1.3）。メッシュだけ戻しても切れ目・ピン・土台・差分は
+   * 戻らないので、ここで一緒に控える。`cloneRecipe` は `base` の Float32Array も複製する。
+   */
+  uv: SceneObject["uv"];
   multires: SceneObject["multires"];
   sculptLayers: SceneObject["sculptLayers"];
   paintLayers: SceneObject["paintLayers"];
@@ -79,6 +84,7 @@ export class History {
         visible: o.visible,
         activeLevel: o.activeLevel,
         mesh: o.mesh.clone(),
+        uv: o.uv ? cloneRecipe(o.uv) : null,
         multires: o.multires.slice(),
         sculptLayers: o.sculptLayers.slice(),
         paintLayers: o.paintLayers.slice(),
@@ -142,6 +148,7 @@ export class History {
       o.visible = s.visible;
       o.activeLevel = s.activeLevel;
       o.mesh = s.mesh.clone();
+      o.uv = s.uv ? cloneRecipe(s.uv) : null;
       o.multires = s.multires.slice();
       o.sculptLayers = s.sculptLayers.slice();
       o.paintLayers = s.paintLayers.slice();

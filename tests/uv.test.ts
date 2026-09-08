@@ -13,6 +13,7 @@ import {
   chartMesh,
   cornerIndex,
   cornerKey,
+  cloneRecipe,
   emptyRecipe,
   measure,
   recompute,
@@ -733,5 +734,46 @@ describe("U15. UV の整え（C3 の ops）", () => {
     expect(uv[2] - uv[0]).toBeCloseTo(uv[4] - uv[2], 9);
     expect(uv[1]).toBeCloseTo(uv[3], 9);
     expect(uv[7]).toBeCloseTo(uv[9], 9);
+  });
+});
+
+/**
+ * U16. レシピの複製（`19` の 1.3）。
+ *
+ * 履歴のスナップショットはこれでレシピを控える。深く複製できていないと、
+ * 戻したあとに切れ目やピンが元のオブジェクトと繋がったままになる。
+ */
+describe("U16. レシピの複製", () => {
+  it("すべての要素が等しく、複製を書き換えても元は変わらない", () => {
+    const mesh = cube();
+    const recipe = emptyRecipe();
+    recipe.seams.add(edgeKey(0, 1));
+    recipe.pins.set(cornerKey(0, 0), [0.25, 0.75]);
+    recipe.method = "projection";
+    recipe.base = new Float32Array(mesh.faceCorners.length * 2).fill(0.5);
+    recipe.manual.set("fp", new Map([[cornerKey(1, 2), [0.1, -0.2] as [number, number]]]));
+    recipe.autoSeamParams.angle = 42;
+
+    const copy = cloneRecipe(recipe);
+    expect([...copy.seams]).toEqual([...recipe.seams]);
+    expect(copy.pins.get(cornerKey(0, 0))).toEqual([0.25, 0.75]);
+    expect(copy.method).toBe("projection");
+    expect(copy.base?.length).toBe(recipe.base.length);
+    expect(copy.manual.get("fp")?.get(cornerKey(1, 2))).toEqual([0.1, -0.2]);
+    expect(copy.packing).toEqual(recipe.packing);
+    expect(copy.autoSeamParams.angle).toBe(42);
+
+    // 複製を触っても元は動かない
+    copy.seams.add(edgeKey(2, 3));
+    copy.pins.set(cornerKey(0, 0), [0, 0]);
+    copy.base![0] = 9;
+    copy.manual.get("fp")!.set(cornerKey(1, 2), [0, 0]);
+    copy.packing.allowRotate = !copy.packing.allowRotate;
+    copy.autoSeamParams.angle = 10;
+    expect(recipe.seams.has(edgeKey(2, 3))).toBe(false);
+    expect(recipe.pins.get(cornerKey(0, 0))).toEqual([0.25, 0.75]);
+    expect(recipe.base[0]).toBe(0.5);
+    expect(recipe.manual.get("fp")!.get(cornerKey(1, 2))).toEqual([0.1, -0.2]);
+    expect(recipe.autoSeamParams.angle).toBe(42);
   });
 });

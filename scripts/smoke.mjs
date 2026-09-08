@@ -2684,6 +2684,101 @@ check(
   `${glb.bytes} バイト / ノード ${glb.nodes} / UV ${glb.hasUv}`,
 );
 
+/* 42c. 2D で戻す / 進むが効く（`20` の T1。履歴にレシピが入っている） */
+const uvHistory = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const objectsBefore = app.state.doc.objects.length;
+  const object = app.state.doc.addObject("cube");
+  app.viewport.syncAll();
+  app.state.select(object);
+  app.setMode("uv");
+  app.uv.view.frameUnit();
+  app.uv.setUnit("shell");
+  app.uv.chosen.clear();
+  app.uv.chosen.add(0);
+  app.uv.refreshHighlight();
+
+  const canvas = document.getElementById("uvgl");
+  const rect = document.getElementById("paneUv").getBoundingClientRect();
+  const fire = (type, id, x, y) =>
+    canvas.dispatchEvent(
+      new PointerEvent(type, {
+        pointerId: id,
+        pointerType: "touch",
+        isPrimary: id % 10 === 1,
+        clientX: x,
+        clientY: y,
+        buttons: type === "pointerup" ? 0 : 1,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+  const minU = () => {
+    const uv = object.mesh.uvSets.get("map1");
+    let m = Infinity;
+    for (let i = 0; i < uv.length; i += 2) m = Math.min(m, uv[i]);
+    return m;
+  };
+  const cx = rect.x + rect.width / 2;
+  const cy = rect.y + rect.height / 2;
+  /** 指 n 本でその場を 2 回叩く（動かさない）。2 本 = 戻る、3 本 = 進む。 */
+  const doubleTap = async (n, base) => {
+    for (let round = 0; round < 2; round++) {
+      for (let k = 0; k < n; k++) fire("pointerdown", base + k, cx + k * 30, cy);
+      for (let k = 0; k < n; k++) fire("pointerup", base + k, cx + k * 30, cy);
+      await new Promise((r) => setTimeout(r, 60));
+    }
+    await new Promise((r) => setTimeout(r, 80));
+  };
+
+  // 島を指 3 本で右へ動かす（履歴に「UV を変形」が積まれる）
+  const before = minU();
+  const seats = [
+    [-40, 0],
+    [40, 0],
+    [0, 40],
+  ];
+  seats.forEach(([dx, dy], i) => fire("pointerdown", i + 51, cx + dx, cy + dy));
+  for (let step = 1; step <= 8; step++) {
+    seats.forEach(([dx, dy], i) => fire("pointermove", i + 51, cx + dx + step * 8, cy + dy));
+  }
+  seats.forEach(([dx, dy], i) => fire("pointerup", i + 51, cx + dx + 64, cy + dy));
+  await new Promise((r) => setTimeout(r, 60));
+  const movedU = minU();
+
+  // 指 2 本ダブルタップで戻る → 指 3 本ダブルタップで進む
+  await doubleTap(2, 61);
+  const undoneU = minU();
+  await doubleTap(3, 71);
+  const redoneU = minU();
+
+  // 切れ目も戻る（メッシュだけ戻していると切れ目は残ってしまう）
+  app.uv.setUnit("edge");
+  app.uv.chosen.clear();
+  app.uv.chosen.add(0);
+  const seamsBefore = object.uv.seams.size;
+  app.uv.cutOrSew(true);
+  const seamsAfterCut = object.uv.seams.size;
+  await doubleTap(2, 81);
+  const seamsUndone = object.uv.seams.size;
+
+  app.setMode("model");
+  app.state.select(null);
+  app.state.doc.objects.length = objectsBefore;
+  app.viewport.syncAll();
+  return { before, movedU, undoneU, redoneU, seamsBefore, seamsAfterCut, seamsUndone };
+});
+check(
+  "2D で戻す / 進むが効く（切れ目も戻る）",
+  uvHistory.movedU > uvHistory.before + 0.01 &&
+    Math.abs(uvHistory.undoneU - uvHistory.before) < 1e-4 &&
+    Math.abs(uvHistory.redoneU - uvHistory.movedU) < 1e-4 &&
+    uvHistory.seamsAfterCut > uvHistory.seamsBefore &&
+    uvHistory.seamsUndone === uvHistory.seamsBefore,
+  `U ${uvHistory.before.toFixed(3)} → 移動 ${uvHistory.movedU.toFixed(3)} → 2本指 ${uvHistory.undoneU.toFixed(3)} → ` +
+    `3本指 ${uvHistory.redoneU.toFixed(3)} / 切れ目 ${uvHistory.seamsBefore} → ${uvHistory.seamsAfterCut} → ${uvHistory.seamsUndone}`,
+);
+
 /* 43. 例外が出ていない */
 check("例外なし", errors.length === 0, errors.join(" / "));
 
