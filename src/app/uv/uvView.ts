@@ -28,13 +28,11 @@ import {
 } from "three";
 import {
   UV_SET,
-  buildCharts,
-  chartMesh,
-  cornerIndex,
+  buildUvTopology,
   cornerKey,
-  type Chart,
   type CornerKey,
   type UvRecipe,
+  type UvTopology,
 } from "../../core/index.js";
 import type { SceneObject } from "../../core/index.js";
 import type { ScreenPoint } from "../render/picking.js";
@@ -45,26 +43,8 @@ export interface UvPoint {
   v: number;
 }
 
-/** 2D 側のつながり。選択と当たり判定に使う。 */
-export interface UvTopology {
-  charts: Chart[];
-  /** UV 頂点 → そこに集まるコーナー。 */
-  vertexCorners: CornerKey[][];
-  /** UV 頂点の位置。 */
-  vertexUv: Float32Array;
-  /** UV 頂点 → 属する島。 */
-  vertexChart: Int32Array;
-  /** UV エッジ（UV 頂点の組）。 */
-  edges: Array<[number, number]>;
-  /** UV エッジ → 属する島。 */
-  edgeChart: Int32Array;
-  /** UV エッジ → 元のメッシュのエッジキー。カット / ソーに使う。 */
-  edgeKeys: string[];
-  /** コーナー → UV 頂点。 */
-  cornerToVertex: Map<CornerKey, number>;
-  /** 面 → 島の番号。3D との同期に使う。 */
-  chartOfFace: Map<number, number>;
-}
+/** 2D 側のつながりは core が作る（`core/uv/topology.ts`）。ここでは名前だけ通す。 */
+export type { UvTopology };
 
 // 島が背景に埋もれないよう、面は青みがかった塗りで、線は明るく。
 // 市松は「歪みを見るための下地」なので、目立たせるのは島のほう
@@ -281,67 +261,8 @@ export class UvView {
     if (!uv) return;
 
     const seams = recipe?.seams ?? new Set<string>();
-    const charts = buildCharts(mesh, seams);
-
-    const vertexCorners: CornerKey[][] = [];
-    const vertexUvList: number[] = [];
-    const vertexChartList: number[] = [];
-    const cornerToVertex = new Map<CornerKey, number>();
-    const chartOfFace = new Map<number, number>();
-
-    charts.forEach((chart, ci) => {
-      for (const f of chart.faces) chartOfFace.set(f, ci);
-      const local = chartMesh(mesh, chart, seams);
-      const base = vertexCorners.length;
-      for (let i = 0; i < local.count; i++) {
-        vertexCorners.push([]);
-        vertexUvList.push(0, 0);
-        vertexChartList.push(ci);
-      }
-      for (const key of chart.corners) {
-        const at = base + local.localOf.get(key)!;
-        vertexCorners[at].push(key);
-        cornerToVertex.set(key, at);
-        const corner = cornerIndex(mesh, key);
-        vertexUvList[at * 2] = uv[corner * 2];
-        vertexUvList[at * 2 + 1] = uv[corner * 2 + 1];
-      }
-    });
-
-    // UV エッジ。面の辺をたどって、同じ組は 1 本にまとめる
-    const edges: Array<[number, number]> = [];
-    const edgeChart: number[] = [];
-    const edgeKeys: string[] = [];
-    const seen = new Set<string>();
-    for (let f = 0; f < mesh.faceCount; f++) {
-      const verts = mesh.faceVerts(f);
-      const ci = chartOfFace.get(f) ?? 0;
-      for (let i = 0; i < verts.length; i++) {
-        const a = cornerToVertex.get(cornerKey(f, i));
-        const b = cornerToVertex.get(cornerKey(f, (i + 1) % verts.length));
-        if (a === undefined || b === undefined) continue;
-        const id = `${Math.min(a, b)}_${Math.max(a, b)}`;
-        if (seen.has(id)) continue;
-        seen.add(id);
-        edges.push([a, b]);
-        edgeChart.push(ci);
-        const va = verts[i];
-        const vb = verts[(i + 1) % verts.length];
-        edgeKeys.push(`${Math.min(va, vb)}_${Math.max(va, vb)}`);
-      }
-    }
-
-    this.topology = {
-      charts,
-      vertexCorners,
-      vertexUv: Float32Array.from(vertexUvList),
-      vertexChart: Int32Array.from(vertexChartList),
-      edges,
-      edgeChart: Int32Array.from(edgeChart),
-      edgeKeys,
-      cornerToVertex,
-      chartOfFace,
-    };
+    this.topology = buildUvTopology(mesh, seams);
+    if (!this.topology) return;
 
     this.draw(object, seams);
   }

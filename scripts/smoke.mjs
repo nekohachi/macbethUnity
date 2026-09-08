@@ -2884,10 +2884,15 @@ const uvHistory = await page.evaluate(async () => {
         cancelable: true,
       }),
     );
+  // 動かした島の U だけを見る（もう一方の島は動かないので、全体の最小では測れない）
+  const movedChart = app.uv.view.uvTopology.charts[0];
   const minU = () => {
     const uv = object.mesh.uvSets.get("map1");
     let m = Infinity;
-    for (let i = 0; i < uv.length; i += 2) m = Math.min(m, uv[i]);
+    for (const key of movedChart.corners) {
+      const at = window.macbethCore.cornerIndex(object.mesh, key);
+      m = Math.min(m, uv[at * 2]);
+    }
     return m;
   };
   const cx = rect.x + rect.width / 2;
@@ -2948,6 +2953,229 @@ check(
     uvHistory.seamsUndone === uvHistory.seamsBefore,
   `U ${uvHistory.before.toFixed(3)} → 移動 ${uvHistory.movedU.toFixed(3)} → 2本指 ${uvHistory.undoneU.toFixed(3)} → ` +
     `3本指 ${uvHistory.redoneU.toFixed(3)} / 切れ目 ${uvHistory.seamsBefore} → ${uvHistory.seamsAfterCut} → ${uvHistory.seamsUndone}`,
+);
+
+/* 43b. 手順 A: 立方体を切って開いて整える（`20` の T4） */
+const cubeFlow = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const objectsBefore = app.state.doc.objects.length;
+  const object = app.state.doc.addObject("cube");
+  app.viewport.syncAll();
+  app.state.select(object);
+  const out = {};
+
+  // 1. UV モードへ。取り込んだ UV（十字の展開図、島 1）が見える
+  app.setMode("uv");
+  app.uv.view.frameUnit();
+  out.imported = app.uv.stats().charts;
+  out.method = object.uv.method;
+
+  // 2〜3. 3D で上の面を選び、カットで島に分ける
+  app.setCompMode("face");
+  let top = 0;
+  for (let f = 1; f < object.mesh.faceCount; f++) {
+    if (object.mesh.faceCenter(f)[1] > object.mesh.faceCenter(top)[1]) top = f;
+  }
+  app.state.comp.clear();
+  app.state.comp.add(top);
+  app.pushSelectionToUvForTest();
+  out.shellFromFace = app.uv.chosen.size;
+  app.uv.cutOrSew(true);
+  out.afterCut = app.uv.stats().charts;
+
+  // 4. 展開する
+  app.uv.unfold();
+  out.afterUnfold = app.uv.stats().charts;
+
+  const canvas = document.getElementById("uvgl");
+  const pane = document.getElementById("paneUv").getBoundingClientRect();
+  let pid = 900;
+  const fire = (type, x, y, id) =>
+    canvas.dispatchEvent(
+      new PointerEvent(type, {
+        pointerId: id,
+        pointerType: "touch",
+        isPrimary: true,
+        clientX: pane.x + x,
+        clientY: pane.y + y,
+        buttons: type === "pointerup" ? 0 : 1,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+  /** UV エッジの真ん中を 1 回叩く。 */
+  const tapEdge = async (edge) => {
+    const t = app.uv.view.uvTopology;
+    const [a, b] = t.edges[edge];
+    const u = (t.vertexUv[a * 2] + t.vertexUv[b * 2]) / 2;
+    const v = (t.vertexUv[a * 2 + 1] + t.vertexUv[b * 2 + 1]) / 2;
+    const s = app.uv.view.toScreen(u, v);
+    const id = ++pid;
+    fire("pointerdown", s.x, s.y, id);
+    fire("pointerup", s.x, s.y, id);
+    await new Promise((r) => setTimeout(r, 30));
+  };
+
+  // 5. UV エッジで縁を 1 本タップ → ダブルタップで縁を一周
+  app.uv.setUnit("edge");
+  app.uv.view.frameUnit();
+  const topo = app.uv.view.uvTopology;
+  // 大きいほう（十字が残った島）の縁を 1 本
+  const big = topo.charts.reduce((best, c, i) => (c.faces.length > topo.charts[best].faces.length ? i : best), 0);
+  // 縁のいちばん長くつながるところを選ぶ（十字の展開図は角で分岐することがある）
+  let border = -1;
+  let longest = 0;
+  for (let i = 0; i < topo.edges.length; i++) {
+    if (topo.edgeFaces[i].length >= 2 || topo.edgeChart[i] !== big) continue;
+    const n = window.macbethCore.uvEdgeLoopFrom(topo, i).edges.length;
+    if (n > longest) {
+      longest = n;
+      border = i;
+    }
+  }
+  await tapEdge(border);
+  out.afterTap = app.uv.chosen.size;
+  await tapEdge(border); // ダブルタップ
+  out.loop = app.uv.chosen.size;
+  // 選ばれたのは全部この島の縁か
+  const picked = [...app.uv.chosen];
+  out.allBorder = picked.every((e) => topo.edgeFaces[e].length < 2 && topo.edgeChart[e] === big);
+
+  // SHF + ダブルタップで、前に選んだ辺との間だけ
+  const loop = window.macbethCore.uvEdgeLoopFrom(topo, border).edges;
+  app.uv.chosen.clear();
+  await tapEdge(loop[0]);
+  app.state.mods.shift = "on";
+  await tapEdge(loop[3]);
+  await tapEdge(loop[3]);
+  app.state.mods.shift = "off";
+  out.arc = app.uv.chosen.size;
+
+  // 6. 直線化。選んだ縁の V がそろう
+  const uvOf = (list) => {
+    const t = app.uv.view.uvTopology;
+    const points = new Set();
+    for (const e of list) {
+      points.add(t.edges[e][0]);
+      points.add(t.edges[e][1]);
+    }
+    return [...points].map((v) => [t.vertexUv[v * 2], t.vertexUv[v * 2 + 1]]);
+  };
+  // 直線化: 両端を結ぶ直線から、いちばん離れている点までの距離で見る
+  const offLine = (pts) => {
+    let best = [0, 0];
+    let far = -1;
+    for (let i = 0; i < pts.length; i++) {
+      for (let j = i + 1; j < pts.length; j++) {
+        const d = Math.hypot(pts[j][0] - pts[i][0], pts[j][1] - pts[i][1]);
+        if (d > far) {
+          far = d;
+          best = [i, j];
+        }
+      }
+    }
+    const [a, b] = [pts[best[0]], pts[best[1]]];
+    const dx = b[0] - a[0];
+    const dy = b[1] - a[1];
+    const len = Math.hypot(dx, dy) || 1;
+    return Math.max(...pts.map((p) => Math.abs((p[0] - a[0]) * dy - (p[1] - a[1]) * dx) / len));
+  };
+  const arcEdges = [...app.uv.chosen];
+  out.beforeStraight = offLine(uvOf(arcEdges));
+  app.uv.tidy("straighten");
+  out.afterStraight = offLine(uvOf(arcEdges));
+
+  // 7. 島を動かして、指 2 本ダブルタップで戻す
+  app.uv.setUnit("shell");
+  app.uv.chosen.clear();
+  app.uv.chosen.add(0);
+  app.uv.refreshHighlight();
+  // 動かした島の U だけを見る（もう一方の島は動かないので、全体の最小では測れない）
+  const movedChart = app.uv.view.uvTopology.charts[0];
+  const minU = () => {
+    const uv = object.mesh.uvSets.get("map1");
+    let m = Infinity;
+    for (const key of movedChart.corners) {
+      const at = window.macbethCore.cornerIndex(object.mesh, key);
+      m = Math.min(m, uv[at * 2]);
+    }
+    return m;
+  };
+  const beforeMove = minU();
+  const seats = [
+    [-40, 0],
+    [40, 0],
+    [0, 40],
+  ];
+  const cx = pane.width / 2;
+  const cy = pane.height / 2;
+  seats.forEach(([dx, dy], i) => fire("pointerdown", cx + dx, cy + dy, 940 + i));
+  for (let step = 1; step <= 8; step++) {
+    seats.forEach(([dx, dy], i) => fire("pointermove", cx + dx + step * 8, cy + dy, 940 + i));
+  }
+  seats.forEach(([dx, dy], i) => fire("pointerup", cx + dx + 64, cy + dy, 940 + i));
+  await new Promise((r) => setTimeout(r, 60));
+  out.moved = minU() - beforeMove;
+  for (let round = 0; round < 2; round++) {
+    for (let k = 0; k < 2; k++) fire("pointerdown", cx + k * 30, cy, 950 + k);
+    for (let k = 0; k < 2; k++) fire("pointerup", cx + k * 30, cy, 950 + k);
+    await new Promise((r) => setTimeout(r, 60));
+  }
+  await new Promise((r) => setTimeout(r, 80));
+  out.undone = Math.abs(minU() - beforeMove) < 1e-4;
+
+  // 8. 頂点単位のダブルタップで、島の全頂点
+  app.uv.setUnit("vertex");
+  const t2 = app.uv.view.uvTopology;
+  let anyVert = 0;
+  for (let v = 0; v < t2.vertexChart.length; v++) {
+    if (t2.vertexChart[v] === big) {
+      anyVert = v;
+      break;
+    }
+  }
+  const s = app.uv.view.toScreen(t2.vertexUv[anyVert * 2], t2.vertexUv[anyVert * 2 + 1]);
+  for (let round = 0; round < 2; round++) {
+    const id = ++pid;
+    fire("pointerdown", s.x, s.y, id);
+    fire("pointerup", s.x, s.y, id);
+    await new Promise((r) => setTimeout(r, 30));
+  }
+  out.chartVerts = app.uv.chosen.size;
+  out.wantVerts = [...t2.vertexChart].filter((c) => c === big).length;
+
+  // 9. 整列。島が 0〜1 に収まる
+  app.uv.repack();
+  const uv = object.mesh.uvSets.get("map1");
+  out.packed = [...uv].every((n) => n >= -1e-4 && n <= 1 + 1e-4);
+
+  app.setMode("model");
+  app.state.select(null);
+  app.state.doc.objects.length = objectsBefore;
+  app.viewport.syncAll();
+  return out;
+});
+check(
+  "立方体: 切って開いて整える（手順 A）",
+  cubeFlow.imported === 1 &&
+    cubeFlow.method === "none" &&
+    cubeFlow.shellFromFace === 1 &&
+    cubeFlow.afterCut === 2 &&
+    cubeFlow.afterUnfold === 2 &&
+    cubeFlow.afterTap === 1 &&
+    cubeFlow.loop >= 4 &&
+    cubeFlow.allBorder &&
+    cubeFlow.arc === 4 &&
+    cubeFlow.afterStraight < cubeFlow.beforeStraight * 0.01 &&
+    cubeFlow.moved > 0.01 &&
+    cubeFlow.undone &&
+    cubeFlow.chartVerts === cubeFlow.wantVerts &&
+    cubeFlow.packed,
+  `取り込み 島 ${cubeFlow.imported}（${cubeFlow.method}）→ 面 1 枚で島 ${cubeFlow.shellFromFace} → カット ${cubeFlow.afterCut} 島 / ` +
+    `縁 1 本 → ダブルタップ ${cubeFlow.loop} 本（全部が縁 ${cubeFlow.allBorder}）→ SHF で区間 ${cubeFlow.arc} 本 / ` +
+    `直線化 ${cubeFlow.beforeStraight.toFixed(3)} → ${cubeFlow.afterStraight.toFixed(4)} / ` +
+    `移動 ${cubeFlow.moved.toFixed(3)} → 戻す ${cubeFlow.undone} / ` +
+    `島の頂点 ${cubeFlow.chartVerts}/${cubeFlow.wantVerts} / 0〜1 に収まる ${cubeFlow.packed}`,
 );
 
 /* 44. ツール列のグループ（`21` の 4 章） */

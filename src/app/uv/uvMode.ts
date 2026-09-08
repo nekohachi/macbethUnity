@@ -20,6 +20,10 @@ import {
   recompute,
   recordManual,
   sewInBase,
+  uvArcBetween,
+  uvChartVertices,
+  uvEdgeLoopFrom,
+  uvVertexPath,
   type CornerKey,
   type SceneObject,
   type UvRecipe,
@@ -41,6 +45,9 @@ export type UvSplit = "uv" | "both" | "view";
 
 const VERTEX_RADIUS = 20;
 const EDGE_RADIUS = 14;
+/** ダブルタップの間合い。3D（`select.ts`）と同じ。 */
+const DOUBLE_MS = 380;
+const DOUBLE_PX = 14;
 
 export interface UvHost {
   /** 今の対象。無ければ何もしない。 */
@@ -112,6 +119,11 @@ export class UvMode {
   } | null = null;
   /** この押しでサークルメニューを出したか。出したなら離しても何も選ばない。 */
   private menuOpened = false;
+  /**
+   * 直前のタップ。ダブルタップでループ / 島を選ぶのに使う（`20` の T4）。
+   * `before` は 1 回目のタップより前の選択（3D の `select.ts` と同じ扱い）。
+   */
+  private lastTap: { t: number; x: number; y: number; unit: UvUnit; before: number[] } | null = null;
   /** 2D マニピュレータのドラッグ。 */
   private manipDrag: {
     handle: number;
@@ -927,6 +939,28 @@ export class UvMode {
     const sub = this.host.ctrlOn(e);
 
     // マニピュレータが先。掴めたらそのまま動かす
+    const hit = this.pick(p, object);
+
+    // ダブルタップ: 単位ごとに広げる（3D の `select.ts` と同じ間合い）。
+    // **マニピュレータより先に見る。** 1 本だけ選んだ直後はピボットがその真上に来るので、
+    // 先にハンドルを拾ってしまうと 2 回目のタップが届かない
+    const now = performance.now();
+    const last = this.lastTap;
+    const isDouble =
+      last !== null &&
+      now - last.t < DOUBLE_MS &&
+      Math.hypot(p.x - last.x, p.y - last.y) < DOUBLE_PX &&
+      last.unit === this.unit;
+    if (isDouble && hit >= 0 && last) {
+      const before = last.before;
+      this.lastTap = null;
+      this.expandFrom(hit, add, before);
+      return;
+    }
+    // 1 回目の選択より前の状態を控える。区間はここからの続きになる
+    this.lastTap = hit >= 0 ? { t: now, x: p.x, y: p.y, unit: this.unit, before: [...this.chosen] } : null;
+
+    // マニピュレータ。掴めたらそのまま動かす
     const pivot = this.manipulatorPivot();
     if (pivot && !add && !sub) {
       const handle = this.view.pickManipulator(p, pivot, this.manipSizePx(), this.host.pivotEdit());
@@ -935,8 +969,6 @@ export class UvMode {
         return;
       }
     }
-
-    const hit = this.pick(p, object);
 
     // すでに選んでいるものの上を押したら、そのまま動かす
     if (hit >= 0 && this.chosen.has(hit) && !add && !sub) {
@@ -957,6 +989,60 @@ export class UvMode {
     this.refreshHighlight();
     this.pushToView();
     this.beginDrag(p, e);
+  }
+
+  /**
+   * ダブルタップで広げる（`20` の T4）。
+   *
+   * - エッジ: ループ。SHF なら、前に選んだ辺との間だけ（同じループ上のとき）
+   * - 頂点: SHF なら前の点との頂点列、そうでなければ島の全頂点
+   * - シェル: タップでもう島なので、島の全部（変わらない）
+   */
+  private expandFrom(hit: number, add: boolean, before: number[]): void {
+    const t = this.view.uvTopology;
+    if (!t) return;
+
+    if (this.unit === "edge") {
+      const loop = uvEdgeLoopFrom(t, hit);
+      let picked = loop.edges;
+      let label = "UV エッジループ";
+      if (add && before.length) {
+        // 直前に選んだ辺との間だけ。同じループに乗っていなければループ全部
+        const arc = uvArcBetween(loop, before[before.length - 1], hit);
+        if (arc) {
+          picked = arc;
+          label = "UV エッジの区間";
+        }
+      }
+      this.applyExpanded(picked, add, before, label);
+      return;
+    }
+
+    if (this.unit === "vertex") {
+      if (add && before.length) {
+        const path = uvVertexPath(t, before[before.length - 1], hit);
+        if (path) {
+          this.applyExpanded(path, add, before, "UV 頂点列");
+          return;
+        }
+      }
+      const chart = t.vertexChart[hit] ?? -1;
+      this.applyExpanded(uvChartVertices(t, chart), add, before, "島の UV 頂点");
+      return;
+    }
+
+    // シェルは島そのもの。ダブルタップでは何も広がらないので、そのまま選び直す
+    this.applyExpanded([hit], add, before, "UV シェル");
+  }
+
+  /** 広げた結果を選択に入れる。1 回目のタップで入った分は取り消してから。 */
+  private applyExpanded(items: number[], add: boolean, before: number[], label: string): void {
+    this.chosen.clear();
+    if (add) for (const i of before) this.chosen.add(i);
+    for (const i of items) this.chosen.add(i);
+    this.refreshHighlight();
+    this.pushToView();
+    this.host.changed(`${label} — ${items.length}`);
   }
 
   /* ---- 矩形選択 -------------------------------------------------------- */

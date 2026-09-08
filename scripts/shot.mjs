@@ -43,6 +43,41 @@ const scenes = {
     app.uv.refreshHighlight();
     app.uv.view.frameUnit();
   },
+  /** T4: 手順 A。立方体を切って開き、縁のループを選んだところ。 */
+  "20-t4-cubeflow": async () => {
+    const app = window.macbeth;
+    const object = app.state.doc.objects[0];
+    app.state.select(object);
+    app.setMode("uv");
+    app.setCompMode("face");
+    let top = 0;
+    for (let f = 1; f < object.mesh.faceCount; f++) {
+      if (object.mesh.faceCenter(f)[1] > object.mesh.faceCenter(top)[1]) top = f;
+    }
+    app.state.comp.clear();
+    app.state.comp.add(top);
+    app.pushSelectionToUvForTest();
+    app.uv.cutOrSew(true);
+    app.uv.unfold();
+    app.uv.setUnit("edge");
+    app.uv.view.frameUnit();
+    // いちばん長くつながる縁を選んでおく（ダブルタップで選べるもの）
+    const t = app.uv.view.uvTopology;
+    let best = -1;
+    let longest = 0;
+    for (let i = 0; i < t.edges.length; i++) {
+      if (t.edgeFaces[i].length >= 2) continue;
+      const n = window.macbethCore.uvEdgeLoopFrom(t, i).edges.length;
+      if (n > longest) {
+        longest = n;
+        best = i;
+      }
+    }
+    app.uv.chosen.clear();
+    for (const e of window.macbethCore.uvEdgeLoopFrom(t, best).edges) app.uv.chosen.add(e);
+    app.uv.refreshHighlight();
+  },
+
   /** T8: ツール列のグループと、変形のカットイン。 */
   "20-t8-toolgroups": async () => {
     const app = window.macbeth;
@@ -116,7 +151,7 @@ await page.waitForFunction(() => window.macbeth?.state.doc.objects.length > 0, n
 
 await page.evaluate(scene);
 // 「両方」の表示にして、2D と 3D の両方が写るようにする
-if (NAME.startsWith("20-t2") || NAME.startsWith("20-t3")) {
+if (NAME.startsWith("20-t2") || NAME.startsWith("20-t3") || NAME.startsWith("20-t4")) {
   await page.evaluate(() => {
     document.querySelector('#uvSwitch [data-split="both"]')?.click();
   });

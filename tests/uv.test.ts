@@ -14,6 +14,11 @@ import {
   cornerIndex,
   cornerKey,
   cloneRecipe,
+  buildUvTopology,
+  uvEdgeLoopFrom,
+  uvArcBetween,
+  uvLoopVertices,
+  uvVertexPath,
   emptyRecipe,
   measure,
   recompute,
@@ -1017,5 +1022,133 @@ describe("U21. 古い保存物の読み直し", () => {
     } as never)!;
     expect(now.packing.marginTexels).toBe(12);
     expect(now.packing.textureSize).toBe(2048);
+  });
+});
+
+/**
+ * U22〜U23. UV のループ選択（`20` の T4）。
+ *
+ * 3D と同じ規則を UV のつながりで行う。島の外へは出ず、
+ * 縁の辺から始めたら縁を一周する。
+ */
+describe("U22. 立方体の十字のループ", () => {
+  const topologyOf = (mesh: Mesh, seams: Set<string>) => {
+    const recipe = emptyRecipe();
+    recipe.seams = seams;
+    recipe.method = "none";
+    recompute(mesh, recipe);
+    return buildUvTopology(mesh, recipe.seams)!;
+  };
+
+  it("縁の辺から始めると、島の縁を一周する", () => {
+    const mesh = cube();
+    const t = topologyOf(mesh, netSeams(mesh));
+    expect(t.charts.length).toBe(1);
+
+    // 縁の辺（面 1 枚しか使っていない辺）を 1 本選ぶ
+    const border = t.edgeFaces.findIndex((f) => f.length < 2);
+    expect(border).toBeGreaterThanOrEqual(0);
+    const loop = uvEdgeLoopFrom(t, border);
+    expect(loop.closed).toBe(true);
+    // 十字の展開図の縁は 14 本（面 6 枚 × 4 辺 − 内側 5 本 × 2）
+    expect(loop.edges.length).toBe(14);
+    // 全部が縁の辺
+    for (const e of loop.edges) expect(t.edgeFaces[e].length).toBe(1);
+  });
+
+  it("内側の辺は縁で止まる（島の外へ出ない）", () => {
+    const mesh = cube();
+    const t = topologyOf(mesh, netSeams(mesh));
+    const inner = t.edgeFaces.findIndex((f) => f.length === 2);
+    expect(inner).toBeGreaterThanOrEqual(0);
+    const loop = uvEdgeLoopFrom(t, inner);
+    // 立方体は価数 3 の角ばかりなので、内側の辺は伸びない
+    expect(loop.closed).toBe(false);
+    expect(loop.edges.length).toBeLessThanOrEqual(3);
+    // どの辺もこの島のもの
+    for (const e of loop.edges) expect(t.edgeChart[e]).toBe(t.edgeChart[inner]);
+  });
+});
+
+describe("U23. 円柱のループと区間", () => {
+  const cylinderTopology = () => {
+    const mesh = PRIMITIVES.cylinder.build({
+      ...defaultParams("cylinder"),
+      sdAxis: 12,
+      sdHeight: 3,
+      sdCaps: 1,
+    });
+    // 取り込んだ UV をそのまま使う（プリミティブの切れ目がそのまま入る）
+    const recipe = recipeFromMesh(mesh);
+    recompute(mesh, recipe);
+    return { mesh, t: buildUvTopology(mesh, recipe.seams)! };
+  };
+
+  /** 3D で「高さが変わらない」辺かどうか。 */
+  const horizontal = (mesh: Mesh, key: string): boolean => {
+    const [va, vb] = key.split("_").map(Number);
+    return Math.abs(mesh.positions[va * 3 + 1] - mesh.positions[vb * 3 + 1]) < 1e-9;
+  };
+
+  it("側面の横の辺は 12 本つながる（UV では縦に切れているので開いている）", () => {
+    const { mesh, t } = cylinderTopology();
+    // 側面の内側の横の辺（面 2 枚が使っていて、価数 4 の頂点で挟まれている）
+    let ring = -1;
+    for (let i = 0; i < t.edges.length; i++) {
+      if (t.edgeFaces[i].length !== 2 || !horizontal(mesh, t.edgeKeys[i])) continue;
+      if (uvEdgeLoopFrom(t, i).edges.length === 12) {
+        ring = i;
+        break;
+      }
+    }
+    expect(ring).toBeGreaterThanOrEqual(0);
+
+    const loop = uvEdgeLoopFrom(t, ring);
+    expect(loop.edges.length).toBe(12);
+    // 3D では輪だが、UV では継ぎ目で切れているので端がある
+    expect(loop.closed).toBe(false);
+    // どの辺も同じ島（島の外へ出ない）
+    for (const e of loop.edges) expect(t.edgeChart[e]).toBe(t.edgeChart[ring]);
+
+    // 区間は両端を含む
+    expect(uvArcBetween(loop, loop.edges[0], loop.edges[3])?.length).toBe(4);
+    expect(uvArcBetween(loop, loop.edges[2], loop.edges[9])?.length).toBe(8);
+
+    // 頂点の並びは辺の数 + 1。切れているので同じ点は出てこない
+    const verts = uvLoopVertices(t, loop);
+    expect(verts.length).toBe(13);
+    expect(new Set(verts).size).toBe(13);
+    expect(uvVertexPath(t, verts[0], verts[3])).toEqual(verts.slice(0, 4));
+  });
+
+  it("縦の辺は高さの分割ぶんで止まる", () => {
+    const { mesh, t } = cylinderTopology();
+    let vertical = -1;
+    for (let i = 0; i < t.edges.length && vertical < 0; i++) {
+      if (t.edgeFaces[i].length === 2 && !horizontal(mesh, t.edgeKeys[i])) vertical = i;
+    }
+    expect(vertical).toBeGreaterThanOrEqual(0);
+    const loop = uvEdgeLoopFrom(t, vertical);
+    // 高さ 3 分割。上下のキャップで止まる
+    expect(loop.edges.length).toBe(3);
+    expect(loop.closed).toBe(false);
+  });
+});
+
+describe("U23b. 開いた筒の縁", () => {
+  it("縁の辺から始めると、縁を一周する（上下の輪 + 切れ目）", () => {
+    const mesh = tube(12, 3);
+    const recipe = emptyRecipe();
+    recipe.seams.add(edgeKey(0, 1));
+    recompute(mesh, recipe);
+    const t = buildUvTopology(mesh, recipe.seams)!;
+
+    const border = t.edgeFaces.findIndex((f) => f.length < 2);
+    expect(border).toBeGreaterThanOrEqual(0);
+    const loop = uvEdgeLoopFrom(t, border);
+    // 上の輪 12 + 下の輪 12 + 切れ目の両側 2 = 26
+    expect(loop.edges.length).toBe(26);
+    expect(loop.closed).toBe(true);
+    for (const e of loop.edges) expect(t.edgeFaces[e].length).toBe(1);
   });
 });
