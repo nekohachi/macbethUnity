@@ -21,6 +21,7 @@ import {
   uvVertexPath,
   uvGridRows,
   distortionPerFace,
+  preserveUvs,
   uvStraightRun,
   gridding,
   straightenBorder,
@@ -1328,5 +1329,90 @@ describe("U27. 面ごとの歪み", () => {
     let touched = 0;
     for (const v of one) if (Math.abs(v - 1) > 1e-9) touched++;
     expect(touched).toBeLessThanOrEqual(1);
+  });
+});
+
+/**
+ * U28. 移動で UV を保つ（`23` の T5 の Preserve UVs）。
+ *
+ * 展開したあとに頂点を動かしても模様がその場に残るか。
+ * 面の中の位置と UV の対応（アフィン写像）が守られていればよい。
+ */
+describe("U28. 移動で UV を保つ", () => {
+  /** XZ 平面の 1 × 1 の四角。UV は 0〜1。 */
+  const quad = (): Mesh => {
+    const b = new MeshBuilder({ weld: false });
+    b.vertex(0, 0, 0);
+    b.vertex(1, 0, 0);
+    b.vertex(1, 0, 1);
+    b.vertex(0, 0, 1);
+    b.face([0, 1, 2, 3], {
+      uv: new Map([
+        [
+          UV_SET,
+          [
+            [0, 0],
+            [1, 0],
+            [1, 1],
+            [0, 1],
+          ],
+        ],
+      ]),
+    });
+    return b.build();
+  };
+  const snapshot = (m: Mesh) => ({
+    positions: Float32Array.from(m.positions),
+    uv: Float32Array.from(m.uvSets.get(UV_SET)!),
+  });
+
+  it("面の中で動かすと UV も同じだけ動く", () => {
+    const m = quad();
+    const before = snapshot(m);
+    // 頂点 0 を +X に 0.1（UV では U が +0.1 のはず）
+    m.positions[0] += 0.1;
+    preserveUvs(m, before, [0]);
+    const uv = m.uvSets.get(UV_SET)!;
+    expect(uv[0]).toBeCloseTo(0.1, 6);
+    expect(uv[1]).toBeCloseTo(0, 6);
+    // 動かしていない頂点は変わらない
+    expect(uv[2]).toBeCloseTo(1, 6);
+    expect(uv[5]).toBeCloseTo(1, 6);
+  });
+
+  it("面の外へ引くと外挿される", () => {
+    const m = quad();
+    const before = snapshot(m);
+    m.positions[3] += 0.5; // 頂点 1 を +X に 0.5（面の外）
+    preserveUvs(m, before, [1]);
+    const uv = m.uvSets.get(UV_SET)!;
+    expect(uv[2]).toBeGreaterThan(1);
+    expect(uv[2]).toBeCloseTo(1.5, 6);
+  });
+
+  it("面の法線の向きに動かしても UV は変わらない", () => {
+    const m = quad();
+    const before = snapshot(m);
+    m.positions[1] += 0.4; // 頂点 0 を +Y（面の法線）へ
+    preserveUvs(m, before, [0]);
+    const uv = m.uvSets.get(UV_SET)!;
+    expect(uv[0]).toBeCloseTo(0, 6);
+    expect(uv[1]).toBeCloseTo(0, 6);
+  });
+
+  it("展開したあとの立方体でも、動かした頂点だけが変わる", () => {
+    const m = PRIMITIVES.cube.build(defaultParams("cube"));
+    const recipe = emptyRecipe();
+    for (const [a, b] of m.edges()) recipe.seams.add(edgeKey(a, b));
+    recompute(m, recipe);
+    const before = snapshot(m);
+    m.positions[0] += 0.2;
+    preserveUvs(m, before, [0]);
+    const uv = m.uvSets.get(UV_SET)!;
+    let changed = 0;
+    for (let i = 0; i < uv.length; i++) if (Math.abs(uv[i] - before.uv[i]) > 1e-6) changed++;
+    // 頂点 0 は 3 つの面に属しているので、動くコーナーは 3 つ（U と V で 6 成分まで）
+    expect(changed).toBeGreaterThan(0);
+    expect(changed).toBeLessThanOrEqual(6);
   });
 });

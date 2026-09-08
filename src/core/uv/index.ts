@@ -10,6 +10,7 @@ export * from "./orient.js";
 export * from "./autoSeams.js";
 export * from "./pack.js";
 export * from "./ops.js";
+export * from "./preserve.js";
 export * from "./recipe.js";
 export * from "./topology.js";
 export * from "./loops.js";

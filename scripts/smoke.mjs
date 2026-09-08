@@ -883,6 +883,48 @@ check(
   `選択 ${bridged.picked} エッジ / ${bridged.opened} → ${bridged.after}面 → 取り消し ${bridged.undone}面`,
 );
 
+/* 23b. ブリッジの分割数（`23` の T4） */
+const bridgeSegments = await page.evaluate(() => {
+  const app = window.macbeth;
+  const objectsBefore = app.state.doc.objects.length;
+  const object = app.state.doc.addObject("cube");
+  app.viewport.syncAll();
+  app.state.select(object);
+  app.setCompMode("face");
+  app.state.comp.clear();
+  for (let f = 0; f < object.mesh.faceCount; f++) {
+    const c = object.mesh.faceCenter(f);
+    if (Math.abs(Math.abs(c[1]) - 0.5) < 1e-6) app.state.comp.add(f);
+  }
+  app.doDeleteFaces();
+  const opened = object.mesh.faceCount;
+
+  // 「編集」のブリッジのカットインで分割数を 3 にする
+  app.state.lastEdit = "bridge";
+  const host = app.panelHostForTest();
+  host.onBridgeSegmentsChange(3);
+  const segments = app.state.bridgeSegments;
+
+  app.setCompMode("edge");
+  app.selectBoundary();
+  app.doBridge();
+  const after = object.mesh.faceCount;
+  const verts = object.mesh.vertexCount;
+
+  host.onBridgeSegmentsChange(1);
+  app.history.undo();
+  app.history.undo();
+  app.state.select(null);
+  app.state.doc.objects.length = objectsBefore;
+  app.viewport.syncAll();
+  return { opened, segments, after, verts };
+});
+check(
+  "ブリッジの分割数",
+  bridgeSegments.segments === 3 && bridgeSegments.after === bridgeSegments.opened + 12 && bridgeSegments.verts === 16,
+  `分割 ${bridgeSegments.segments} で ${bridgeSegments.opened} → ${bridgeSegments.after}面 / 頂点 ${bridgeSegments.verts}`,
+);
+
 /* 24. 指 2 本の長押しでカメラメニュー、選択があれば編集メニュー */
 await page.keyboard.press("F8");
 await page.waitForTimeout(500);
@@ -3080,6 +3122,123 @@ check(
     checker.three.hasMap,
   `2D ${checker.before.cells} → ${checker.coarse.cells} マス（作り直し ${checker.coarse.textureId !== checker.before.textureId}）→ ` +
     `${checker.grid.pattern} / 3D の下地 ${checker.three.size}px`,
+);
+
+/* 43z-4. 頂点を動かしても模様が残る（`23` の T5 の Preserve UVs） */
+const preserve = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const objectsBefore = app.state.doc.objects.length;
+  const object = app.state.doc.addObject("plane");
+  object.params.sdWidth = 2;
+  object.params.sdHeight = 2;
+  object.rebuild();
+  app.viewport.syncAll();
+  app.state.select(object);
+  app.setDisplay("checker");
+  app.setCompMode("vertex");
+  app.setManip("move");
+  // 真上から見れば、画面内の移動がそのまま面の中の移動になる
+  app.viewport.setView("top");
+  app.viewport.frameSelected();
+  await new Promise((r) => setTimeout(r, 80));
+
+  // 中央の頂点（4 枚の面が集まるところ）
+  let center = 0;
+  for (let v = 0; v < object.mesh.vertexCount; v++) {
+    const p = object.mesh.getPosition(v);
+    if (Math.hypot(p[0], p[2]) < 1e-6) center = v;
+  }
+  const uvOf = () => {
+    const uv = object.mesh.uvSets.get("map1");
+    for (let f = 0; f < object.mesh.faceCount; f++) {
+      const verts = object.mesh.faceVerts(f);
+      const at = verts.indexOf(center);
+      if (at >= 0) return uv[(object.mesh.faceOffsets[f] + at) * 2];
+    }
+    return NaN;
+  };
+
+  const canvas = document.getElementById("gl");
+  const rect = canvas.getBoundingClientRect();
+  let id = 900;
+  const fire = (type, x, y, pid) =>
+    canvas.dispatchEvent(
+      new PointerEvent(type, {
+        pointerId: pid,
+        pointerType: "pen",
+        isPrimary: true,
+        clientX: x,
+        clientY: y,
+        buttons: type === "pointerup" ? 0 : 1,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+
+  const drag = async (on) => {
+    app.state.preserveUvs = on;
+    app.state.comp.clear();
+    app.state.comp.add(center);
+    app.refresh();
+    await new Promise((r) => setTimeout(r, 40));
+    const before = uvOf();
+    const x0 = object.mesh.getPosition(center)[0];
+    // マニピュレータの中心（自由移動）を掴んで右へ引く
+    const c = app.manipulator.toScreen(app.pivotWorld());
+    fire("pointerdown", rect.x + c.x, rect.y + c.y, ++id);
+    for (let i = 1; i <= 12; i++) fire("pointermove", rect.x + c.x + i * 6, rect.y + c.y, id);
+    fire("pointerup", rect.x + c.x + 72, rect.y + c.y, id);
+    await new Promise((r) => setTimeout(r, 60));
+    const out = { before, after: uvOf(), moved: Math.abs(object.mesh.getPosition(center)[0] - x0) };
+    app.doUndo();
+    await new Promise((r) => setTimeout(r, 40));
+    return out;
+  };
+
+  const on = await drag(true);
+  const off = await drag(false);
+
+  app.state.preserveUvs = true;
+  app.setDisplay("shadedWire");
+  app.setCompMode("object");
+  app.state.select(null);
+  app.state.doc.objects.length = objectsBefore;
+  app.viewport.syncAll();
+  return { on, off };
+});
+check(
+  "頂点を動かしても模様が残る",
+  preserve.on.moved > 0.05 &&
+    Math.abs(preserve.on.after - preserve.on.before) > 0.02 &&
+    Math.abs(preserve.off.after - preserve.off.before) < 1e-6,
+  `オン: 頂点 ${preserve.on.moved.toFixed(2)} 動いて U ${preserve.on.before.toFixed(3)} → ${preserve.on.after.toFixed(3)} / ` +
+    `オフ: U ${preserve.off.before.toFixed(3)} → ${preserve.off.after.toFixed(3)}`,
+);
+
+/* 43z-5. 3D の表示オプション（`23` の T6） */
+const displayOpts = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const host = app.panelHostForTest();
+  const before = { grid: app.viewport.gridVisible(), side: app.viewport.surfaceSide() };
+  host.onDisplayToggle("showGrid", false);
+  host.onDisplayToggle("cullBack", true);
+  await new Promise((r) => setTimeout(r, 40));
+  const after = { grid: app.viewport.gridVisible(), side: app.viewport.surfaceSide() };
+  host.onDisplayToggle("showGrid", true);
+  host.onDisplayToggle("cullBack", false);
+  await new Promise((r) => setTimeout(r, 40));
+  const back = { grid: app.viewport.gridVisible(), side: app.viewport.surfaceSide() };
+  return { before, after, back };
+});
+check(
+  "裏面を描かない / グリッドを切れる",
+  displayOpts.before.grid &&
+    displayOpts.after.grid === false &&
+    displayOpts.after.side === 0 &&
+    displayOpts.back.grid &&
+    displayOpts.back.side === 2,
+  `グリッド ${displayOpts.before.grid} → ${displayOpts.after.grid} → ${displayOpts.back.grid} / ` +
+    `side ${displayOpts.before.side} → ${displayOpts.after.side} → ${displayOpts.back.side}`,
 );
 
 /* 43a. T8 のフィードバック 4 点（`21` のフィードバック） */

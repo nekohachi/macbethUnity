@@ -142,6 +142,13 @@ export class AppState {
   mirrorAxis: 0 | 1 | 2 = 0;
   /** マルチカット。snapStep は % で 0 ならオフ。 */
   cut = { snapStep: 0, edgeFlow: false };
+  /**
+   * 移動で UV を保つ（Maya の Preserve UVs。`23` の T5）。既定はオン。
+   * 効くのはコンポーネントの移動だけ。`localStorage` に残す。
+   */
+  preserveUvs = true;
+  /** ブリッジの分割数（`23` の T4）。1 なら 1 段。 */
+  bridgeSegments = 1;
   /** ベベル。segments が 1 なら面取り、2 以上で丸め。 */
   bevel = { width: 0.1, segments: 1 };
   /**
@@ -174,6 +181,10 @@ export class AppState {
    * `localStorage` に残す。
    */
   checker: { cells: number; pattern: CheckerPattern } = { cells: 8, pattern: "checker" };
+  /** 裏面を描かない（`23` の T6）。既定はオフ（両面）。 */
+  cullBack = false;
+  /** 床のグリッドを出す（`23` の T6）。既定はオン。 */
+  showGrid = true;
   /** Maya の既定と同じ 30°。 */
   smoothAngle = 30;
   camOpts = { focal: 35, near: 0.05, far: 500, ortho: false };

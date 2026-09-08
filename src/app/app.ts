@@ -8,6 +8,7 @@ import { Euler, Matrix4, Plane, Quaternion, Raycaster, Vector3 } from "three";
 import {
   PRIMITIVES,
   PRIMITIVE_ORDER,
+  UV_SET,
   bridgeEdges,
   defaultParams,
   cloneTransform,
@@ -31,8 +32,11 @@ import {
   dissolveEdges,
   extrudeEdges,
   extrudeFaces,
+  preserveUvs,
+  recordPreserved,
   slideRails,
   slideVertices,
+  type PreserveBefore,
   weldVertices,
   parseObj,
   subdivide,
@@ -360,6 +364,11 @@ export class App {
   } | null = null;
   /** ドラッグ開始前のスナップショット。動いたときだけ履歴に積む。 */
   private dragSnapshot: ReturnType<History["snapshot"]> | null = null;
+  /**
+   * UV を保つ（`23` の T5）。コンポーネントの移動の間だけ生きている。
+   * 動かす前の座標と UV を控えて、動かすたびに UV を貼り直す。
+   */
+  private preserve: { object: SceneObject; before: PreserveBefore; verts: number[] } | null = null;
   private raycaster = new Raycaster();
 
   constructor() {
@@ -458,6 +467,9 @@ export class App {
     if (!restored) this.state.doc.addObject("cube");
     this.state.select(this.state.doc.objects[0] ?? null);
     this.viewport.syncAll();
+    // 前回の表示の設定を反映する（`23` の T6）
+    this.viewport.setGridVisible(this.state.showGrid);
+    this.viewport.applyCulling();
     // 起動時の画角はプロトタイプと同じ既定値のまま。F を押せば選択に寄る
     this.refresh();
     this.hud.defaultHint();
@@ -595,6 +607,7 @@ export class App {
     // カメラの向きはジェスチャ中固定。途中で軸や縮尺が変わらないようにする
     this.gestureView = { pixelToWorld: this.pixelToWorldAt(pivot), horizontal: this.screenRightAxis() };
     this.gestureMoved = false;
+    this.beginPreserve(o, this.movedVerts(target));
     return true;
   }
 
@@ -607,6 +620,8 @@ export class App {
     let note: string;
     if (t.kind === "scale") {
       applyGestureTransform(drag, o, { scale: t.scale });
+      // つまんだ時点で「移動」ではなくなるので、UV を保つのはここでやめる
+      this.preserve = null;
       note = `スケール <kbd>×${t.scale.toFixed(2)}</kbd>`;
     } else if (t.axis === "vertical") {
       // 画面の上がプラス Y
@@ -622,6 +637,7 @@ export class App {
       note = `移動 <kbd>${name} ${signed >= 0 ? "+" : ""}${signed.toFixed(2)}</kbd>`;
     }
     this.gestureMoved = true;
+    this.applyPreserve();
 
     if (drag.target.kind === "object") {
       const objectView = this.viewport.viewOf(o);
@@ -643,6 +659,7 @@ export class App {
     this.gestureDrag = null;
     this.gestureView = null;
     this.gestureMoved = false;
+    this.commitPreserve();
     if (moved && this.dragSnapshot) this.history.commit("変形", this.dragSnapshot);
     this.dragSnapshot = null;
     this.refresh();
@@ -683,6 +700,55 @@ export class App {
       return r.edge >= 0 && this.state.comp.has(r.edge);
     }
     return false;
+  }
+
+  /* ---- UV を保つ（`23` の T5） ----------------------------------------- */
+
+  /**
+   * コンポーネントの移動の前に、座標と UV を控える。
+   * オブジェクトの移動と回転・スケールでは UV は変わらないので何もしない。
+   */
+  private beginPreserve(o: SceneObject, verts: Iterable<number>): void {
+    this.preserve = null;
+    if (!this.state.preserveUvs || this.state.compMode === "object") return;
+    const uv = o.mesh.uvSets.get(UV_SET);
+    if (!uv) return;
+    this.preserve = {
+      object: o,
+      before: { positions: Float32Array.from(o.mesh.positions), uv: Float32Array.from(uv) },
+      verts: [...verts],
+    };
+  }
+
+  /** ドラッグ中の 1 コマ分。動かした頂点の UV を貼り直す。 */
+  private applyPreserve(): void {
+    const p = this.preserve;
+    if (!p) return;
+    preserveUvs(p.object.mesh, p.before, p.verts);
+  }
+
+  /**
+   * 動かし終わり。レシピがあれば差分として記録する（開き直しても残る）。
+   * レシピが無ければ `map1` を直に書いたままにする。
+   */
+  private commitPreserve(): void {
+    const p = this.preserve;
+    this.preserve = null;
+    if (!p) return;
+    const recipe = p.object.uv;
+    if (recipe) recordPreserved(p.object.mesh, recipe, p.before.uv);
+    if (this.state.mode === "uv") this.uv?.rebuild();
+  }
+
+  /** ドラッグ対象の頂点（対称編集の相手も含む）。 */
+  private movedVerts(target: DragTarget | null): number[] {
+    if (!target || target.kind !== "component") return this.selector.selectedVertices();
+    const out = new Set<number>(target.verts);
+    for (const [a, b] of target.mirror) {
+      out.add(a);
+      out.add(b);
+    }
+    return [...out];
   }
 
   /** ドラッグ開始時に動かす対象を控える。ソフト選択と対称編集もここで決める。 */
@@ -852,6 +918,8 @@ export class App {
       cameraPosition: this.cameraPosition(),
       label,
     });
+    // UV を保つのは移動だけ（回転とスケールでは UV は変わらない）
+    if (this.drag.kind === "move") this.beginPreserve(o, this.movedVerts(target));
     this.manipulator.hot = handle;
     this.refreshManipulator();
   }
@@ -909,14 +977,17 @@ export class App {
       }
     }
 
+    const mirror = this.state.symX ? mirrorPairs(o.mesh, verts) : [];
     this.slideDrag = {
       base: Float32Array.from(o.mesh.positions),
       rails,
       railScreen,
       anchor,
       start: p,
-      mirror: this.state.symX ? mirrorPairs(o.mesh, verts) : [],
+      mirror,
     };
+    // スライドもコンポーネントの移動なので UV を保つ（`23` の T5）
+    this.beginPreserve(o, [...verts, ...mirror.flatMap(([a, b]) => [a, b])]);
     return true;
   }
 
@@ -989,6 +1060,7 @@ export class App {
     }
 
     slideVertices(o.mesh, s.base, choice, t);
+    this.applyPreserve();
     this.viewport.refreshPositions(o);
     this.viewport.rebuildOverlay();
     this.refreshManipulator();
@@ -1208,6 +1280,7 @@ export class App {
     });
     if (snapping) this.showSnapTarget();
     else this.updateWeldTarget(p, e, o);
+    this.applyPreserve();
     if (drag.target.kind === "object") {
       const view = this.viewport.viewOf(o);
       if (view) {
@@ -1369,6 +1442,7 @@ export class App {
       const o = this.state.selected;
       const changed =
         !!o && s.base.some((v, i) => Math.abs(v - o.mesh.positions[i]) > 1e-6);
+      this.commitPreserve();
       if (changed && this.dragSnapshot) {
         this.history.commit("スライド", this.dragSnapshot);
         this.hud.toast("スライド");
@@ -1405,6 +1479,7 @@ export class App {
       this.drag = null;
       this.manipulator.hot = -1;
       this.preselect.clear();
+      this.commitPreserve();
       // 動かさずに離したなら、何も変えていないので選択として扱う。
       // マニピュレータの中心は選択の中心に出るので、これがないと
       // 選び直しやダブルクリックがハンドルに吸われてしまう。
@@ -2681,7 +2756,7 @@ export class App {
     const view = this.viewport.viewOf(o);
     if (!view) return;
     const edges = [...this.state.comp].map((i) => view.edges[i]).filter(Boolean);
-    const r = bridgeEdges(o.mesh, edges);
+    const r = bridgeEdges(o.mesh, edges, this.state.bridgeSegments);
     if (!r) {
       this.hud.toast("ブリッジできません（境界エッジの 2 列を同じ本数だけ選んでください）");
       return;
@@ -3176,7 +3251,7 @@ export class App {
       case "bevel":
         return [bevelSection(state, host)];
       case "bridge":
-        return [bridgeSection()];
+        return [bridgeSection(state, host)];
       case "connect":
         return [connectSection()];
       case "extrude":
@@ -3291,6 +3366,7 @@ export class App {
       bevel: this.state.bevel,
       bevelActive: this.bevel.active,
       extrudeDist: this.state.toolOpts.extrudeDist,
+      bridgeSegments: this.state.bridgeSegments,
       vertex: this.state.vertexOpts,
       snap: { ...this.state.snap, active: this.state.snapping },
       mirrorAxis: this.state.mirrorAxis,
@@ -3305,9 +3381,12 @@ export class App {
       rotateStep: this.state.rotateStep,
       preventNegativeScale: this.state.preventNegativeScale,
       cameraBased: this.state.cameraBased,
+      preserveUvs: this.state.preserveUvs,
       uvHeat: this.state.uvHeat,
       checker: this.state.checker,
       display: this.state.display,
+      cullBack: this.state.cullBack,
+      showGrid: this.state.showGrid,
       cam: this.state.camOpts,
       nextPrimitive: kind,
       nextPrimitiveParams: this.state.primitiveDefaults[kind] ?? defaultParams(kind),
@@ -3475,6 +3554,10 @@ export class App {
           this.refresh();
         }
       },
+      onBridgeSegmentsChange: (value) => {
+        this.state.bridgeSegments = value;
+        this.remember("bridgeSegments", value);
+      },
       onBevelChange: (key, value) => {
         if (key === "segments") this.state.bevel.segments = value;
         else this.state.bevel.width = value;
@@ -3515,8 +3598,26 @@ export class App {
         this.syncToggleButtons();
         this.refresh();
       },
+      onPreserveUvsChange: (on) => {
+        this.state.preserveUvs = on;
+        this.remember("preserveUvs", on);
+        this.hud.toast(on ? "UV を保つ: オン" : "UV を保つ: オフ");
+      },
       onUvHeatChange: (on) => this.toggleUvHeat(on),
       onCheckerChange: (key, value) => this.setChecker(key, value),
+      onDisplayToggle: (key, on) => {
+        if (key === "cullBack") {
+          this.state.cullBack = on;
+          this.viewport.applyCulling();
+        } else {
+          this.state.showGrid = on;
+          this.viewport.setGridVisible(on);
+        }
+        this.remember(key, on);
+        this.hud.toast(
+          key === "cullBack" ? (on ? "裏面を描かない" : "両面を描く") : on ? "グリッド: オン" : "グリッド: オフ",
+        );
+      },
       onCameraBasedChange: (on) => {
         this.state.cameraBased = on;
         this.remember("cameraBased", on);
@@ -3680,8 +3781,13 @@ export class App {
     };
     this.state.cameraBased = read("cameraBased") === "true";
     this.state.preventNegativeScale = read("preventNegativeScale") !== "false";
+    this.state.preserveUvs = read("preserveUvs") !== "false";
     const step = Number(read("rotateStep"));
     if (Number.isFinite(step) && step >= 0) this.state.rotateStep = step;
+    this.state.cullBack = read("cullBack") === "true";
+    this.state.showGrid = read("showGrid") !== "false";
+    const segs = Number(read("bridgeSegments"));
+    if (Number.isFinite(segs) && segs >= 1 && segs <= 16) this.state.bridgeSegments = Math.round(segs);
     const cells = Number(read("checker.cells"));
     if ([4, 8, 16, 32, 64].includes(cells)) this.state.checker.cells = cells;
     const pattern = read("checker.pattern");

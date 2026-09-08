@@ -22,6 +22,8 @@ export interface PanelHost {
   /** 数値入力。トランスフォームの 1 成分を直に書き換える。 */
   onTransformInput(object: SceneObject, field: "position" | "rotation" | "scale", axis: number, value: number): void;
   onBevelChange(key: "width" | "segments", value: number): void;
+  /** ブリッジの分割数（`23` の T4）。 */
+  onBridgeSegmentsChange(value: number): void;
   onCutChange(key: "snapStep" | "edgeFlow", value: number | boolean): void;
   onSmoothAngleChange(value: number): void;
   onManipSizeChange(value: number): void;
@@ -36,9 +38,13 @@ export interface PanelHost {
   onUvHeatChange(on: boolean): void;
   /** チェッカーの細かさと模様（`23` の T3）。 */
   onCheckerChange(key: "cells" | "pattern", value: number | string): void;
+  /** 3D の表示（`23` の T6）。裏面を描かない / グリッド。 */
+  onDisplayToggle(key: "cullBack" | "showGrid", on: boolean): void;
   /** 回転の刻み（度。0 でなし）。 */
   onRotateStepChange(deg: number): void;
   onPreventNegativeScaleChange(on: boolean): void;
+  /** 移動で UV を保つ（`23` の T5）。 */
+  onPreserveUvsChange(on: boolean): void;
   onPivotEditToggle(): void;
   onCamOptChange(key: "focal" | "near" | "far", value: number): void;
   onCamOrthoChange(on: boolean): void;
@@ -161,6 +167,8 @@ export interface OptionsState {
   /** ベベルを確定した直後か。作り直せる間だけ出す。 */
   bevelActive: boolean;
   extrudeDist: number;
+  /** ブリッジの分割数（`23` の T4）。 */
+  bridgeSegments: number;
   vertex: { mergeDist: number; extrudeWidth: number };
   snap: { kind: string; step: number; active: boolean };
   mirrorAxis: 0 | 1 | 2;
@@ -175,6 +183,8 @@ export interface OptionsState {
   pivotEdit: boolean;
   rotateStep: number;
   preventNegativeScale: boolean;
+  /** 移動で UV を保つ（`23` の T5）。 */
+  preserveUvs: boolean;
   cameraBased: boolean;
   /** 歪みを色で見ているか（`23` の T2）。 */
   uvHeat: boolean;
@@ -182,6 +192,9 @@ export interface OptionsState {
   checker: { cells: number; pattern: string };
   /** 今の 3D の表示。チェッカーのときだけ「表示」に模様の区画を出す。 */
   display: string;
+  /** 裏面を描かない / 床のグリッド（`23` の T6）。 */
+  cullBack: boolean;
+  showGrid: boolean;
   cam: { focal: number; near: number; far: number; ortho: boolean };
   /** 次に追加するプリミティブの種類と、その既定値（`21` の 2.7）。 */
   nextPrimitive: string;
@@ -332,6 +345,13 @@ export function manipulatorSection(state: OptionsState, host: PanelHost): HTMLEl
     checkbox(s, "負のスケールを防ぐ", state.preventNegativeScale, (v) => host.onPreventNegativeScaleChange(v));
   }
 
+  if (state.manip === "move" || state.manip === "all") {
+    checkbox(s, "UV を保つ", state.preserveUvs, (v) => host.onPreserveUvsChange(v));
+    s.appendChild(
+      el("div", "hint", "頂点を動かしても模様がその場に残ります（Maya の Preserve UVs）。\n効くのはコンポーネントの移動だけです。"),
+    );
+  }
+
   s.appendChild(
     el(
       "div",
@@ -429,13 +449,22 @@ export function extrudeSection(state: OptionsState, host: PanelHost): HTMLElemen
   return s;
 }
 
-export function bridgeSection(): HTMLElement {
+export function bridgeSection(state: OptionsState, host: PanelHost): HTMLElement {
   const s = section("ブリッジ", "BRIDGE");
+  paramRow(s, {
+    label: "分割数",
+    value: state.bridgeSegments,
+    min: 1,
+    max: 16,
+    step: 1,
+    format: (v) => String(Math.round(v)),
+    onInput: (v) => host.onBridgeSegmentsChange(Math.round(v)),
+  });
   s.appendChild(
     el(
       "div",
       "hint",
-      "境界のエッジ列を 2 つ選んで実行します。数が同じでないと繋げません。\n分割数はまだ 1 だけです。",
+      "境界のエッジ列を 2 つ選んで実行します。数が同じでないと繋げません。\n分割数を上げると、間に等間隔の輪が入ります。",
     ),
   );
   return s;
@@ -676,6 +705,8 @@ export function displaySection(state: OptionsState, host: PanelHost): HTMLElemen
     format: (v) => `${Math.round(v)}°`,
     onInput: (v) => host.onSmoothAngleChange(v),
   });
+  checkbox(s, "裏面を描かない", state.cullBack, (v) => host.onDisplayToggle("cullBack", v));
+  checkbox(s, "グリッド", state.showGrid, (v) => host.onDisplayToggle("showGrid", v));
   checkbox(s, "歪みを色で（ヒートマップ）", state.uvHeat, (v) => host.onUvHeatChange(v));
   s.appendChild(
     el(

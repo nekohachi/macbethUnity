@@ -124,8 +124,16 @@ function align(mesh: Mesh, a: Chain, b: Chain): number[] {
 /**
  * 2 つのエッジ列を面で繋ぐ。繋げなければ null。
  * 返る faces は作った面の数。
+ *
+ * `segments` が 2 以上なら、2 列の間に `segments − 1` 本の中間の輪を
+ * 等間隔（線形補間）で入れて、四角形を `segments` 段にする（`23` の T4）。
+ * 頂点の対応は 1 段のときと同じ（最近傍 + 向き）。
  */
-export function bridgeEdges(mesh: Mesh, edges: Array<[number, number]>): { mesh: Mesh; faces: number } | null {
+export function bridgeEdges(
+  mesh: Mesh,
+  edges: Array<[number, number]>,
+  segmentCount = 1,
+): { mesh: Mesh; faces: number } | null {
   const chains = edgeChains(edges);
   if (!chains || chains.length !== 2) return null;
   const [a, b] = chains;
@@ -147,7 +155,6 @@ export function bridgeEdges(mesh: Mesh, edges: Array<[number, number]>): { mesh:
   }
 
   const bs = align(mesh, a, b);
-  const paired: Chain = { verts: bs, closed: b.closed };
 
   const out = new MeshBuilder({ weld: false });
   for (let v = 0; v < mesh.vertexCount; v++) {
@@ -162,18 +169,38 @@ export function bridgeEdges(mesh: Mesh, edges: Array<[number, number]>): { mesh:
     });
   }
 
+  // 段ごとの輪。0 段目が a、最後が相手側。間は線形補間で作る
+  const steps = Math.max(1, Math.round(segmentCount));
+  const rings: number[][] = [a.verts];
+  for (let j = 1; j < steps; j++) {
+    const t = j / steps;
+    const ring: number[] = [];
+    for (let k = 0; k < a.verts.length; k++) {
+      const p = mesh.getPosition(a.verts[k]);
+      const q = mesh.getPosition(bs[k]);
+      ring.push(out.vertex(p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t, p[2] + (q[2] - p[2]) * t));
+    }
+    rings.push(ring);
+  }
+  rings.push(bs);
+
   let made = 0;
   for (let i = 0; i < count; i++) {
     const [a0, a1] = segment(a, i);
-    const [c0, c1] = segment(paired, i);
     const f = borderFace(a0, a1);
     if (f < 0) continue;
     // 隣の面が a0 → a1 の向きに通っているなら、新しい面は a1 → a0 で通す
     const verts = mesh.faceVerts(f);
     const at = verts.indexOf(a0);
     const forward = at >= 0 && verts[(at + 1) % verts.length] === a1;
-    const quad = forward ? [a1, a0, c0, c1] : [a0, a1, c1, c0];
-    if (out.face(quad, { polygroup: mesh.polygroup[f], materialId: mesh.materialId[f] }) >= 0) made++;
+    const i0 = i;
+    const i1 = (i + 1) % a.verts.length;
+    for (let j = 0; j < steps; j++) {
+      const lo = rings[j];
+      const hi = rings[j + 1];
+      const quad = forward ? [lo[i1], lo[i0], hi[i0], hi[i1]] : [lo[i0], lo[i1], hi[i1], hi[i0]];
+      if (out.face(quad, { polygroup: mesh.polygroup[f], materialId: mesh.materialId[f] }) >= 0) made++;
+    }
   }
   if (!made) return null;
 

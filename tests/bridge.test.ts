@@ -126,6 +126,27 @@ describe("ブリッジ", () => {
     }
   });
 
+  it("分割数を上げると段が増える（`23` の T4）", () => {
+    const open = facingSquares();
+    const before = open.faceCount;
+    const r = bridgeEdges(open, borderEdges(open), 3)!;
+    expect(r).not.toBeNull();
+    // 4 本 × 3 段
+    expect(r.faces).toBe(12);
+    expect(r.mesh.faceCount).toBe(before + 12);
+    expect(isClosed(r.mesh)).toBe(true);
+    expect(windingConsistent(r.mesh)).toBe(true);
+
+    // 中間の輪は両端の 1/3・2/3 の高さに並ぶ（下が y=0、上が y=1）
+    const heights = new Set<string>();
+    for (let v = open.vertexCount; v < r.mesh.vertexCount; v++) {
+      heights.add(r.mesh.getPosition(v)[1].toFixed(4));
+    }
+    expect([...heights].sort()).toEqual(["0.3333", "0.6667"]);
+    // 中間の頂点は 4 つ × 2 段
+    expect(r.mesh.vertexCount).toBe(open.vertexCount + 8);
+  });
+
   it("本数が違えば何もしない", () => {
     const open = facingSquares();
     const edges = borderEdges(open);

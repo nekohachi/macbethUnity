@@ -199,6 +199,144 @@ const scenes = {
     await new Promise((r) => setTimeout(r, 120));
   },
 
+  /** `23` の T5: UV を保つ（オン）。中央の頂点を動かしたところ。 */
+  "23-t5-preserve-on": async () => {
+    const app = window.macbeth;
+    const core = window.macbethCore;
+    app.state.doc.objects.length = 0;
+    const object = app.state.doc.addObject("plane");
+    object.params.sdWidth = 3;
+    object.params.sdHeight = 3;
+    object.rebuild();
+    app.viewport.syncAll();
+    app.state.select(object);
+    app.setDisplay("checker");
+    app.panelHostForTest().onCheckerChange("cells", 8);
+    app.setCompMode("vertex");
+    app.setManip("move");
+    app.viewport.setView("top");
+    app.viewport.frameSelected();
+
+    // 中央に近い頂点を 1 つ選んで、X 方向へ動かす
+    let center = 0;
+    let best = Infinity;
+    for (let v = 0; v < object.mesh.vertexCount; v++) {
+      const p = object.mesh.getPosition(v);
+      const d = Math.hypot(p[0], p[2]);
+      if (d < best) {
+        best = d;
+        center = v;
+      }
+    }
+    app.state.comp.clear();
+    app.state.comp.add(center);
+    const positions = Float32Array.from(object.mesh.positions);
+    const uv = Float32Array.from(object.mesh.uvSets.get("map1"));
+    object.mesh.positions[center * 3] += 0.28;
+    object.mesh.positions[center * 3 + 2] += 0.18;
+    if (true) core.preserveUvs(object.mesh, { positions, uv }, [center]);
+    app.viewport.rebuildObject(object);
+    app.viewport.rebuildOverlay();
+    app.refresh();
+    await new Promise((r) => setTimeout(r, 120));
+  },
+
+  /** `23` の T5: UV を保つ（オフ）。中央の頂点を動かしたところ。 */
+  "23-t5-preserve-off": async () => {
+    const app = window.macbeth;
+    const core = window.macbethCore;
+    app.state.doc.objects.length = 0;
+    const object = app.state.doc.addObject("plane");
+    object.params.sdWidth = 3;
+    object.params.sdHeight = 3;
+    object.rebuild();
+    app.viewport.syncAll();
+    app.state.select(object);
+    app.setDisplay("checker");
+    app.panelHostForTest().onCheckerChange("cells", 8);
+    app.setCompMode("vertex");
+    app.setManip("move");
+    app.viewport.setView("top");
+    app.viewport.frameSelected();
+
+    // 中央に近い頂点を 1 つ選んで、X 方向へ動かす
+    let center = 0;
+    let best = Infinity;
+    for (let v = 0; v < object.mesh.vertexCount; v++) {
+      const p = object.mesh.getPosition(v);
+      const d = Math.hypot(p[0], p[2]);
+      if (d < best) {
+        best = d;
+        center = v;
+      }
+    }
+    app.state.comp.clear();
+    app.state.comp.add(center);
+    const positions = Float32Array.from(object.mesh.positions);
+    const uv = Float32Array.from(object.mesh.uvSets.get("map1"));
+    object.mesh.positions[center * 3] += 0.28;
+    object.mesh.positions[center * 3 + 2] += 0.18;
+    if (false) core.preserveUvs(object.mesh, { positions, uv }, [center]);
+    app.viewport.rebuildObject(object);
+    app.viewport.rebuildOverlay();
+    app.refresh();
+    await new Promise((r) => setTimeout(r, 120));
+  },
+
+  /** `23` の T4: ブリッジの分割数 3。上下の縁の間に輪が 2 本入る。 */
+  "23-t4-bridge": async () => {
+    const app = window.macbeth;
+    app.state.doc.objects.length = 0;
+    const object = app.state.doc.addObject("cube");
+    app.viewport.syncAll();
+    app.state.select(object);
+    app.setCompMode("face");
+    app.state.comp.clear();
+    for (let f = 0; f < object.mesh.faceCount; f++) {
+      const c = object.mesh.faceCenter(f);
+      if (Math.abs(Math.abs(c[1]) - 0.5) < 1e-6) app.state.comp.add(f);
+    }
+    app.doDeleteFaces();
+    app.state.lastEdit = "bridge";
+    app.panelHostForTest().onBridgeSegmentsChange(3);
+    app.setCompMode("edge");
+    app.selectBoundary();
+    app.doBridge();
+    app.setCompMode("object");
+    app.state.comp.clear();
+    app.setDisplay("shadedWire");
+    app.viewport.frameSelected();
+    app.viewport.rebuildOverlay();
+    app.refresh();
+    await new Promise((r) => setTimeout(r, 120));
+  },
+
+  /** `23` の T6: 裏面を描かない + グリッドなし。 */
+  "23-t6-display": async () => {
+    const app = window.macbeth;
+    app.state.doc.objects.length = 0;
+    const object = app.state.doc.addObject("sphere");
+    app.viewport.syncAll();
+    app.state.select(object);
+    // 手前の面をいくつか落として、裏面が見える状態にする
+    app.setCompMode("face");
+    app.state.comp.clear();
+    for (let f = 0; f < object.mesh.faceCount; f++) {
+      const c = object.mesh.faceCenter(f);
+      if (c[2] > 0.3 && c[1] > -0.2 && c[1] < 0.6) app.state.comp.add(f);
+    }
+    app.doDeleteFaces();
+    app.setCompMode("object");
+    app.state.comp.clear();
+    const host = app.panelHostForTest();
+    host.onDisplayToggle("cullBack", true);
+    host.onDisplayToggle("showGrid", false);
+    app.viewport.frameSelected();
+    app.viewport.rebuildOverlay();
+    app.refresh();
+    await new Promise((r) => setTimeout(r, 120));
+  },
+
   /** T3: 球の自動 UV。島どうしが離れている。 */
   "20-t3-margin": async () => {
     const app = window.macbeth;

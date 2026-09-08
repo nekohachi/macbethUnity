@@ -265,3 +265,54 @@ PNG: `docs/img/23-t2-heat.png`（球を切れ目なしで展開してヒート�
 ### 次
 
 T4（ブリッジの分割数）→ T5（Preserve UVs）→ T6（表示オプション）。終わったらまとめて報告。
+
+---
+
+## 実装の報告 その 2（Opus、2026-09-09。T4〜T6）
+
+### 変えたファイル
+
+**core**
+
+- `core/bridge.ts`: `bridgeEdges(mesh, edges, segmentCount = 1)`。2 列の間に `segments − 1` 本の中間の輪を線形補間で入れて、四角形を `segments` 段にする。頂点の対応（最近傍 + 向き）と表裏の決め方は今までのまま
+- `core/uv/preserve.ts`（新）: `preserveUvs(mesh, before, moved)` と `recordPreserved(mesh, recipe, beforeUv)`
+
+**app**
+
+- `app/state.ts`: `bridgeSegments`（既定 1）、`preserveUvs`（既定オン）、`cullBack`（既定オフ）、`showGrid`（既定オン）。すべて `localStorage`
+- `app/app.ts`: `beginPreserve` / `applyPreserve` / `commitPreserve` / `movedVerts`。マニピュレータの移動・3 本指の平行移動・スライドの 3 経路に差し込んだ。表示のトグル 2 つ
+- `app/render/viewport.ts`: `applyCulling()`、`setGridVisible()` / `gridVisible()` / `surfaceSide()`
+- `app/ui/panels.ts`: `bridgeSection` に分割数のスライダー、`manipulatorSection` に「UV を保つ」、`displaySection` に「裏面を描かない」「グリッド」
+
+### 数
+
+| | `23` の前 | T3 まで | T6 まで |
+|---|---|---|---|
+| core の単体（vitest） | 196 | 199 | 204（U28 の 4 件 + ブリッジ 1 件） |
+| 通し確認（smoke） | 73 | 76 | 79 |
+
+PNG: `docs/img/23-t4-bridge.png`（分割 3 のブリッジ）、`23-t5-preserve-on.png` / `23-t5-preserve-off.png`（同じ頂点移動を、UV を保つオン / オフで）、`23-t6-display.png`（裏面を描かない + グリッドなし）。
+
+### 設計と変えたところ
+
+- **ブリッジの引数名を `segments` ではなく `segmentCount` にした。** `bridge.ts` の中に「列の辺の本数」を返す `segments(chain)` がすでにあり、名前がぶつかるため
+- **ブリッジの新しい面に UV は入れていない。** 指示書には「UV は両端の UV を線形補間」とあるが、**今のブリッジはそもそも新しい面に UV を付けていない**（`out.face(quad, { polygroup, materialId })`）。補間する元が無いので、中間の輪も同じく UV 無しにした。ブリッジのあとに「展開」を押せば UV は入る。両端に UV を入れるところから始めるなら別タスクにしたい
+- **`preserveUvs` の `before.positions` は `Float32Array`。** 指示書は `Float64Array` だが、`mesh.positions` が `Float32Array` なので、控えをそのまま `Float32Array.from` で取れるようにした
+- **`recordPreserved` を core に足した（指示書に無い）。** 「動かし終わったらレシピに差分として記録する」を app で書くと、島と指紋の作り直しが app に漏れる。core に置いて `recordManual` を呼ぶ形にした
+- **3 本指のジェスチャは、つまんだ（スケールした）時点で「UV を保つ」をやめる。** 平行移動だけに効かせるという決めのため。同じジェスチャの中で移動 → スケールと続けても、スケールの分は UV に効かない
+- **`applyCulling` は面の材質（`MAT.surf` とチェッカー / ヒートマップ）だけを片面にする。** ワイヤと選択の重ね描きは両面のまま（裏側の選択が見えなくなると分かりにくいので）
+
+### 判断が要った点（確認してほしいところ）
+
+1. **「UV を保つ」の記録のしかた。** ドラッグ中は `map1` を直に書き換え、離した時点でレシピの差分（`manual`）として記録する。つまり **開き直しても残る**。ただし差分は「動かす前の解と比べた差」なので、そのあと切れ目を変えて島の指紋が変わると（今までの手の差分と同じく）落ちる
+2. **回転・スケールには効かない**（指示書どおり）。Maya も移動ツールのオプション
+3. **オブジェクトの移動にも効かない**（UV は変わらないため）
+4. **裏面を描かないの既定はオフ**（今までどおり両面）。Maya の既定に合わせるならオンにしてもよい
+5. **ブリッジの分割数は「編集」グループのブリッジのカットイン**（`state.lastEdit === "bridge"` のとき）に出る。ブリッジを一度も選んでいないと見えないので、置き場所を変えたければ言ってほしい
+
+### 残っていること
+
+- `22` の「次にできること」のうち、まだ手を付けていないもの（テクセル密度の表示、UV のシンメトリ、複数オブジェクトの UV など）
+- `19` の 3 章のレイヤー以降（マテリアル / スカルプトのモード）
+
+`23` は T1〜T6 すべて完了。次の指示書待ち。

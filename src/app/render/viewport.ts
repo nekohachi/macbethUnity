@@ -8,7 +8,9 @@ import {
   Box3,
   BufferGeometry,
   DirectionalLight,
+  DoubleSide,
   Float32BufferAttribute,
+  FrontSide,
   GridHelper,
   Group,
   HemisphereLight,
@@ -371,6 +373,24 @@ export class Viewport {
 
   applyDisplayAll(): void {
     for (const view of this.views.values()) this.applyDisplay(view);
+    this.applyCulling();
+  }
+
+  /**
+   * 裏面を描かない（`23` の T6）。面の材質だけを片面にする。
+   * ワイヤと選択の重ね描きは変えない（裏の選択が消えると分かりにくいので）。
+   */
+  applyCulling(): void {
+    const side = this.state.cullBack ? FrontSide : DoubleSide;
+    MAT.surf.side = side;
+    MAT.surf.needsUpdate = true;
+    for (const view of this.views.values()) {
+      for (const m of [view.checker, view.heat]) {
+        if (!m) continue;
+        m.side = side;
+        m.needsUpdate = true;
+      }
+    }
   }
 
   /** チェッカーの細かさや模様を変えた（`23` の T3）。材質を作り直す。 */
@@ -389,6 +409,11 @@ export class Viewport {
 
   gridVisible(): boolean {
     return this.grid.visible;
+  }
+
+  /** 面の材質の side。通し確認から裏面の設定を見るため（0 = 表だけ、2 = 両面）。 */
+  surfaceSide(): number {
+    return MAT.surf.side;
   }
 
   /* ---- 選択のオーバーレイ --------------------------------------------- */
