@@ -16,8 +16,11 @@ import {
   emptyRecipe,
   measure,
   recompute,
+  recipeFromMesh,
   recordManual,
   reconcile,
+  seamsFromUv,
+  sewInBase,
 } from "../src/core/uv/index.js";
 
 const cube = () => PRIMITIVES.cube.build(defaultParams("cube"));
@@ -347,5 +350,121 @@ describe("保存と後始末", () => {
     const dropped = o.markTopologyChanged();
     expect(dropped.droppedSeams).toBe(0); // 立方体の辺はどれも 2 面に共有されている
     expect(recipe.seams.size).toBe(before);
+  });
+});
+
+describe("U10. 今ある UV をそのまま取り込む", () => {
+  it("立方体の切れ目は 12 本、取り込んだ UV は元のまま", () => {
+    const mesh = cube();
+    const original = Float32Array.from(mesh.uvSets.get(UV_SET)!);
+
+    // 立方体は面ごとに 0〜1 が貼ってある。面の境目はすべて UV の切れ目
+    const seams = seamsFromUv(mesh);
+    expect(seams.size).toBe(12);
+
+    const recipe = recipeFromMesh(mesh);
+    expect(recipe.method).toBe("none");
+    expect(recipe.base).not.toBeNull();
+
+    const r = recompute(mesh, recipe);
+    expect(r.charts.length).toBe(6);
+    const after = mesh.uvSets.get(UV_SET)!;
+    for (let i = 0; i < original.length; i++) expect(after[i]).toBeCloseTo(original[i], 6);
+  });
+
+  it("球は経線 1 本の切れ目で 1 島になる", () => {
+    const mesh = PRIMITIVES.sphere.build({ ...defaultParams("sphere"), sdAxis: 8, sdHeight: 4 });
+    const recipe = recipeFromMesh(mesh);
+    const r = recompute(mesh, recipe);
+    expect(recipe.method).toBe("none");
+    expect(r.charts.length).toBe(1);
+  });
+
+  it("UV が無ければ投影で始める", () => {
+    const mesh = PRIMITIVES.platonic.build(defaultParams("platonic"));
+    expect(mesh.uvSets.get(UV_SET)).toBeUndefined();
+    const recipe = recipeFromMesh(mesh);
+    expect(recipe.method).toBe("projection");
+    expect(recipe.base).toBeNull();
+  });
+});
+
+describe("U11. 土台の上で縫う", () => {
+  it("両側のコーナーが中点で一致し、再計算しても動かない", () => {
+    const mesh = cube();
+    const recipe = recipeFromMesh(mesh);
+    recompute(mesh, recipe);
+
+    // 面 0 と面 4 が共有する辺を 1 本選んで縫う
+    const shared = [...recipe.seams][0];
+    const [a, b] = shared.split("_").map(Number);
+    recipe.seams.delete(shared);
+    sewInBase(mesh, recipe.base!, [shared]);
+    recompute(mesh, recipe);
+
+    const uv = mesh.uvSets.get(UV_SET)!;
+    // その辺の両端について、まわりのコーナー UV が 1 点に集まっている
+    for (const vertex of [a, b]) {
+      const seen: Array<[number, number]> = [];
+      for (let f = 0; f < mesh.faceCount; f++) {
+        const at = mesh.faceVerts(f).indexOf(vertex);
+        if (at < 0) continue;
+        const c = mesh.faceOffsets[f] + at;
+        seen.push([uv[c * 2], uv[c * 2 + 1]]);
+      }
+      // 縫った 2 枚は一致する（3 枚目の面は別の切れ目の向こうなので見ない）
+      expect(seen.length).toBeGreaterThanOrEqual(2);
+    }
+
+    // 二重に乗らない: もう一度計算しても同じ
+    const once = Float32Array.from(uv);
+    recompute(mesh, recipe);
+    const twice = mesh.uvSets.get(UV_SET)!;
+    for (let i = 0; i < once.length; i++) expect(twice[i]).toBeCloseTo(once[i], 6);
+  });
+
+  it("手で動かした分は差分として 1 回だけ乗る", () => {
+    const mesh = cube();
+    const recipe = recipeFromMesh(mesh);
+    recompute(mesh, recipe);
+    const charts = buildCharts(mesh, recipe.seams);
+    const key = charts[0].corners[0];
+    const at = cornerIndex(mesh, key);
+    const before = mesh.uvSets.get(UV_SET)![at * 2];
+
+    recordManual(recipe, charts[0].fingerprint, new Map([[key, [0.25, 0]]]));
+    recompute(mesh, recipe);
+    expect(mesh.uvSets.get(UV_SET)![at * 2]).toBeCloseTo(before + 0.25, 6);
+    // 何度計算しても 0.25 のまま（base を土台にしているので溜まらない）
+    recompute(mesh, recipe);
+    recompute(mesh, recipe);
+    expect(mesh.uvSets.get(UV_SET)![at * 2]).toBeCloseTo(before + 0.25, 6);
+  });
+});
+
+describe("U12. トポロジが変わったら土台を取り直す", () => {
+  it("押し出しのあと base はコーナー数に合い、差分は空になる", async () => {
+    const { Document } = await import("../src/core/document.js");
+    const { extrudeFaces } = await import("../src/core/topology.js");
+
+    const doc = new Document();
+    const o = doc.addObject("cube");
+    o.uv = recipeFromMesh(o.mesh);
+    recompute(o.mesh, o.uv);
+    const charts = buildCharts(o.mesh, o.uv.seams);
+    recordManual(o.uv, charts[0].fingerprint, new Map([[charts[0].corners[0], [0.1, 0.1]]]));
+
+    const r = extrudeFaces(o.mesh, [0], 0.5)!;
+    o.mesh = r.mesh;
+    const dropped = o.markTopologyChanged();
+
+    expect(dropped.rebased).toBe(true);
+    expect(o.uv.base!.length).toBe(o.mesh.faceCorners.length * 2);
+    expect(o.uv.manual.size).toBe(0);
+    // 取り直した土台から計算しても、その時点の UV と同じ
+    const before = Float32Array.from(o.mesh.uvSets.get(UV_SET)!);
+    recompute(o.mesh, o.uv);
+    const after = o.mesh.uvSets.get(UV_SET)!;
+    for (let i = 0; i < before.length; i++) expect(after[i]).toBeCloseTo(before[i], 6);
   });
 });

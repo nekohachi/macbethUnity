@@ -24,6 +24,8 @@ export interface PanelHost {
   onCutChange(key: "snapStep" | "edgeFlow", value: number | boolean): void;
   onSmoothAngleChange(value: number): void;
   onManipSizeChange(value: number): void;
+  onUvMethodChange(method: "lscm" | "projection" | "none"): void;
+  onUvSnapChange(key: "kind" | "step", value: string | number): void;
   onSelect(object: SceneObject): void;
   onRename(object: SceneObject, name: string): void;
   onOutlinerMenu(object: SceneObject, x: number, y: number): void;
@@ -122,6 +124,8 @@ export interface OptionsState {
   compMode: string;
   /** マニピュレータの見た目の大きさ（0.5〜2.0）。 */
   manipSize: number;
+  /** UV モードのときだけ。ソルバーとスナップ。 */
+  uv: { method: "lscm" | "projection" | "none"; snapKind: "grid" | "vertex"; snapStep: number } | null;
 }
 
 /** オプションパネルを描き直す。 */
@@ -153,6 +157,61 @@ function tripleRow(
 export function renderOptions(body: HTMLElement, state: OptionsState, host: PanelHost): void {
   body.textContent = "";
   const o = state.selected;
+
+  // UV モードの区画。ソルバーとスナップ（`17` の 1 章と 7.4）
+  if (state.uv) {
+    const s = section("展開", "UNFOLD");
+    const row = el("div", "row");
+    const group = el("div", "segmented");
+    for (const [key, label] of [
+      ["none", "取り込んだまま"],
+      ["lscm", "LSCM"],
+      ["projection", "投影"],
+    ] as const) {
+      const b = el("button", "seg") as HTMLButtonElement;
+      b.textContent = label;
+      b.setAttribute("aria-pressed", String(state.uv.method === key));
+      b.addEventListener("click", () => host.onUvMethodChange(key));
+      group.appendChild(b);
+    }
+    row.appendChild(group);
+    s.appendChild(row);
+    s.appendChild(
+      el(
+        "div",
+        "hint",
+        "「取り込んだまま」はメッシュが持っている UV をそのまま見せます。\n「展開」を押すと LSCM に切り替わります。",
+      ),
+    );
+    body.appendChild(s);
+
+    const sn = section(`スナップ${state.snap.active ? "（効いています）" : ""}`, "SNAP");
+    const srow = el("div", "row");
+    const sgroup = el("div", "segmented");
+    for (const [key, label, step] of [
+      ["grid", "1/8", 1 / 8],
+      ["grid", "1/16", 1 / 16],
+      ["grid", "1/32", 1 / 32],
+      ["vertex", "UV 頂点", 0],
+    ] as const) {
+      const b = el("button", "seg") as HTMLButtonElement;
+      b.textContent = label;
+      const on =
+        key === "vertex"
+          ? state.uv.snapKind === "vertex"
+          : state.uv.snapKind === "grid" && Math.abs(state.uv.snapStep - step) < 1e-9;
+      b.setAttribute("aria-pressed", String(on));
+      b.addEventListener("click", () => {
+        host.onUvSnapChange("kind", key);
+        if (key === "grid") host.onUvSnapChange("step", step);
+      });
+      sgroup.appendChild(b);
+    }
+    srow.appendChild(sgroup);
+    sn.appendChild(srow);
+    body.appendChild(sn);
+    return;
+  }
 
   // 数値入力（トランスフォーム）。選択があるときだけ
   if (o) {

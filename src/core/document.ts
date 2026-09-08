@@ -120,7 +120,14 @@ export class SceneObject {
   }
 
   /** トポロジを変えた。上位レベルとスカルプトレイヤーは対応関係を失うので破棄する（docs/03）。 */
-  markTopologyChanged(): { droppedLevels: number; droppedLayers: number; droppedSeams: number; droppedIslands: number } {
+  markTopologyChanged(): {
+    droppedLevels: number;
+    droppedLayers: number;
+    droppedSeams: number;
+    droppedIslands: number;
+    /** UV の土台を今の map1 で取り直したか（`17` の 1.2）。 */
+    rebased: boolean;
+  } {
     const droppedLevels = this.multires.length;
     const droppedLayers = this.sculptLayers.length;
     this.parametric = false;
@@ -128,7 +135,9 @@ export class SceneObject {
     this.sculptLayers = [];
     this.activeLevel = 0;
     // UV は全部捨てずに、対応が取れなくなった分だけ落とす（`15` の 2.4）
-    const uv = this.uv ? reconcile(this.uv, this.mesh) : { droppedSeams: 0, droppedIslands: 0 };
+    const uv = this.uv
+      ? reconcile(this.uv, this.mesh)
+      : { droppedSeams: 0, droppedIslands: 0, rebased: false };
     return { droppedLevels, droppedLayers, ...uv };
   }
 

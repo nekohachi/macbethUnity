@@ -1555,7 +1555,8 @@ check(
   "UV モード: 2D が出て、切って開いて、動かした分が残る",
   uv.paneShown &&
     uv.split &&
-    uv.started.charts === 1 &&
+    // 立方体は面ごとに UV を持っているので、取り込んだ時点で 6 島（docs/17 の 1 章）
+    uv.started.charts === 6 &&
     uv.opened.charts === 6 &&
     uv.opened.verts === 24 &&
     Math.abs(uv.shift) > 0.01 &&
@@ -1939,7 +1940,151 @@ check(
     `面数 ${slide.facesBefore} → ${slide.facesAfter}（押し出しではない）/ 半径そのまま ${slide.radiusOk}`,
 );
 
-/* 34. 例外が出ていない */
+/* 34. UV モードに入っても UV を作り直さない。展開して初めて開く（docs/17 の 1 章） */
+const uvImport = await page.evaluate(() => {
+  const app = window.macbeth;
+  const objectsBefore = app.state.doc.objects.length;
+  const object = app.state.doc.addObject("cube");
+  app.viewport.syncAll();
+  app.state.select(object);
+
+  const original = [...object.mesh.uvSets.get("map1")];
+  app.setMode("uv");
+  const method = object.uv.method;
+  const seams = object.uv.seams.size;
+  const charts = app.uv.stats().charts;
+  const kept = original.every((v, i) => Math.abs(v - object.mesh.uvSets.get("map1")[i]) < 1e-6);
+
+  // 立方体の面ごとの UV は 6 枚とも 0〜1 の正方形のまま
+  let boxesOk = true;
+  for (const chart of app.uv.view.uvTopology.charts) {
+    let minU = Infinity, maxU = -Infinity, minV = Infinity, maxV = -Infinity;
+    const uv = object.mesh.uvSets.get("map1");
+    for (const key of chart.corners) {
+      const [f, at] = key.split(":").map(Number);
+      const c = object.mesh.faceOffsets[f] + at;
+      minU = Math.min(minU, uv[c * 2]);
+      maxU = Math.max(maxU, uv[c * 2]);
+      minV = Math.min(minV, uv[c * 2 + 1]);
+      maxV = Math.max(maxV, uv[c * 2 + 1]);
+    }
+    if (Math.abs(maxU - minU - 1) > 1e-4 || Math.abs(maxV - minV - 1) > 1e-4) boxesOk = false;
+  }
+
+  // 展開するとソルバーが LSCM に変わる
+  app.uv.unfold();
+  const afterMethod = object.uv.method;
+  const changed = !original.every((v, i) => Math.abs(v - object.mesh.uvSets.get("map1")[i]) < 1e-6);
+
+  app.setMode("model");
+  app.state.select(null);
+  app.state.doc.objects.length = objectsBefore;
+  app.viewport.syncAll();
+  return { method, seams, charts, kept, boxesOk, afterMethod, changed };
+});
+check(
+  "UV モードに入っても今の UV は変わらない",
+  uvImport.method === "none" &&
+    uvImport.seams === 12 &&
+    uvImport.charts === 6 &&
+    uvImport.kept &&
+    uvImport.boxesOk &&
+    uvImport.afterMethod === "lscm" &&
+    uvImport.changed,
+  `取り込み ${uvImport.method} / 切れ目 ${uvImport.seams} 本 / 島 ${uvImport.charts} / ` +
+    `そのまま ${uvImport.kept} / 0〜1 の正方形 ${uvImport.boxesOk} / 展開後 ${uvImport.afterMethod}`,
+);
+
+/* 34b. 単位ごとのカット / ソーと UV のグリッドスナップ（docs/17 の 2.3、7.4） */
+const uvOps = await page.evaluate(() => {
+  const app = window.macbeth;
+  const objectsBefore = app.state.doc.objects.length;
+  const object = app.state.doc.addObject("plane");
+  object.params.sdW = 2;
+  object.params.sdH = 2;
+  object.rebuild();
+  app.viewport.syncAll();
+  app.state.select(object);
+  app.setCompMode("face");
+  app.setMode("uv");
+
+  // 板の UV は 1 枚続き。3D で面を 1 枚選んでカットすると、その面が独立する
+  const started = app.uv.stats().charts;
+  app.state.comp.clear();
+  app.state.comp.add(0);
+  app.uv.syncFromView([0]);
+  app.uv.cutOrSew(true);
+  const afterCut = app.uv.stats().charts;
+
+  // ソーで戻す（選んだ面どうしの間の切れ目を縫うので、全面を選ぶ）
+  app.state.comp.clear();
+  for (let f = 0; f < object.mesh.faceCount; f++) app.state.comp.add(f);
+  app.uv.syncFromView([...app.state.comp]);
+  app.uv.cutOrSew(false);
+  const afterSew = app.uv.stats().charts;
+
+  // グリッドスナップ 1/8。島の真ん中を押して 0.07 だけ引く
+  app.state.uvSnap = { kind: "grid", step: 1 / 8 };
+  app.state.snapOn = true;
+  app.uv.setUnit("shell");
+  app.uv.chosen.clear();
+  app.uv.chosen.add(0);
+  const uvSet = () => object.mesh.uvSets.get("map1");
+  const corners = app.uv.view.uvTopology.charts[0].corners.map((key) => {
+    const [f, at] = key.split(":").map(Number);
+    return object.mesh.faceOffsets[f] + at;
+  });
+  const before = corners.map((c) => uvSet()[c * 2]);
+  let cu = 0;
+  let cv = 0;
+  for (const c of corners) {
+    cu += uvSet()[c * 2];
+    cv += uvSet()[c * 2 + 1];
+  }
+  cu /= corners.length;
+  cv /= corners.length;
+
+  const canvas = document.getElementById("uvgl");
+  const rect = document.getElementById("paneUv").getBoundingClientRect();
+  const at = app.uv.view.toScreen(cu, cv);
+  const dx = 0.07 / app.uv.view.pixelToUv();
+  const fire = (type, x, y) =>
+    canvas.dispatchEvent(
+      new PointerEvent(type, {
+        pointerId: 90,
+        pointerType: "mouse",
+        isPrimary: true,
+        clientX: x,
+        clientY: y,
+        button: 0,
+        buttons: type === "pointerup" ? 0 : 1,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+  fire("pointerdown", rect.x + at.x, rect.y + at.y);
+  for (let i = 1; i <= 8; i++) fire("pointermove", rect.x + at.x + (dx * i) / 8, rect.y + at.y);
+  fire("pointerup", rect.x + at.x + dx, rect.y + at.y);
+
+  const after = corners.map((c) => uvSet()[c * 2]);
+  const moved = after.some((u, i) => Math.abs(u - before[i]) > 1e-6);
+  const onGrid = after.every((u) => Math.abs(u / (1 / 8) - Math.round(u / (1 / 8))) < 1e-4);
+  app.state.snapOn = false;
+
+  app.setMode("model");
+  app.state.select(null);
+  app.state.doc.objects.length = objectsBefore;
+  app.viewport.syncAll();
+  return { started, afterCut, afterSew, moved, onGrid, sample: [before[0], after[0]] };
+});
+check(
+  "UV のカット / ソーと 1/8 グリッドスナップ",
+  uvOps.started === 1 && uvOps.afterCut === 2 && uvOps.afterSew === 1 && uvOps.moved && uvOps.onGrid,
+  `島 ${uvOps.started} → カット ${uvOps.afterCut} → ソー ${uvOps.afterSew} / ` +
+    `U ${uvOps.sample[0].toFixed(3)} → ${uvOps.sample[1].toFixed(3)}（1/8 に乗る ${uvOps.onGrid}）`,
+);
+
+/* 35. 例外が出ていない */
 check("例外なし", errors.length === 0, errors.join(" / "));
 
 await page.screenshot({ path: SHOT });

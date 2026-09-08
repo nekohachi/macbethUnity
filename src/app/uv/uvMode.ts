@@ -8,10 +8,12 @@
 import {
   UV_SET,
   chartMesh,
+  edgeKey,
   cornerIndex,
   measure,
   recompute,
   recordManual,
+  sewInBase,
   type CornerKey,
   type SceneObject,
   type UvRecipe,
@@ -53,6 +55,10 @@ export interface UvHost {
   redo(): void;
   shiftOn(e: PointerEvent): boolean;
   ctrlOn(e: PointerEvent): boolean;
+  /** UV のスナップ。効いていなければ null（`17` の 7.4）。 */
+  uvSnap(): { kind: "grid" | "vertex"; step: number } | null;
+  /** 3D 側で選ばれている面。島の一部だけを切りたいときに使う。 */
+  selectedFaces(): number[];
 }
 
 export class UvMode {
@@ -298,47 +304,145 @@ export class UvMode {
   /* ---- 操作 ------------------------------------------------------------ */
 
   /** レシピどおりに開き直す。 */
+  /**
+   * 展開する。取り込んだままの UV（`method: "none"`）はここで初めて
+   * ソルバーに渡る。UV モードに入っただけでは開き直さない（`17` の 1 章）。
+   */
   unfold(): void {
     const object = this.host.object();
     const recipe = this.host.recipe();
     if (!object || !recipe) return;
     const snapshot = this.host.snapshot();
+    const wasImported = recipe.method === "none";
+    if (wasImported) recipe.method = "lscm";
     const r = recompute(object.mesh, recipe);
     this.host.commit("展開", snapshot);
     this.rebuild();
-    this.host.changed(`展開 — 島 ${r.charts.length} / 伸び ×${r.maxStretch.toFixed(2)}`);
+    this.host.changed(
+      `展開 — 島 ${r.charts.length} / 伸び ×${r.maxStretch.toFixed(2)}` +
+        (wasImported ? "（LSCM に切り替えた）" : ""),
+    );
   }
 
-  /** 選んだエッジを切る / 縫う。 */
+  /** ソルバーを変える。オプションパネルから。 */
+  setMethod(method: UvRecipe["method"]): void {
+    const object = this.host.object();
+    const recipe = this.host.recipe();
+    if (!object || !recipe || recipe.method === method) return;
+    const snapshot = this.host.snapshot();
+    recipe.method = method;
+    // 「なし」に戻すなら、今見えている UV を土台として控え直す
+    if (method === "none") {
+      const uv = object.mesh.uvSets.get(UV_SET);
+      if (uv) {
+        recipe.base = Float32Array.from(uv);
+        recipe.manual.clear();
+      }
+    }
+    recompute(object.mesh, recipe);
+    this.host.commit("ソルバーの変更", snapshot);
+    this.rebuild();
+    this.host.changed({ lscm: "LSCM", projection: "投影", none: "なし" }[method]);
+  }
+
+  /**
+   * 選んでいるものを切る / 縫う。単位ごとに意味が変わる（`17` の 2.3）。
+   *
+   * - エッジ: 選んだ辺そのもの
+   * - 頂点: 両端が選ばれている辺。1 点だけならその点のまわりを全部（分離）
+   * - シェル / 面: 選んだ面と外との境（カット）、選んだ面どうしの切れ目（ソー）
+   */
   cutOrSew(cut: boolean): void {
+    const object = this.host.object();
     const recipe = this.host.recipe();
     const t = this.view.uvTopology;
-    if (!recipe || !t) return;
-    if (this.unit !== "edge" || !this.chosen.size) {
-      this.host.toast("UV エッジを選んでから実行してください");
+    if (!object || !recipe || !t) return;
+    if (!this.chosen.size) {
+      this.host.toast("先に選んでから実行してください");
       return;
     }
+
+    const targets = this.edgesForCutSew(cut);
     const snapshot = this.host.snapshot();
-    let count = 0;
-    for (const e of this.chosen) {
-      const key = t.edgeKeys[e];
-      if (!key) continue;
+    const touched: string[] = [];
+    for (const key of targets) {
       if (cut ? !recipe.seams.has(key) : recipe.seams.has(key)) {
         if (cut) recipe.seams.add(key);
         else recipe.seams.delete(key);
-        count++;
+        touched.push(key);
       }
     }
-    if (!count) {
+    if (!touched.length) {
       this.host.toast(cut ? "すでに切れています" : "切れ目ではありません");
       return;
     }
-    const object = this.host.object()!;
+    // 取り込んだままの UV は、切れ目を消しただけでは繋がらない。土台の上で縫う
+    if (!cut && recipe.method === "none" && recipe.base) {
+      sewInBase(object.mesh, recipe.base, touched);
+    }
     recompute(object.mesh, recipe);
     this.host.commit(cut ? "カット" : "ソー", snapshot);
     this.chosen.clear();
     this.rebuild();
-    this.host.changed(`${cut ? "カット" : "ソー"} — ${count} 本`);
+    this.host.changed(`${cut ? "カット" : "ソー"} — ${touched.length} 本`);
+  }
+
+  /** 今の単位と選択から、切る / 縫う対象の辺を集める。 */
+  private edgesForCutSew(cut: boolean): string[] {
+    const object = this.host.object();
+    const t = this.view.uvTopology;
+    if (!object || !t) return [];
+
+    if (this.unit === "edge") {
+      return [...this.chosen].map((e) => t.edgeKeys[e]).filter((k): k is string => !!k);
+    }
+
+    if (this.unit === "vertex") {
+      // 選んだ UV 頂点に対応する 3D 頂点を集める
+      const verts = new Set<number>();
+      for (const v of this.chosen) {
+        for (const key of t.vertexCorners[v] ?? []) {
+          const [f, at] = key.split(":").map(Number);
+          const list = object.mesh.faceVerts(f);
+          if (list[at] !== undefined) verts.add(list[at]);
+        }
+      }
+      const keys = new Set<string>();
+      for (const [a, b] of object.mesh.edges()) {
+        // 2 点以上選んでいれば「両端とも選ばれている辺」、
+        // 1 点だけならその点のまわり全部（Maya の Split UVs にあたる）
+        const both = verts.has(a) && verts.has(b);
+        const around = verts.size === 1 && (verts.has(a) || verts.has(b));
+        if (both || around) keys.add(edgeKey(a, b));
+      }
+      return [...keys].sort();
+    }
+
+    // シェル / 面。3D で面を選んでいればそれを、無ければ島ぜんぶを対象にする。
+    // 島ぜんぶだと「中と外の境」が無いので、カットは 3D の面選択と組で使う
+    const fromView = this.host.selectedFaces();
+    const faces = new Set(fromView.length ? fromView : this.facesOfSelection());
+    const inside = (f: number): boolean => faces.has(f);
+    const byEdge = new Map<string, number[]>();
+    for (let f = 0; f < object.mesh.faceCount; f++) {
+      const n = object.mesh.faceSize(f);
+      const verts = object.mesh.faceVerts(f);
+      for (let i = 0; i < n; i++) {
+        const key = edgeKey(verts[i], verts[(i + 1) % n]);
+        const list = byEdge.get(key);
+        if (list) list.push(f);
+        else byEdge.set(key, [f]);
+      }
+    }
+    const keys: string[] = [];
+    for (const [key, uses] of byEdge) {
+      if (uses.length !== 2) continue;
+      const [a, b] = uses;
+      // カットは「選んだ面と外との境」、ソーは「選んだ面どうしの間」
+      const wanted = cut ? inside(a) !== inside(b) : inside(a) && inside(b);
+      if (wanted) keys.push(key);
+    }
+    return keys.sort();
   }
 
   /** 選んだ UV 頂点をピン留めする / 外す。 */
@@ -505,11 +609,82 @@ export class UvMode {
       drag.pending = false;
     }
     const k = this.view.pixelToUv();
-    const du = (p.x - drag.start.x) * k;
-    const dv = -(p.y - drag.start.y) * k;
+    let du = (p.x - drag.start.x) * k;
+    let dv = -(p.y - drag.start.y) * k;
+
+    // スナップ。基準コーナー（押した点にいちばん近い）の行き先を寄せ、
+    // 選択全体を同じ差だけ動かす（`17` の 7.4）
+    const snap = this.host.uvSnap();
+    if (snap && drag.base.size) {
+      const anchor = this.anchorCorner(drag, p);
+      if (anchor) {
+        const wanted: [number, number] = [anchor[1][0] + du, anchor[1][1] + dv];
+        const landed =
+          snap.kind === "grid"
+            ? ([Math.round(wanted[0] / snap.step) * snap.step, Math.round(wanted[1] / snap.step) * snap.step] as [
+                number,
+                number,
+              ])
+            : this.nearestUvVertex(wanted, drag.base);
+        if (landed) {
+          du = landed[0] - anchor[1][0];
+          dv = landed[1] - anchor[1][1];
+        }
+      }
+    }
+
     if (Math.abs(du) > 1e-9 || Math.abs(dv) > 1e-9) drag.moved = true;
     this.applyOffset(drag.base, du, dv);
-    this.host.hint(`移動 <kbd>${du.toFixed(3)}, ${dv.toFixed(3)}</kbd>`);
+    this.host.hint(
+      (snap ? `スナップ ${snap.kind === "grid" ? "グリッド" : "UV 頂点"} · ` : "") +
+        `移動 <kbd>${du.toFixed(3)}, ${dv.toFixed(3)}</kbd>`,
+    );
+  }
+
+  /** 押した点にいちばん近い選択コーナー。スナップの基準にする。 */
+  private anchorCorner(
+    drag: { base: Map<CornerKey, [number, number]> },
+    p: ScreenPoint,
+  ): [CornerKey, [number, number]] | null {
+    let best: [CornerKey, [number, number]] | null = null;
+    let bestD = Infinity;
+    for (const [key, uv] of drag.base) {
+      const s = this.view.toScreen(uv[0], uv[1]);
+      const d = Math.hypot(s.x - p.x, s.y - p.y);
+      if (d < bestD) {
+        bestD = d;
+        best = [key, uv];
+      }
+    }
+    return best;
+  }
+
+  /** 選んでいないコーナーのうち、画面で 40px 以内のいちばん近い UV。 */
+  private nearestUvVertex(
+    at: [number, number],
+    exclude: Map<CornerKey, [number, number]>,
+  ): [number, number] | null {
+    const object = this.host.object();
+    const t = this.view.uvTopology;
+    if (!object || !t) return null;
+    const uv = object.mesh.uvSets.get(UV_SET);
+    if (!uv) return null;
+    const target = this.view.toScreen(at[0], at[1]);
+    let best: [number, number] | null = null;
+    let bestD = 40;
+    for (let v = 0; v < t.vertexCorners.length; v++) {
+      const keys = t.vertexCorners[v] ?? [];
+      if (!keys.length || keys.some((k) => exclude.has(k))) continue;
+      const c = cornerIndex(object.mesh, keys[0]);
+      if (c < 0) continue;
+      const s = this.view.toScreen(uv[c * 2], uv[c * 2 + 1]);
+      const d = Math.hypot(s.x - target.x, s.y - target.y);
+      if (d < bestD) {
+        bestD = d;
+        best = [uv[c * 2], uv[c * 2 + 1]];
+      }
+    }
+    return best;
   }
 
   private up(_p: ScreenPoint, _e: PointerEvent, _moved: boolean): void {

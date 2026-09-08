@@ -11,7 +11,7 @@ import {
   bridgeEdges,
   cloneTransform,
   combineMeshes,
-  emptyRecipe,
+  recipeFromMesh,
   recompute,
   type CameraBookmark,
   connectEdges,
@@ -1216,6 +1216,7 @@ export class App {
     if (dropped.droppedLevels || dropped.droppedLayers) {
       note += ` · 上位レベル ${dropped.droppedLevels} とレイヤー ${dropped.droppedLayers} を破棄`;
     }
+    if (dropped.rebased) note += " · UV の土台を取り直した";
     this.hud.toast(note);
   }
 
@@ -1751,8 +1752,16 @@ export class App {
       { kind: "separator" },
       { kind: "label", text: "UV" },
       { kind: "button", icon: ICONS.smooth, title: "展開（レシピから開き直す）", onTap: () => uv.unfold() },
-      { kind: "button", icon: ICONS.multicut, title: "カット（選んだ UV エッジを切る）", onTap: () => uv.cutOrSew(true) },
+      { kind: "button", icon: ICONS.multicut, title: "カット（選んだところを切る）", onTap: () => uv.cutOrSew(true) },
       { kind: "button", icon: ICONS.vEdge, title: "ソー（選んだ切れ目を縫う）", onTap: () => uv.cutOrSew(false) },
+      {
+        kind: "button",
+        icon: ICONS.snap,
+        title: "スナップ（長押しで グリッド / UV 頂点）",
+        pressed: () => this.state.snapOn,
+        radial: () => this.uvSnapMenu(),
+        onTap: () => this.toggleSnap(),
+      },
       { kind: "separator" },
       { kind: "button", icon: ICONS.frame, title: "選択にフレーム", onTap: () => uv.frame() },
     ];
@@ -1809,13 +1818,17 @@ export class App {
         redo: () => this.doRedo(),
         shiftOn: (e) => this.state.modOn("shift") || e.shiftKey,
         ctrlOn: (e) => this.state.modOn("ctrl") || e.ctrlKey || e.metaKey,
+        uvSnap: () => (this.state.snapping ? this.state.uvSnap : null),
+        selectedFaces: () => (this.state.compMode === "face" ? [...this.state.comp] : []),
       });
       this.buildUvSwitch();
     }
-    // レシピが無ければここで用意する。切れ目ゼロ = 1 島から始まる
+    // レシピが無ければ、今ある UV をそのまま取り込む（`17` の 1 章）。
+    // ここで開き直すとプリミティブの UV が消えてしまう
+    let imported: number | null = null;
     if (object && !object.uv) {
-      object.uv = emptyRecipe();
-      recompute(object.mesh, object.uv);
+      object.uv = recipeFromMesh(object.mesh);
+      imported = recompute(object.mesh, object.uv).charts.length;
       this.viewport.rebuildObject(object);
     }
     byId("paneUv").hidden = false;
@@ -1826,6 +1839,11 @@ export class App {
     this.hud.uvNote = this.uv.stats();
     // 3D で面を選んでいたら、その島を選んでおく
     if (this.state.compMode === "face" && this.state.comp.size) this.uv.syncFromView(this.state.comp);
+    if (imported !== null) {
+      this.hud.toast(
+        `今の UV を取り込んだ — 島 ${imported}（「展開」を押すまで開き直しません）`,
+      );
+    }
   }
 
   private leaveUv(): void {
@@ -1876,38 +1894,59 @@ export class App {
   /** UV の選択モード。マーキングメニュー（`15` の 6.2）。 */
   private uvSelectMenu(): RadialMenu {
     const go = (unit: UvUnit) => () => this.uv?.setUnit(unit);
+    const uv = this.uv;
     return {
       N: { label: "UV エッジ", sub: "UV Edge", icon: ICONS.vEdge, run: go("edge") },
       NE: { label: "オブジェクト", sub: "Object", icon: ICONS.vObj, run: () => this.setMode("model") },
       E: { label: "UV シェル", sub: "Shell", icon: ICONS.vFace, run: go("shell") },
+      // 選択メニューからもカット / ソーに届くようにする（`17` の 2.1）
+      SE: { label: "カット", sub: "Cut", icon: ICONS.multicut, run: () => uv?.cutOrSew(true) },
       S: { label: "面（3D と同期）", sub: "Face", icon: ICONS.vFace, run: go("shell") },
+      SW: { label: "ソー", sub: "Sew", icon: ICONS.vEdge, run: () => uv?.cutOrSew(false) },
       W: { label: "UV 頂点", sub: "UV Vertex", icon: ICONS.vVert, run: go("vertex") },
     };
   }
 
-  /** UV の編集メニュー。単位ごとに中身が変わる（`15` の 6.3）。 */
+  /**
+   * UV の編集メニュー。単位ごとに中身が変わる（`17` の 2.2）。
+   * 北 / 北東 / 東 は「展開 / カット / ソー」で固定する。指が位置を覚えられるように。
+   */
   private uvEditMenu(): RadialMenu {
     const uv = this.uv;
     if (!uv) return {};
+    const todo = (name: string) => () => this.hud.toast(`${name} は未実装です`);
+    const head: RadialMenu = {
+      N: { label: "展開", sub: "Unfold", icon: ICONS.smooth, run: () => uv.unfold() },
+      NE: { label: "カット", sub: "Cut", icon: ICONS.multicut, run: () => uv.cutOrSew(true) },
+      E: { label: "ソー", sub: "Sew", icon: ICONS.vEdge, run: () => uv.cutOrSew(false) },
+    };
     if (uv.unit === "edge") {
       return {
-        N: { label: "カット", sub: "Cut", icon: ICONS.multicut, run: () => uv.cutOrSew(true) },
-        NE: { label: "ソー", sub: "Sew", icon: ICONS.vEdge, run: () => uv.cutOrSew(false) },
-        S: { label: "展開", sub: "Unfold", icon: ICONS.smooth, run: () => uv.unfold() },
+        ...head,
+        SE: { label: "移動してソー", sub: "Move and Sew", icon: ICONS.vEdge, run: todo("移動してソー") },
+        S: { label: "直線化", sub: "Straighten", icon: ICONS.vEdge, run: todo("直線化") },
+        SW: { label: "整列 U", sub: "Align U", icon: ICONS.vMulti, run: todo("整列 U") },
+        W: { label: "整列 V", sub: "Align V", icon: ICONS.vMulti, run: todo("整列 V") },
+        NW: { label: "ループ選択", sub: "Loop", icon: ICONS.vEdge, run: todo("UV のループ選択") },
       };
     }
     if (uv.unit === "vertex") {
       return {
-        N: { label: "ピン", sub: "Pin", icon: ICONS.vVert, run: () => uv.pinOrUnpin(true) },
-        NE: { label: "ピン解除", sub: "Unpin", icon: ICONS.vVert, run: () => uv.pinOrUnpin(false) },
-        S: { label: "展開", sub: "Unfold", icon: ICONS.smooth, run: () => uv.unfold() },
+        ...head,
+        SE: { label: "ピン", sub: "Pin", icon: ICONS.vVert, run: () => uv.pinOrUnpin(true) },
+        S: { label: "ピン解除", sub: "Unpin", icon: ICONS.vVert, run: () => uv.pinOrUnpin(false) },
+        SW: { label: "整列 U", sub: "Align U", icon: ICONS.vMulti, run: todo("整列 U") },
+        W: { label: "整列 V", sub: "Align V", icon: ICONS.vMulti, run: todo("整列 V") },
+        NW: { label: "対称", sub: "Symmetry", icon: ICONS.sym, run: todo("UV の対称") },
       };
     }
     return {
-      N: { label: "展開", sub: "Unfold", icon: ICONS.smooth, run: () => uv.unfold() },
-      SE: { label: "反転 U", sub: "Flip U", icon: ICONS.sym, run: () => uv.transformSelection("flipU") },
-      S: { label: "反転 V", sub: "Flip V", icon: ICONS.sym, run: () => uv.transformSelection("flipV") },
-      SW: { label: "90° 回転", sub: "Rotate", icon: ICONS.rotate, run: () => uv.transformSelection("rotate90") },
+      ...head,
+      SE: { label: "自動 UV", sub: "Auto", icon: ICONS.mUV, run: todo("自動 UV") },
+      S: { label: "整列", sub: "Layout", icon: ICONS.vMulti, run: todo("整列（パッキング）") },
+      SW: { label: "反転 U", sub: "Flip U", icon: ICONS.sym, run: () => uv.transformSelection("flipU") },
+      W: { label: "反転 V", sub: "Flip V", icon: ICONS.sym, run: () => uv.transformSelection("flipV") },
+      NW: { label: "90° 回転", sub: "Rotate", icon: ICONS.rotate, run: () => uv.transformSelection("rotate90") },
     };
   }
 
@@ -1936,6 +1975,50 @@ export class App {
       E: { label: "頂点", sub: "Point  V", icon: ICONS.vVert, run: () => this.setSnapKind("vertex") },
       S: { label: "カーブ / エッジ", sub: "Curve  C", icon: ICONS.vEdge, run: () => this.setSnapKind("edge") },
       W: { label: "サーフェス", sub: "Surface", icon: ICONS.vFace, run: () => this.setSnapKind("surface") },
+      SW: {
+        label: "オフ",
+        sub: "Off",
+        icon: ICONS.snap,
+        run: () => {
+          this.state.snapOn = false;
+          this.syncToggleButtons();
+          this.refresh();
+          this.hud.toast("スナップ オフ");
+        },
+      },
+    };
+  }
+
+  /** UV のスナップ。行き先はグリッドと UV 頂点だけ（`17` の 7.4）。 */
+  private uvSnapMenu(): RadialMenu {
+    const grid = (step: number, label: string): RadialItem => ({
+      label,
+      sub: "Grid",
+      icon: ICONS.wire,
+      run: () => {
+        this.state.uvSnap = { kind: "grid", step };
+        this.state.snapOn = true;
+        this.syncToggleButtons();
+        this.refresh();
+        this.hud.toast(`UV スナップ: グリッド ${label}`);
+      },
+    });
+    return {
+      N: grid(1 / 8, "1/8"),
+      NE: grid(1 / 16, "1/16"),
+      E: grid(1 / 32, "1/32"),
+      S: {
+        label: "UV 頂点",
+        sub: "UV Point",
+        icon: ICONS.vVert,
+        run: () => {
+          this.state.uvSnap = { ...this.state.uvSnap, kind: "vertex" };
+          this.state.snapOn = true;
+          this.syncToggleButtons();
+          this.refresh();
+          this.hud.toast("UV スナップ: UV 頂点");
+        },
+      },
       SW: {
         label: "オフ",
         sub: "Off",
@@ -2083,6 +2166,7 @@ export class App {
     if (dropped.droppedLevels || dropped.droppedLayers) {
       note += ` · 上位レベル ${dropped.droppedLevels} とレイヤー ${dropped.droppedLayers} を破棄`;
     }
+    if (dropped.rebased) note += " · UV の土台を取り直した";
     this.hud.toast(note);
   }
 
@@ -2813,6 +2897,17 @@ export class App {
         for (const o of this.state.doc.objects) this.viewport.rebuildObject(o);
       },
       onManipSizeChange: (value) => this.setManipSize(value),
+      onUvMethodChange: (method) => {
+        this.uv?.setMethod(method);
+        this.refresh();
+      },
+      onUvSnapChange: (key, value) => {
+        if (key === "kind") this.state.uvSnap.kind = value as "grid" | "vertex";
+        else this.state.uvSnap.step = value as number;
+        this.state.snapOn = true;
+        this.syncToggleButtons();
+        this.refresh();
+      },
       onSelect: (o) => {
         this.state.select(o);
         this.viewport.applyDisplayAll();
@@ -2886,6 +2981,14 @@ export class App {
           smoothAngle: this.state.smoothAngle,
           compMode: this.state.compMode,
           manipSize: this.state.manipSize,
+          uv:
+            this.state.mode === "uv" && this.state.selected?.uv
+              ? {
+                  method: this.state.selected.uv.method,
+                  snapKind: this.state.uvSnap.kind,
+                  snapStep: this.state.uvSnap.step,
+                }
+              : null,
         },
         host,
       );

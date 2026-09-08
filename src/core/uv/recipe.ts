@@ -32,6 +32,12 @@ export interface UvRecipe {
   /** 固定する UV。ソルバーはここを動かさない。 */
   pins: Map<CornerKey, [number, number]>;
   method: UvMethod;
+  /**
+   * 取り込んだ UV（コーナーごと。長さはコーナー数 × 2）。
+   * `method: "none"` のときの土台。ここに `manual` を乗せた結果が `map1` になる。
+   * `map1` を土台にすると、再計算のたびに手の差分が二重に乗ってしまう。
+   */
+  base: Float32Array | null;
   packing: { margin: number; allowRotate: boolean; texelDensity: number | null };
   /** 手で動かした差分。島の指紋 → コーナーごとの (du, dv)。 */
   manual: Map<string, Map<CornerKey, [number, number]>>;
@@ -51,6 +57,7 @@ export function emptyRecipe(): UvRecipe {
     seams: new Set(),
     pins: new Map(),
     method: "lscm",
+    base: null,
     packing: { margin: 1 / 128, allowRotate: true, texelDensity: null },
     manual: new Map(),
     autoSeamParams: {
@@ -72,6 +79,7 @@ export function cloneRecipe(recipe: UvRecipe): UvRecipe {
     seams: new Set(recipe.seams),
     pins: new Map([...recipe.pins].map(([k, p]) => [k, [p[0], p[1]] as [number, number]])),
     method: recipe.method,
+    base: recipe.base ? Float32Array.from(recipe.base) : null,
     packing: { ...recipe.packing },
     manual,
     autoSeamParams: { ...recipe.autoSeamParams },
@@ -98,8 +106,9 @@ export function recompute(mesh: Mesh, recipe: UvRecipe, options: { skipPack?: bo
   const distortion: Distortion[] = [];
   const boxes: Array<{ min: [number, number]; max: [number, number] }> = [];
 
-  // 「なし」は今の UV を土台にする。手の差分だけで動かしたい人向け
-  const previous = mesh.uvSets.get(UV_SET);
+  // 「なし」は取り込んだ UV（base）を土台にする。base が無ければ今の map1
+  // （古い保存物のため）。map1 を土台にすると手の差分が二重に乗る
+  const previous = recipe.base ?? mesh.uvSets.get(UV_SET);
 
   for (const chart of charts) {
     const local = chartMesh(mesh, chart, recipe.seams);
@@ -214,6 +223,113 @@ function layout(
   });
 }
 
+/**
+ * 今ある UV の切れ目を読み取る（`17` の 1.2）。
+ *
+ * 2 枚の面が共有する辺で、辺の両端のコーナー UV が面をまたいで合わなければ切れ目。
+ * 境界の辺（面が 1 枚）は切れ目にしない（島の縁は切れ目が無くても縁）。
+ */
+export function seamsFromUv(mesh: Mesh, eps = 1e-6): Set<EdgeKey> {
+  const seams = new Set<EdgeKey>();
+  const uv = mesh.uvSets.get(UV_SET);
+  if (!uv) return seams;
+
+  // 辺 → その辺を含む (面, その面での位置) の一覧
+  const byEdge = new Map<EdgeKey, Array<[number, number]>>();
+  for (let f = 0; f < mesh.faceCount; f++) {
+    const n = mesh.faceSize(f);
+    for (let i = 0; i < n; i++) {
+      const key = faceEdgeKey(mesh, f, i);
+      const list = byEdge.get(key);
+      if (list) list.push([f, i]);
+      else byEdge.set(key, [[f, i]]);
+    }
+  }
+
+  for (const [key, uses] of byEdge) {
+    if (uses.length !== 2) continue;
+    const [a, b] = key.split("_").map(Number);
+    // 面ごとに、その辺の両端の頂点に当たるコーナーの UV を取る
+    const uvOf = (f: number, vertex: number): [number, number] | null => {
+      const verts = mesh.faceVerts(f);
+      const at = verts.indexOf(vertex);
+      if (at < 0) return null;
+      const corner = mesh.faceOffsets[f] + at;
+      return [uv[corner * 2], uv[corner * 2 + 1]];
+    };
+    let split = false;
+    for (const vertex of [a, b]) {
+      const p = uvOf(uses[0][0], vertex);
+      const q = uvOf(uses[1][0], vertex);
+      if (!p || !q) continue;
+      if (Math.abs(p[0] - q[0]) > eps || Math.abs(p[1] - q[1]) > eps) split = true;
+    }
+    if (split) seams.add(key);
+  }
+  return seams;
+}
+
+/**
+ * 今のメッシュの UV をそのまま受け継ぐレシピを作る（`17` の 1 章）。
+ *
+ * UV モードに入っただけで開き直さないための入口。プリミティブが持っている
+ * UV（立方体なら面ごとに 0〜1、球なら経緯度）はそのまま見える。
+ * UV が無ければ投影で当座の UV を作る。
+ */
+export function recipeFromMesh(mesh: Mesh): UvRecipe {
+  const recipe = emptyRecipe();
+  const uv = mesh.uvSets.get(UV_SET);
+  if (!uv) {
+    recipe.method = "projection";
+    return recipe;
+  }
+  recipe.method = "none";
+  recipe.base = Float32Array.from(uv);
+  for (const key of seamsFromUv(mesh)) recipe.seams.add(key);
+  return recipe;
+}
+
+/**
+ * 土台の UV の上で辺を縫う（Maya の Sew）。`method: "none"` のとき、
+ * 切れ目を消しただけでは UV は動かないので、両側のコーナーを中点へ寄せる。
+ */
+export function sewInBase(mesh: Mesh, base: Float32Array, edges: Iterable<EdgeKey>): void {
+  const wanted = new Set(edges);
+  if (!wanted.size) return;
+
+  // 辺 → (面, その面での位置)
+  const byEdge = new Map<EdgeKey, Array<[number, number]>>();
+  for (let f = 0; f < mesh.faceCount; f++) {
+    const n = mesh.faceSize(f);
+    for (let i = 0; i < n; i++) {
+      const key = faceEdgeKey(mesh, f, i);
+      if (!wanted.has(key)) continue;
+      const list = byEdge.get(key);
+      if (list) list.push([f, i]);
+      else byEdge.set(key, [[f, i]]);
+    }
+  }
+
+  for (const [key, uses] of byEdge) {
+    if (uses.length !== 2) continue;
+    const [a, b] = key.split("_").map(Number);
+    for (const vertex of [a, b]) {
+      const corners: number[] = [];
+      for (const [f] of uses) {
+        const at = mesh.faceVerts(f).indexOf(vertex);
+        if (at >= 0) corners.push(mesh.faceOffsets[f] + at);
+      }
+      if (corners.length !== 2) continue;
+      const u = (base[corners[0] * 2] + base[corners[1] * 2]) / 2;
+      const v = (base[corners[0] * 2 + 1] + base[corners[1] * 2 + 1]) / 2;
+      for (const c of corners) {
+        base[c * 2] = u;
+        base[c * 2 + 1] = v;
+      }
+    }
+  }
+}
+
 /** コーナーキー → `mesh.faceCorners` 内の位置。 */
 export function cornerIndex(mesh: Mesh, key: CornerKey): number {
   const [f, at] = parseCorner(key);
@@ -247,7 +363,35 @@ export function recordManual(
  *
  * 全部消すのではなく、**対応が取れなくなった分だけ**落とす。
  */
-export function reconcile(recipe: UvRecipe, mesh: Mesh): { droppedSeams: number; droppedIslands: number } {
+export function reconcile(
+  recipe: UvRecipe,
+  mesh: Mesh,
+): { droppedSeams: number; droppedIslands: number; rebased: boolean } {
+  // 「なし」は土台を取り直す。押し出しやベベルは新しい面へ UV を補間するので、
+  // その時点の map1 が「ユーザーが見ていた UV」そのもの。差分は既にそこへ
+  // 焼き込まれているから捨ててよい（`17` の 1.2）
+  if (recipe.method === "none") {
+    const uv = mesh.uvSets.get(UV_SET);
+    if (uv) {
+      recipe.base = Float32Array.from(uv);
+      recipe.manual.clear();
+      for (const key of seamsFromUv(mesh)) recipe.seams.add(key);
+      for (const key of [...recipe.pins.keys()]) {
+        const [f, at] = parseCorner(key);
+        if (f < 0 || f >= mesh.faceCount || at >= mesh.faceSize(f)) recipe.pins.delete(key);
+      }
+      let dropped = 0;
+      const live = new Set<EdgeKey>();
+      for (const [a, b] of mesh.edges()) live.add(edgeKey(a, b));
+      for (const key of [...recipe.seams]) {
+        if (live.has(key)) continue;
+        recipe.seams.delete(key);
+        dropped++;
+      }
+      return { droppedSeams: dropped, droppedIslands: 0, rebased: true };
+    }
+  }
+
   const alive = new Set<EdgeKey>();
   for (const [a, b] of mesh.edges()) alive.add(edgeKey(a, b));
   let droppedSeams = 0;
@@ -270,7 +414,7 @@ export function reconcile(recipe: UvRecipe, mesh: Mesh): { droppedSeams: number;
     recipe.manual.delete(key);
     droppedIslands++;
   }
-  return { droppedSeams, droppedIslands };
+  return { droppedSeams, droppedIslands, rebased: false };
 }
 
 /** 面 f の i 番目の辺（コーナー i と i+1 の間）のエッジキー。 */
@@ -289,6 +433,8 @@ export interface UvRecipeJson {
   seams: EdgeKey[];
   pins: Array<[CornerKey, number, number]>;
   method: UvMethod;
+  /** 取り込んだ UV。長いので数値の配列でそのまま持つ。 */
+  base: number[] | null;
   packing: UvRecipe["packing"];
   manual: Array<[string, Array<[CornerKey, number, number]>]>;
   autoSeamParams: UvRecipe["autoSeamParams"];
@@ -300,6 +446,7 @@ export function serializeRecipe(recipe: UvRecipe): UvRecipeJson {
     seams: [...recipe.seams].sort(),
     pins: [...recipe.pins].sort((a, b) => (a[0] < b[0] ? -1 : 1)).map(([k, p]) => [k, p[0], p[1]]),
     method: recipe.method,
+    base: recipe.base ? [...recipe.base] : null,
     packing: { ...recipe.packing },
     manual: [...recipe.manual]
       .sort((a, b) => (a[0] < b[0] ? -1 : 1))
@@ -317,6 +464,7 @@ export function deserializeRecipe(json: UvRecipeJson | null | undefined): UvReci
   for (const key of json.seams ?? []) recipe.seams.add(key);
   for (const [key, u, v] of json.pins ?? []) recipe.pins.set(key, [u, v]);
   if (json.method) recipe.method = json.method;
+  if (json.base) recipe.base = Float32Array.from(json.base);
   if (json.packing) recipe.packing = { ...recipe.packing, ...json.packing };
   if (json.autoSeamParams) recipe.autoSeamParams = { ...recipe.autoSeamParams, ...json.autoSeamParams };
   for (const [fingerprint, deltas] of json.manual ?? []) {
