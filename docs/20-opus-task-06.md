@@ -1,0 +1,300 @@
+# Opus 作業指示書 #06: UV の修正 3 点、Maya ベースの UV エディタ、パネルの引っ越し
+
+作成: 設計担当（Fable）。実装担当（Opus）向け。2026-09-08。
+設計は `19-uv-direction-and-panels.md`（ユーザーが 4 章の 3 点をすべて了承済み）。**迷ったら 19 を読む。この文書は手順だけ。**
+前提と作業の流れ（vitest → app → 通し確認 → `publish.sh` → push）は `13` の 0 章のまま。
+
+---
+
+## 0. 順番と理由
+
+| 順 | タスク | 理由 |
+|---|---|---|
+| T1 | 履歴に UV レシピを入れる | いちばん小さく、あとの全部の確認に「戻す」が要る |
+| T2 | 島を立てる（`orient.ts`） | core だけ。T3 の前に向きを決めておく |
+| T3 | 余白をテクセルで持つ | T2 の向きを崩さないよう `allowRotate` を切る |
+| T4 | 手順 A: 立方体を切って開いて整える | ここから「Maya ベースで作りきる」。1 タスク = 1 手順 |
+| T5 | 手順 B: 円柱（ループ / リング選択、境界の直線化） | A の上に乗る |
+| T6 | 手順 C: 球（対称、格子化、Move and Sew） | B の上に乗る |
+| T7 | 自動 UV と方式切替をオプションの奥へ | T4〜T6 で入口が Maya の形になってから |
+| T8 | オプション → ツールのカットイン | パネルの引っ越し。UV と独立 |
+| T9 | アウトライナ → レイヤーのドロワー | T8 で右上が空くので、その後 |
+
+**T3 が終わったら一度 push して報告する**（ユーザーが「修正 3 点を先に」と言っている）。その後 T4〜T9 を続け、**T9 が終わったら報告して止まる**。
+
+各タスクの合格条件は「値」と「触って分かること」の両方。後者は通し確認に書く（`13` の「通し確認の書き方」）。**タスクごとに `scripts/smoke.mjs` の項目を足し、報告に画面の PNG を付ける**（`smoke.png` と同じ撮り方で、`docs/img/20-<task>.png` に置く）。
+
+---
+
+## T1. 履歴に UV レシピを入れる（`19` の 1.3）
+
+### app
+
+- `history.ts`
+  - `ObjectSnapshot` に `uv: UvRecipe | null` を足す。`snapshot()` で `o.uv ? cloneRecipe(o.uv) : null`、`restore()` で `o.uv = s.uv ? cloneRecipe(s.uv) : null`。**`cloneRecipe` は `base` の Float32Array も複製している**（`recipe.ts` の 74 行）ので、そのまま使ってよい
+  - `import { cloneRecipe } from "../core/uv/recipe.js"` は `core/index.js` から出ていなければ index に足す
+- `app.ts` の `afterHistory()`
+  - `this.state.mode === "uv" && this.uv` なら、`viewport.syncAll()` の後に `this.uv.rebuild()` → `this.pushSelectionToUv()` → `this.hud.uvNote = this.uv.stats()`
+  - 選んでいたオブジェクトが戻したことで消えていたら（`state.selected` が null）、2D は空にする（`rebuild()` が object null で空を描くことを確認する。描かないなら直す）
+- `uvMode.ts` は変えない。2D の操作はすべて `host.commit` を通っている
+
+### 通し確認（1 項目）
+
+「2D で戻す / 進むが効く」: UV モードで立方体の島を 1 つ動かす → 2 本指ダブルタップ（`tapUp` の経路。`smoke` の「3 本指ダブルタップは変形にならず、やり直しになる」と同じ発火のしかた）→ `map1` が元に戻り、2D の島の位置も戻る → 3 本指ダブルタップ → 動かした位置に戻る。さらに **カット → 2 本指ダブルタップ → 切れ目の数が戻る**（レシピが戻ることの確認。メッシュだけ戻っていると切れ目は残る）。
+
+### vitest（1 件）
+
+`tests/uv.test.ts` に U16: `cloneRecipe` の往復で `seams` / `pins` / `base` / `manual` / `packing` が等しく、複製の `base` を書き換えても元が変わらない。
+
+## T2. 島を立てる（`19` の 1.1）
+
+### core
+
+`src/core/uv/orient.ts`:
+
+```ts
+/**
+ * 島を「3D の上」が +V を向くように回す。LSCM は形しか決めないので向きはここで決める。
+ * 上向きが面にほぼ乗らない島（天面・底面）は、3D の X を +U に向ける。
+ */
+export function uprightChart(positions: Float64Array, tri: Uint32Array, uv: Float64Array): void;
+```
+
+やること:
+
+1. 三角形ごとに、3D の (0,1,0) を面に落としたベクトル `t3` を取る（`t3 = up − n (n·up)`、`n` は面の単位法線）。長さが 0.2 未満なら「上が乗らない」として X 軸で同じことをする。**島の中で多数決**（面積の重み付き）で、上 / X のどちらを使うかを島ごとに 1 つ決める
+2. `t3` を UV に写す。`distortion.ts` の `measure` と同じヤコビアン（3D の 2 辺 → UV の 2 辺）を使い、`t2 = J · (t3 を三角形の局所座標に直したもの)`。関数が `measure` の中に閉じているなら、ヤコビアンを返す小さな関数を `distortion.ts` から export して共有する（複製しない）
+3. `t2` を三角形の UV 面積で重み付けして足し、角度 `θ = atan2(sum.u, sum.v)` を取る（+V に向けたいので U と V の順に注意）
+4. 島の UV 重心を中心に `−θ` 回す（`uv` をその場で書き換える）
+5. 回した結果、島が裏返っている（UV の符号付き面積が負）なら **U を反転しない**。裏返りは LSCM の固定点の問題で、ここでは扱わない（`19` の外）
+
+`recipe.ts` の `recompute`: `method !== "none"` のとき、`isUsable` / `normalizeScale` の後、`measure` の前に `uprightChart(local.positions, local.tri, flat)`。`"none"` には掛けない（取り込んだ向きを保つ）。
+
+### vitest（`tests/uv.test.ts` に U17〜U19）
+
+- U17 立方体を 12 本すべて切って LSCM → 6 島それぞれで、すべての辺が U 軸か V 軸に平行（角度の誤差 1e-4 rad）
+- U18 円柱（`sdAxis: 12, sdHeight: 3`）の側面を縦 1 本で切って LSCM → 側面の島の「縦の辺」（3D で Y 方向の辺）が V に平行、かつ上のリングの V が下のリングより大きい（上下が逆になっていない）
+- U19 天面（法線 +Y）の四角 1 枚だけ → X の辺が +U を向く（`uv[b] − uv[a]` の U 成分が正）
+
+### 通し確認（1 項目）
+
+「展開した島がまっすぐ」: 立方体 → UV モード → シェルを全部選んで「展開」→ `map1` から 6 島の辺の向きを測り、全部が軸に平行。**PNG を付ける**。
+
+## T3. 余白をテクセルで持つ（`19` の 1.2）
+
+### core
+
+- `recipe.ts` の `packing` を `{ marginTexels: number; textureSize: number; allowRotate: boolean; texelDensity: number | null }` に。既定 `{ marginTexels: 8, textureSize: 1024, allowRotate: false, texelDensity: null }`
+- 余白（UV）を出す関数を `pack.ts` に: `marginUv(packing) = max(marginTexels, ceil(5 × 1024 / textureSize)) / textureSize`。`packCharts` と `shelfPack` はこれを受け取る（`shelfPack` の引数は今のまま `margin: number`）
+- `shelfPack` の外周: 今も `margin` を両端に残している。そのまま（合っている）。**ただし棚の高さの計算で `cursorY += shelfHeight + margin` と `usedHeight` の整合を確認する**。上端の余白が下端より小さくなっていたら直す
+- `deserializeRecipe`: `json.packing.margin` が数値で `marginTexels` が無ければ `marginTexels = Math.round(margin × 1024)`、`textureSize = 1024`。`allowRotate` は **保存物に無ければ false**（今の既定 true を引き継がない）
+- `serializeRecipe` は新しい形で書く
+
+### app
+
+- `panels.ts` の UV 区画に「パッキング」を足す: 余白（texels、2〜64、刻み 1）、テクスチャの大きさ（512 / 1024 / 2048 / 4096 の segmented）、90° 回転を許す（checkbox）。`PanelHost` に `onUvPackingChange(key, value)` を足し、`app.ts` で `recipe.packing[key] = value` → `uv.repack()`。**T8 でこの区画はカットインへ移る**ので、区画を関数 1 つ（`packingSection(parent, state, host)`）に分けておく
+- `uvMode.ts` の `repack()` は変えない
+
+### vitest（U20〜U21）
+
+- U20 球の自動 UV → 全島の境界箱どうしの最短距離が `marginUv` 以上、外周（0 と 1）からも同じだけ離れている。`textureSize: 512` にすると余白が 10/512 になる
+- U21 `deserializeRecipe({ packing: { margin: 1/128, allowRotate: true } })` → `marginTexels === 8`、`allowRotate === true`（明示は尊重）。`packing` に `allowRotate` が無ければ false
+
+### 通し確認（1 項目）
+
+「島は 5px 以上離れる」: 球 → 自動 UV → `map1` の島の境界箱の距離が 8/1024 以上。**ここまでで push して報告する。**
+
+---
+
+## T4. 手順 A: 立方体を切って開いて整える（`19` の 2.2 の 1〜2）
+
+Maya の UV エディタで立方体をやる手順そのものを、上から順に通す。**足りないものはこの手順の途中で見つかった順に埋める**。
+
+手順（通し確認もこの順）:
+
+1. 立方体を選び UV モードへ。**取り込んだ UV（十字の展開図、島 1）が 2D に見える**（済）
+2. 3D で上の面を選ぶ → 2D でその面が光る（済）
+3. マーキングメニュー「カット」→ 上の面が島として分かれる（済）
+4. 「展開」→ 2 島とも立っている（T2）、間が空いている（T3）
+5. UV エッジの単位で島の縁を 1 本タップ → **Shift + ダブルタップで縁を一周**（新: UV のループ選択）
+6. 「直線化」→ その縁が直線になる（済。`straightenPoints`）
+7. 島をマニピュレータで動かす → 2 本指ダブルタップで戻る（T1）
+8. 3D に戻り、3D で面を 1 枚選ぶ → 2D で島が選ばれる（済）→ 2D で島をダブルタップ → **島全体が選ばれる**（新: シェルのダブルタップ）
+9. 「整列」→ 2 島が 0〜1 に詰まる（済）
+
+新しく作るもの:
+
+- **UV のループ選択**（`uvMode.ts`）。2D の `down` にダブルタップの判定を足す（`select.ts` の `double` と同じ: 前回のタップから 400ms 以内、同じ点から 12px 以内）。単位ごとに:
+  - エッジ: `core/uv/loops.ts` に `uvEdgeLoopFrom(t: UvTopology, e: number): number[]` を足す。UV 頂点の次数と「向かい側の辺」で辿る `selection.ts` の `edgeLoopFrom` と同じ規則を、**UV トポロジ（島の中だけ、縁で止まる）** で行う。縁の辺なら縁を一周する。Shift + ダブルタップで前回の辺と同じループ上なら区間（`arcBetween` と同じ）
+  - 頂点: 前回の頂点との間の UV 頂点列（3D の「頂点列」と同じ）。Shift 無しなら島の全頂点
+  - シェル: 島全体（今のシェル単位はタップで島なので、ダブルタップは何もしない。**頂点 / エッジの単位でダブルタップしたら島全体の頂点 / エッジを選ぶ**）
+  - `UvTopology` は `uvView.ts` にあり DOM に依存しない型なので、`core/uv/loops.ts` は **型だけ** `import type` で受ける。core が app を import するのは違反なので、`UvTopology` の必要な部分（`edges`, `vertexCorners`, `edgeChart`）を `core/uv/charts.ts` へ移し、`uvView.ts` はそれを re-export する
+- **選択の伝播**（`app.ts` の `pushSelectionToUv`）: 3D で面 → 2D で島（済）。**3D でエッジ → 2D で同じ UV エッジ、3D で頂点 → 2D で同じ UV 頂点**（`syncFromView` が単位を受けるようになっているので、抜けている単位があれば埋める）
+
+### vitest（U22〜U23）
+
+- U22 `uvEdgeLoopFrom`: 立方体の十字（島 1）で縁の 1 本から一周 → 14 本。内側の辺から → 縁で止まる
+- U23 `uvEdgeLoopFrom`: 円柱の側面（縦 1 本で切った島）で横の辺 → 12 本（一周）
+
+### 通し確認（1 項目、上の 1〜9 をそのまま）
+
+「立方体: 切って開いて整える（手順 A）」。**PNG を付ける。**
+
+## T5. 手順 B: 円柱（ループ / リングと境界の直線化）
+
+手順:
+
+1. 円柱を追加 → UV モード → 取り込んだ UV（側面の帯 + 上下の円）が見える（済）
+2. 3D でエッジ単位、側面の縦の辺 1 本をタップ → **ダブルタップでエッジループ**（3D は済）→ 2D にも同じ辺が出る（T4）
+3. 「カット」→ 側面が縦に切れる（済。エッジ単位のカット）
+4. 「展開」→ 帯が横長で立っている（T2）
+5. UV エッジ単位で帯の上の縁 1 本 → Shift + ダブルタップで反対側 → 上の縁の区間（T4）→ **「境界の直線化」**（新）で縁が水平に
+6. 下の縁も同じ → **「格子化」**（新。Maya の Unfold の「Straighten UVs」ではなく **UV の格子化 / Gridding**）で帯全体が長方形の格子になる
+7. 「整列」→ 3 島が詰まる
+
+新しく作るもの（`uvMode.ts` の `tidy` に 2 種類足す。core は `ops.ts` にある）:
+
+- `straightenBorder`（済の関数）を **「境界の直線化」** として編集メニューのエッジ単位に。選んだ辺が島の縁を成していれば `borderLoop` の順に並べて渡す。縁でなければ toast「縁の辺を選んでください」
+- `gridding`（済の関数）を **「格子化」** として編集メニューのシェル単位に。島が「四角形だけで、縁が 4 本の直線に分けられる」ときだけ効く。行の並びは `uvTopology` の辺から取る（横方向のループを 1 本ずつ辿る。T4 の `uvEdgeLoopFrom` を使う）。条件を満たさなければ toast
+
+編集メニューの割り当て（`app.ts` の `uvEditMenu`。北 / 北東 / 東は固定のまま）:
+
+| 単位 | SE | S | SW | W | NW |
+|---|---|---|---|---|---|
+| エッジ | 整列（Layout） | 直線化 | **境界の直線化** | 整列 U / V（サブメニュー化しない。W = 整列 V、SW から「整列 U」を外す） | マージ |
+| シェル | 自動 UV → **T7 で外す** | 整列 | **格子化** | 反転 U | 反転 V |
+
+整列 U をどこに置くか: エッジ単位の「直線化」は選んだ点が縦か横かを自分で判断するので、**整列 U / V は頂点単位に残し、エッジ単位からは外す**。
+
+### vitest（U24〜U25）
+
+- U24 `gridding` を円柱の側面（縦 1 本で切った島）に当てる → すべての UV 頂点が「行の V が等しく、列の U が等しい」格子（1e-6）
+- U25 `straightenBorder` で帯の上の縁を渡す → 縁の V が全部同じ
+
+### 通し確認（1 項目、上の 1〜7）
+
+「円柱: ループで切って開いて格子にする（手順 B）」。**PNG を付ける。**
+
+## T6. 手順 C: 球（対称、Move and Sew）
+
+手順:
+
+1. 球を追加 → UV モード → 取り込んだ UV（緯度経度の 1 枚）
+2. 3D で経線 1 本をダブルタップ（エッジループ）→ カット → 展開 → 1 島が開く（極は閉じているので歪みが大きい）
+3. 赤道のループを選んでカット → 上下 2 島
+4. 上の島を選び、**Shift で下の島も選び「Move and Sew」**（新）→ 下の島が上の島の切れ目に合うように動いて縫われる（Maya の Move and Sew UV Edges）
+5. UV 頂点単位で島の左右を矩形で選び「対称」→ 左右がそろう（済）
+6. 「整列」
+
+新しく作るもの:
+
+- **Move and Sew**（`uvMode.ts` に `moveAndSew()`）。選んだ UV エッジ（またはシェル 2 つの間の切れ目）について、**小さいほうの島**を相似変換（移動 + 回転 + 一様スケール）で、切れ目の両端が相手側の両端に重なる位置へ動かし、そのあと `cutOrSew(false)` と同じ経路で縫う。動かした分は差分として `manual` に入れ（`recordFrom`）、縫った後の `recompute` で島が 1 つになる。**相似変換の 4 パラメータは 2 点対応から閉じた形で出る**（Procrustes、2 点なら一意）。`core/uv/ops.ts` に `similarityFrom2(a0, a1, b0, b1): {du, dv, angle, scale}` を足す
+- 編集メニュー: エッジ単位の東「ソー」を長押し… ではなく、**エッジ単位の「ソー」を Move and Sew に変える**。Maya でも通常使うのはこちらで、動かさずに縫う「Sew」は結果が同じ（recompute で島が繋がる）。シェル単位の「ソー」も同じ。頂点単位は今のまま
+
+### vitest（U26）
+
+- U26 `similarityFrom2`: (0,0)-(1,0) を (2,2)-(2,4) に写す → scale 2、angle 90°、写した点が 1e-9 で一致
+
+### 通し確認（1 項目、上の 1〜6）
+
+「球: 切って開いて Move and Sew で戻す（手順 C）」。**PNG を付ける。**
+
+## T7. 自動 UV と方式切替をオプションの奥へ（`19` の 2.2 の 3）
+
+- ツール列（`uvToolColumn`）: 「自動 UV」のボタンを外す。並びは **選択 3 / 展開 / カット / ソー（Move and Sew）/ マニピュレータ / スナップ / フレーム**
+- シェル単位の編集メニュー SE「自動 UV」を外し、そこに **「格子化」** を置く（T5 の表を更新）。SW / W は反転 U / V のまま
+- オプション（T8 のカットインになる前でもここで）: 「展開」区画の方式 segmented（取り込んだまま / LSCM / 投影）と「自動 UV」区画は残すが、**区画を折りたたみにして既定は閉じる**（`section` に `open?: boolean` を足し、`<details>` で描く）。見出しは「詳細（自動 UV・方式）」
+- 「展開」ボタンの挙動は今のまま（`none` → `lscm`）
+- 通し確認: 既存の「自動 UV で球が開ける島に分かれる」は `uv.autoUnwrap()` を直接呼んでいるはずなので、そのまま通る。ボタンが無くなったことだけ足す（ツール列に `title` が「自動 UV」のボタンが無い）
+
+---
+
+## T8. オプション → ツールのカットイン（`19` の 3.2）
+
+### 決め
+
+- ツール列のボタンをタップ: そのツールになる（今のまま）
+- **今のツール（`aria-pressed="true"`）のボタンをもう一度タップ**: そのツールのオプションが横からカットイン
+- 外を触る / 同じボタン / ツールを変える: 閉じる
+- 右上の「オプション」パネルは無くす。`zones.options` と `optionsBody` を消す。**ドッキングの右上ゾーンは残す**（アウトライナが T9 まではそこにいる。T9 の後は PC の「レイヤー」の置き場）
+
+### app
+
+- `app.ts` に `openToolOptions(anchor, tool)`。`openManipSizeGauge` と同じ骨格（`.cutin`、`closePopup` で消える、`popup.dataset.gauge = tool`）。**幅は 60px ではなく 236px**（`.cutin.wide`）。中身は `panels.ts` の `renderOptions` の区画をツールごとに呼ぶ。区画の関数を分けて export する:
+
+| ツール / ボタン | 区画 |
+|---|---|
+| select（変形） | トランスフォームの数値入力（選択があるとき）、ソフト選択 |
+| multicut | マルチカット |
+| bevel | ベベル |
+| snap（3D） | スナップの種類と刻み |
+| snap（UV） | UV スナップ |
+| 頂点の選択モード | 頂点（マージ距離・押し出し幅） |
+| 面 / エッジの選択モード | 押し出し距離、ミラー軸 |
+| UV「展開」 | パッキング（T3）、詳細（方式 / 自動 UV。T7 の折りたたみ） |
+| シェーディング | 表示（スムージング角度） |
+
+- `renderToolColumn` の `onTap`: `entry.tool` があるボタンは「今のツールと同じなら `openToolOptions`、違えば `setTool`」。`compMode` のボタンも同じ規則（同じモードなら選択のオプション）。`radial` 付きのボタンは長押しがメニューなので、タップの規則だけ変える
+- 「プリミティブのパラメータ」と「メッシュ」の区画は T9 のレイヤーの行へ移す。**T8 の時点では一時的に「変形」のカットインの最後に置く**（消さない）
+- `shell.css`: `.cutin.wide{width:236px; max-height:70vh; overflow:auto; align-items:stretch; padding:8px}`。`.cutin` の中で `.sect` がそのまま使えることを確認する
+- `state.panelsHidden` とボタン `btnPanels` は残す（T9 で意味が変わる）
+
+### 通し確認（1 項目）
+
+「ツールをもう一度タップでオプションがカットインする」: マルチカットのボタンを 2 回タップ → `.cutin.wide` が出て、中に「マルチカット」の区画がある → 外をタップで消える → 変形のボタンを 2 回 → トランスフォームの数値入力がある。既存の「アウトライナとオプションが出る」は **「アウトライナが出る」に変える**（スライダーの条件を外す）。
+
+## T9. アウトライナ → レイヤーのドロワー（`19` の 3.3）
+
+### 決め
+
+| 項目 | 決め |
+|---|---|
+| 出し方 | 上段右端の「レイヤー」ボタン（`btnPanels` を転用。ラベルを「レイヤー」に、アイコンは `ICONS.layers` を足す）。もう一度で閉じる。**右端から左へのスワイプでも出る**（`vp` の右端 24px から始まるタッチの横スワイプ。ペンは対象外） |
+| 見た目 | 右から被さるドロワー `.drawer`。幅 236px、`position:absolute; right:0; top:0; bottom:0; z-index:25`。`vp` は縮まない。出入りは `transform: translateX` の 0.16s |
+| 1 行 | サムネイル 40×40（そのオブジェクトだけを描いた画像）、名前、目（表示）、ロック |
+| 操作 | タップで選択、ダブルタップで改名（済）、長押しでメニュー（改名 / 複製 / 削除 / 結合 / 分離 / フレーム。**結合と分離は既存の `doCombine` / `doSeparate` を呼ぶ**）、**行の長押し後ドラッグで並び替え**（`doc.objects` の順を入れ替え、履歴に積む）、SHF + タップで複数選択（結合のため。`state.multi` のような選択集合が無ければ、ドロワーの中だけの `checked` 集合で持ち、結合のときにまとめて渡す） |
+| 行を開く | 行の右端の「>」で、その行の下にプロパティが展開: トランスフォームの数値入力、プリミティブのパラメータ、メッシュの情報（T8 で一時置きしたものをここへ移す）、スムージング角度は「表示」に残す |
+| 閉じるとき | 外を触る（`vp` の `pointerdown` を捕まえて閉じる。ドロワーの中は閉じない）、ボタン、右へスワイプ |
+| PC | 幅 1200px 以上なら **ドロワーではなく今のドッキングのまま**（右上ゾーンに「レイヤー」パネルとして置く。中身は同じ `renderLayers`）。判定は `layout.ts` に `get isWide(): boolean`（`stage` の幅 ≥ 1200）を足し、`apply()` で変わったら `onChange` |
+
+### app
+
+- `panels.ts`: `renderOutliner` → `renderLayers(body, objects, selected, host, opened: Set<string>)`。行は `.lyrow`（`.olrow` の CSS を継ぐ）。`PanelHost` に `onVisible(o, v)`, `onLock(o, v)`, `onReorder(from, to)`, `onCombineChecked(ids)`。**ロックは `SceneObject.locked: boolean` を core に足す**（選択と変形を受け付けない。`.mbz` に保存。`Document` のテストに 1 件）
+- サムネイル: `viewport.ts` に `thumbnail(o, 40): string`（data URL）。**そのオブジェクトだけ**を描いた小さなオフスクリーン描画。開いたときに全行ぶん描き、`refresh()` では描き直さない（`19` の 3.4）
+- `app.ts`: `buildPanels()` からオプションを消し、アウトライナを **`isWide` ならドッキング、そうでなければドロワー**に置く。`btnPanels` の `click` を「ドロワーの開閉（狭い）/ ドック列の表示切替（広い）」に
+- 右端スワイプ: `gestures.ts` は触らない。`vp` に `pointerdown` を 1 つ足し、`clientX > vp.right − 24 && pointerType === "touch"` のときだけ `pointermove` で 40px 左に動いたら開く（動かなければ何もしないので、既存の操作を邪魔しない）
+- `shell.css`: `.drawer`、`.drawer.open`、`.lyrow`、`.lyrow .thumb`、`.lyrow .eye`、`.lyrow .lock`、`.lyrow .more`、`.lyprops`
+
+### vitest（1 件）
+
+`tests/document.test.ts`（無ければ作る）: `locked` が `.mbz` の往復で残る。
+
+### 通し確認（2 項目）
+
+- 「レイヤーのドロワーが開いて、目で隠せる」: 狭い画面（1024×768）で「レイヤー」ボタン → `.drawer.open` → 行が 2（立方体と球）→ 目をタップ → `o.visible === false` → 外をタップで閉じる
+- 「広い画面ではレイヤーがドッキングされる」: 1400×900 で `.panel[data-panel="layers"]` が右上ゾーンにあり、ドロワーは無い
+
+既存の「縦持ちで右のドックが下に来る」は、狭い画面ではドック列が空になるので **「縦持ちでレイヤーのドロワーが右から出る」に書き換える**。「パネルを別の場所へドッキングできる」は広い画面で行う（1400×900 に切り替えてから）。
+
+---
+
+## 決めてあること（追加分）
+
+- 島を立てる基準は 3D のワールド Y。オブジェクトの回転は見ない（メッシュはローカル座標）
+- 余白の最低 5px は 1024 換算ではなく **そのテクスチャの大きさで 5px**（`19` の式）
+- T4〜T6 の「手順」は通し確認そのもの。**値の合格条件だけで済ませない**
+- Move and Sew は小さいほうの島を動かす。同じ大きさなら番号の大きいほう
+- ロックされたオブジェクトはピックの対象から外す（`picking.ts` で `locked` を除外）
+- ドロワーは `vp` の上に乗る。描画領域の大きさは変えない（`viewport.resize()` を呼ばない）
+
+## やらないこと
+
+- ヒートマップ、ABF++ / SLIM、切れ目の提案（C4）
+- グループ / 階層（レイヤーのフォルダ）
+- サムネイルの逐次更新
+- 3D のマルチ選択（複数オブジェクトの同時変形）。ドロワーの複数選択は結合のためだけ
+- `gestures.ts` のしきい値と判定を変えること
+
+## 報告
+
+T3 のあとと T9 のあとの 2 回。各回で: 変えたファイル、core の件数、通し確認の件数、**PNG**（`docs/img/20-*.png`）、設計と変えたところ、判断が要った点。
