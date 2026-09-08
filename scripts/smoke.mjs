@@ -2279,7 +2279,95 @@ check(
     `移動 ${uv2d.movedU.toFixed(3)} / 回転 ${uv2d.rotated}`,
 );
 
-/* 37. 例外が出ていない */
+/* 37. 自動 UV（C2）: 球が開ける島に分かれる */
+const autoUv = await page.evaluate(() => {
+  const app = window.macbeth;
+  const objectsBefore = app.state.doc.objects.length;
+  const object = app.state.doc.addObject("sphere");
+  object.params.sdAxis = 12;
+  object.params.sdHeight = 8;
+  object.rebuild();
+  app.viewport.syncAll();
+  app.state.select(object);
+  app.setMode("uv");
+  const before = app.uv.stats();
+  app.uv.autoUnwrap();
+  const after = app.uv.stats();
+  const uv = object.mesh.uvSets.get("map1");
+  let finite = true;
+  let inRange = true;
+  for (let i = 0; i < uv.length; i++) {
+    if (!Number.isFinite(uv[i])) finite = false;
+    if (uv[i] < -1e-4 || uv[i] > 1 + 1e-4) inRange = false;
+  }
+  const seams = object.uv.seams.size;
+  const method = object.uv.method;
+  app.setMode("model");
+  app.state.select(null);
+  app.state.doc.objects.length = objectsBefore;
+  app.viewport.syncAll();
+  return { before: before.charts, after: after.charts, stretch: after.maxStretch, seams, method, finite, inRange };
+});
+check(
+  "自動 UV で球が開ける島に分かれる",
+  autoUv.after > 1 && autoUv.finite && autoUv.inRange && autoUv.stretch < 2 && autoUv.method === "lscm",
+  `島 ${autoUv.before} → ${autoUv.after} / 切れ目 ${autoUv.seams} 本 / 伸び ×${autoUv.stretch.toFixed(2)} / 0〜1 に収まる ${autoUv.inRange}`,
+);
+
+/* 38. 整列（C3）: 島が 0〜1 に詰まって重ならず、テクセル密度がそろう */
+const packing = await page.evaluate(() => {
+  const app = window.macbeth;
+  const objectsBefore = app.state.doc.objects.length;
+  const object = app.state.doc.addObject("cube");
+  app.viewport.syncAll();
+  app.state.select(object);
+  app.setMode("uv");
+  // 全部の辺を切って 6 枚にしてから並べ直す
+  for (const [a, b] of object.mesh.edges()) object.uv.seams.add(`${Math.min(a, b)}_${Math.max(a, b)}`);
+  object.uv.method = "lscm";
+  app.uv.repack();
+
+  const t = app.uv.view.uvTopology;
+  const uv = object.mesh.uvSets.get("map1");
+  const boxes = t.charts.map((chart) => {
+    let minU = Infinity, maxU = -Infinity, minV = Infinity, maxV = -Infinity;
+    for (const key of chart.corners) {
+      const [f, at] = key.split(":").map(Number);
+      const c = object.mesh.faceOffsets[f] + at;
+      minU = Math.min(minU, uv[c * 2]);
+      maxU = Math.max(maxU, uv[c * 2]);
+      minV = Math.min(minV, uv[c * 2 + 1]);
+      maxV = Math.max(maxV, uv[c * 2 + 1]);
+    }
+    return { minU, maxU, minV, maxV };
+  });
+  const inUnit = boxes.every((b) => b.minU >= -1e-4 && b.minV >= -1e-4 && b.maxU <= 1 + 1e-4 && b.maxV <= 1 + 1e-4);
+  let overlap = false;
+  for (let i = 0; i < boxes.length; i++) {
+    for (let j = i + 1; j < boxes.length; j++) {
+      const a = boxes[i], b = boxes[j];
+      if (a.minU < b.maxU - 1e-6 && b.minU < a.maxU - 1e-6 && a.minV < b.maxV - 1e-6 && b.minV < a.maxV - 1e-6) {
+        overlap = true;
+      }
+    }
+  }
+  // 立方体の 6 面は同じ大きさなので、島の面積も 1% 以内でそろう
+  const areas = boxes.map((b) => (b.maxU - b.minU) * (b.maxV - b.minV));
+  const ratio = Math.max(...areas) / Math.min(...areas);
+
+  app.setMode("model");
+  app.state.select(null);
+  app.state.doc.objects.length = objectsBefore;
+  app.viewport.syncAll();
+  return { charts: boxes.length, inUnit, overlap, ratio };
+});
+check(
+  "整列で島が 0〜1 に詰まり、密度がそろう",
+  packing.charts === 6 && packing.inUnit && !packing.overlap && packing.ratio - 1 < 0.01,
+  `島 ${packing.charts} / 0〜1 に収まる ${packing.inUnit} / 重なり ${packing.overlap} / 面積の比 ${packing.ratio.toFixed(4)}`,
+);
+
+/* 39. 例外が出ていない */
 check("例外なし", errors.length === 0, errors.join(" / "));
 
 await page.screenshot({ path: SHOT });

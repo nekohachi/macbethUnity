@@ -6,4 +6,7 @@ export * from "./charts.js";
 export * from "./lscm.js";
 export * from "./projection.js";
 export * from "./distortion.js";
+export * from "./autoSeams.js";
+export * from "./pack.js";
+export * from "./ops.js";
 export * from "./recipe.js";

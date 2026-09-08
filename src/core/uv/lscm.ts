@@ -47,16 +47,37 @@ function multiplyTransposed(A: SparseRows, y: Float64Array): Float64Array {
 /**
  * 正規方程式 AᵀA x = Aᵀb を共役勾配法で解く。
  * A は対称でも正定値でもないが、AᵀA はそうなるのでこれで解ける。
+ *
+ * **対角前処理を入れてある。** AᵀA は条件数が A の 2 乗になるので、素の
+ * 共役勾配法だと固定する 2 点の選び方しだいで 2000 回では収束しきらず、
+ * 島が畳まれた答えが返ってきていた（球を分けた島で伸びが 300 倍になった）。
+ * 対角で割るだけで、同じ島がどの 2 点を固定しても同じ形に収まる。
  */
-export function conjugateGradient(A: SparseRows, iterations = 2000, tolerance = 1e-6): Float64Array {
+export function conjugateGradient(A: SparseRows, iterations = 4000, tolerance = 1e-10): Float64Array {
   const n = A.columns;
   const x = new Float64Array(n);
   const b = multiplyTransposed(A, A.rhs);
+
+  // 前処理は AᵀA の対角。列ごとの二乗和で出せる
+  const diag = new Float64Array(n);
+  for (let r = 0; r < A.cols.length; r++) {
+    const cols = A.cols[r];
+    const vals = A.vals[r];
+    for (let k = 0; k < cols.length; k++) diag[cols[k]] += vals[k] * vals[k];
+  }
+  for (let i = 0; i < n; i++) if (!(diag[i] > 1e-300)) diag[i] = 1;
+
   // r = Aᵀb − AᵀA x。x は 0 から始めるので r = Aᵀb
   const r = Float64Array.from(b);
-  const p = Float64Array.from(r);
+  const z = new Float64Array(n);
+  for (let i = 0; i < n; i++) z[i] = r[i] / diag[i];
+  const p = Float64Array.from(z);
+  let rz = 0;
   let rr = 0;
-  for (let i = 0; i < n; i++) rr += r[i] * r[i];
+  for (let i = 0; i < n; i++) {
+    rz += r[i] * z[i];
+    rr += r[i] * r[i];
+  }
   const goal = Math.max(1e-300, rr) * tolerance * tolerance;
   if (rr <= goal) return x;
 
@@ -65,17 +86,22 @@ export function conjugateGradient(A: SparseRows, iterations = 2000, tolerance = 
     let pap = 0;
     for (let i = 0; i < n; i++) pap += p[i] * ap[i];
     if (!(Math.abs(pap) > 1e-300)) break;
-    const alpha = rr / pap;
+    const alpha = rz / pap;
+    let next = 0;
     for (let i = 0; i < n; i++) {
       x[i] += alpha * p[i];
       r[i] -= alpha * ap[i];
+      next += r[i] * r[i];
     }
-    let next = 0;
-    for (let i = 0; i < n; i++) next += r[i] * r[i];
     if (next <= goal) break;
-    const beta = next / rr;
-    for (let i = 0; i < n; i++) p[i] = r[i] + beta * p[i];
-    rr = next;
+    let nextRz = 0;
+    for (let i = 0; i < n; i++) {
+      z[i] = r[i] / diag[i];
+      nextRz += r[i] * z[i];
+    }
+    const beta = nextRz / rz;
+    for (let i = 0; i < n; i++) p[i] = z[i] + beta * p[i];
+    rz = nextRz;
   }
   return x;
 }
@@ -194,32 +220,156 @@ export function lscm(
 }
 
 /**
- * 固定する 2 点を選ぶ。島の中で最も離れた 2 頂点を (0,0) と (1,0) に置く。
+ * 固定する 2 点を選ぶ。
  *
- * ここで決まるのは向きと位置だけ。**大きさは後で面積比でそろえる**
- * （`normalizeScale`）。3D の距離をそのまま使うと、開いたときに離れる 2 点を
- * 無理に近づけることになって島全体が縮む。筒で伸びが 1.3 になるのがそれ。
+ * 見るのは **連結成分ごと**。切れ目の引き方によっては、1 つの島が UV の上では
+ * 2 つに分かれることがある（頂点 1 点だけで繋がった「くびれ」など）。
+ * その片方を固定しないと向きも大きさも決まらず、答えが畳まれて返ってくる。
+ *
+ * 固定するのは **縁の頂点**。内側の点を固定すると、その周りだけが引っぱられる。
+ * `tri` を渡さなければ全部の点から 2 つ選ぶ（古い呼び出しのため）。
  */
-export function autoPins(positions: Float64Array): Map<number, [number, number]> {
+export function autoPins(positions: Float64Array, tri?: Uint32Array): Map<number, [number, number]> {
   const count = positions.length / 3;
   const pins = new Map<number, [number, number]>();
   if (count < 2) {
     if (count === 1) pins.set(0, [0, 0]);
     return pins;
   }
-  // 境界箱の端から始めて、最遠点を 2 回取る（総当たりを避ける）
-  let far = 0;
+  if (!tri || !tri.length) {
+    const [a, b] = farthestPair(
+      positions,
+      Array.from({ length: count }, (_, i) => i),
+    );
+    if (a !== b) {
+      pins.set(a, [0, 0]);
+      pins.set(b, [1, 0]);
+    }
+    return pins;
+  }
+
+  // 連結成分（三角形で繋がっている範囲）
+  const parent = new Int32Array(count);
+  for (let i = 0; i < count; i++) parent[i] = i;
+  const find = (v: number): number => {
+    let root = v;
+    while (parent[root] !== root) root = parent[root];
+    while (parent[v] !== root) {
+      const next = parent[v];
+      parent[v] = root;
+      v = next;
+    }
+    return root;
+  };
+  const union = (a: number, b: number): void => {
+    const ra = find(a);
+    const rb = find(b);
+    if (ra !== rb) parent[ra] = rb;
+  };
+  for (let t = 0; t < tri.length; t += 3) {
+    union(tri[t], tri[t + 1]);
+    union(tri[t + 1], tri[t + 2]);
+  }
+
+  // 縁の頂点（1 枚の三角形にしか使われていない辺の両端）
+  const uses = new Map<string, number>();
+  for (let t = 0; t < tri.length; t += 3) {
+    for (let i = 0; i < 3; i++) {
+      const a = tri[t + i];
+      const b = tri[t + ((i + 1) % 3)];
+      if (a === b) continue;
+      const key = a < b ? `${a}_${b}` : `${b}_${a}`;
+      uses.set(key, (uses.get(key) ?? 0) + 1);
+    }
+  }
+  const border = new Set<number>();
+  for (const [key, n] of uses) {
+    if (n !== 1) continue;
+    const [a, b] = key.split("_").map(Number);
+    border.add(a);
+    border.add(b);
+  }
+
+  // 縁の辺の繋がり。輪をたどって「向かい合う 2 点」を選ぶため
+  const loopNext = new Map<number, number[]>();
+  for (const [key, n] of uses) {
+    if (n !== 1) continue;
+    const [a, b] = key.split("_").map(Number);
+    for (const [x, y] of [
+      [a, b],
+      [b, a],
+    ]) {
+      const list = loopNext.get(x);
+      if (list) list.push(y);
+      else loopNext.set(x, [y]);
+    }
+  }
+
+  const groups = new Map<number, number[]>();
+  for (let v = 0; v < count; v++) {
+    const root = find(v);
+    const list = groups.get(root);
+    if (list) list.push(v);
+    else groups.set(root, [v]);
+  }
+
+  // 成分ごとに 2 点。成分どうしが重ならないよう、右へずらして置く
+  let offset = 0;
+  for (const root of [...groups.keys()].sort((a, b) => a - b)) {
+    const all = groups.get(root)!;
+    const onBorder = all.filter((v) => border.has(v));
+    // 縁の輪をたどって、向かい合う 2 点を選ぶ。直線距離でいちばん離れた 2 点だと、
+    // 島の形によっては解が畳まれる（球を分けた島でそれが起きた）
+    const loop = borderLoop(loopNext, onBorder);
+    let a: number;
+    let b: number;
+    if (loop.length >= 4) {
+      a = loop[0];
+      b = loop[Math.floor(loop.length / 2)];
+    } else {
+      [a, b] = farthestPair(positions, onBorder.length >= 2 ? onBorder : all);
+    }
+    if (a === b) continue;
+    pins.set(a, [offset, 0]);
+    pins.set(b, [offset + 1, 0]);
+    offset += 2;
+  }
+  return pins;
+}
+
+/** 縁の輪を 1 本たどる。いちばん番号の小さい点から始める（決定的に）。 */
+function borderLoop(next: Map<number, number[]>, candidates: number[]): number[] {
+  const start = candidates.length ? Math.min(...candidates) : -1;
+  if (start < 0) return [];
+  const loop: number[] = [start];
+  const seen = new Set<number>([start]);
+  let current = start;
+  for (let step = 0; step < candidates.length + 2; step++) {
+    const options = (next.get(current) ?? []).filter((v) => !seen.has(v)).sort((x, y) => x - y);
+    if (!options.length) break;
+    current = options[0];
+    seen.add(current);
+    loop.push(current);
+  }
+  return loop;
+}
+
+/** 候補の中でいちばん離れた 2 点。端から 2 回たどる（総当たりを避ける）。 */
+function farthestPair(positions: Float64Array, candidates: number[]): [number, number] {
+  if (candidates.length < 2) return [candidates[0] ?? 0, candidates[0] ?? 0];
+  const sorted = [...candidates].sort((a, b) => a - b);
+  let far = sorted[0];
   let best = -1;
-  for (let v = 1; v < count; v++) {
-    const d = distance(positions, 0, v);
+  for (const v of sorted) {
+    const d = distance(positions, sorted[0], v);
     if (d > best) {
       best = d;
       far = v;
     }
   }
-  let other = 0;
+  let other = sorted[0];
   best = -1;
-  for (let v = 0; v < count; v++) {
+  for (const v of sorted) {
     if (v === far) continue;
     const d = distance(positions, far, v);
     if (d > best) {
@@ -227,11 +377,7 @@ export function autoPins(positions: Float64Array): Map<number, [number, number]>
       other = v;
     }
   }
-  const a = Math.min(far, other);
-  const b = Math.max(far, other);
-  pins.set(a, [0, 0]);
-  pins.set(b, [1, 0]);
-  return pins;
+  return [far, other];
 }
 
 function distance(positions: Float64Array, a: number, b: number): number {

@@ -7,8 +7,14 @@
  */
 import {
   UV_SET,
+  alignU,
+  alignV,
+  autoSeams,
   chartMesh,
   edgeKey,
+  mergeUvs,
+  straightenPoints,
+  symmetrizeUv,
   cornerIndex,
   measure,
   recompute,
@@ -65,6 +71,8 @@ export interface UvHost {
   manipSize(): number;
   /** ピボット編集中か（Maya の D。3D と共通）。 */
   pivotEdit(): boolean;
+  /** スムージング角度。自動の切れ目でハードエッジを見るのに使う。 */
+  smoothAngle(): number;
 }
 
 export class UvMode {
@@ -509,6 +517,49 @@ export class UvMode {
     );
   }
 
+  /**
+   * 自動 UV（`16` の C2）。経験則で切れ目を引き直して開く。
+   * 手で動かした分は捨てる（切れ目が変わると島の指紋も変わるため）。
+   */
+  autoUnwrap(): void {
+    const object = this.host.object();
+    const recipe = this.host.recipe();
+    if (!object || !recipe) return;
+    const snapshot = this.host.snapshot();
+    const seams = autoSeams(object.mesh, recipe.autoSeamParams, this.host.smoothAngle());
+    recipe.seams = seams;
+    recipe.manual.clear();
+    recipe.pins.clear();
+    recipe.method = "lscm";
+    const r = recompute(object.mesh, recipe);
+    this.host.commit("自動 UV", snapshot);
+    this.chosen.clear();
+    this.rebuild();
+    this.host.changed(
+      `自動 UV — 切れ目 ${seams.size} 本 / 島 ${r.charts.length} / 伸び ×${r.maxStretch.toFixed(2)}`,
+    );
+  }
+
+  /**
+   * 島を並べ直す（整列 / パッキング）。テクセル密度をそろえてから棚に詰める。
+   * 手で動かした分は「島の並べ直し」と食い違うので捨てる。
+   */
+  repack(): void {
+    const object = this.host.object();
+    const recipe = this.host.recipe();
+    if (!object || !recipe) return;
+    if (recipe.method === "none") {
+      this.host.toast("「取り込んだまま」では並べ直せません。先に展開してください");
+      return;
+    }
+    const snapshot = this.host.snapshot();
+    recipe.manual.clear();
+    const r = recompute(object.mesh, recipe);
+    this.host.commit("整列", snapshot);
+    this.rebuild();
+    this.host.changed(`整列 — 島 ${r.charts.length} を 0〜1 に詰めた`);
+  }
+
   /** ソルバーを変える。オプションパネルから。 */
   setMethod(method: UvRecipe["method"]): void {
     const object = this.host.object();
@@ -660,6 +711,58 @@ export class UvMode {
   }
 
   /** 島を反転・回転する。結果は差分として残る。 */
+  /**
+   * 選んだ UV を整える（`15` の 6.3 の残り。C3）。
+   * core の純粋な関数を、選択中のコーナーに当てて差分として記録する。
+   */
+  tidy(kind: "alignU" | "alignV" | "straighten" | "merge" | "symmetry"): void {
+    const object = this.host.object();
+    if (!object) return;
+    const { corners, chart } = this.selectedCorners();
+    if (corners.length < 2) {
+      this.host.toast("2 つ以上選んでから実行してください");
+      return;
+    }
+    const uv = object.mesh.uvSets.get(UV_SET);
+    if (!uv) return;
+    const snapshot = this.host.snapshot();
+    const base = this.captureBase(corners);
+
+    // core の関数は「点の並び」で受けるので、コーナー → 点番号に直す
+    const points: number[] = [];
+    const at = new Map<number, string>();
+    for (const key of corners) {
+      const index = cornerIndex(object.mesh, key);
+      if (index < 0) continue;
+      points.push(index);
+      at.set(index, key);
+    }
+    // 重なっている UV は 1 点として扱う（見た目どおりに動かすため）
+    const label = { alignU: "整列 U", alignV: "整列 V", straighten: "直線化", merge: "マージ", symmetry: "対称" }[
+      kind
+    ];
+
+    if (kind === "alignU") alignU(uv, points);
+    else if (kind === "alignV") alignV(uv, points);
+    else if (kind === "straighten") straightenPoints(uv, orderedForLine(uv, points));
+    else if (kind === "merge") mergeUvs(uv, points, 0.01);
+    else {
+      // 対称: U の中央を軸に、左右で近い点どうしを組にする
+      const pairs = symmetryPairs(uv, points);
+      if (!pairs.length) {
+        this.host.toast("対称の相手が見つかりません");
+        return;
+      }
+      symmetrizeUv(uv, pairs);
+    }
+
+    this.recordFrom(base, chart);
+    this.host.commit(label, snapshot);
+    this.rebuildGeometryOnly();
+    this.rebuild();
+    this.host.changed(label);
+  }
+
   transformSelection(kind: "flipU" | "flipV" | "rotate90"): void {
     const object = this.host.object();
     if (!object) return;
@@ -1040,4 +1143,65 @@ function centerOf(base: Map<CornerKey, [number, number]>): { u: number; v: numbe
     cv /= base.size;
   }
   return { u: cu, v: cv };
+}
+
+/** 直線化のために、主軸に沿って点を並べ替える。 */
+function orderedForLine(uv: Float32Array, points: number[]): number[] {
+  if (points.length < 3) return points;
+  let cu = 0;
+  let cv = 0;
+  for (const v of points) {
+    cu += uv[v * 2];
+    cv += uv[v * 2 + 1];
+  }
+  cu /= points.length;
+  cv /= points.length;
+  let sxx = 0;
+  let sxy = 0;
+  let syy = 0;
+  for (const v of points) {
+    const x = uv[v * 2] - cu;
+    const y = uv[v * 2 + 1] - cv;
+    sxx += x * x;
+    sxy += x * y;
+    syy += y * y;
+  }
+  const theta = 0.5 * Math.atan2(2 * sxy, sxx - syy);
+  const ax = Math.cos(theta);
+  const ay = Math.sin(theta);
+  return [...points].sort(
+    (a, b) => (uv[a * 2] - cu) * ax + (uv[a * 2 + 1] - cv) * ay - ((uv[b * 2] - cu) * ax + (uv[b * 2 + 1] - cv) * ay),
+  );
+}
+
+/** U の中央で左右に分け、V が近いものどうしを組にする。 */
+function symmetryPairs(uv: Float32Array, points: number[]): Array<[number, number]> {
+  let min = Infinity;
+  let max = -Infinity;
+  for (const v of points) {
+    min = Math.min(min, uv[v * 2]);
+    max = Math.max(max, uv[v * 2]);
+  }
+  const center = (min + max) / 2;
+  const left = points.filter((v) => uv[v * 2] < center - 1e-9);
+  const right = points.filter((v) => uv[v * 2] > center + 1e-9);
+  const pairs: Array<[number, number]> = [];
+  const used = new Set<number>();
+  for (const a of left.sort((x, y) => x - y)) {
+    let best = -1;
+    let bestD = Infinity;
+    for (const b of right) {
+      if (used.has(b)) continue;
+      const d = Math.hypot(center * 2 - uv[a * 2] - uv[b * 2], uv[a * 2 + 1] - uv[b * 2 + 1]);
+      if (d < bestD) {
+        bestD = d;
+        best = b;
+      }
+    }
+    if (best >= 0) {
+      used.add(best);
+      pairs.push([a, best]);
+    }
+  }
+  return pairs;
 }

@@ -16,6 +16,12 @@ import {
   emptyRecipe,
   measure,
   recompute,
+  autoSeams,
+  equalizeTexelDensity,
+  shelfPack,
+  surfaceArea,
+  polygonArea,
+  chartMesh as chartMeshFn,
   recipeFromMesh,
   recordManual,
   reconcile,
@@ -493,5 +499,239 @@ describe("U12. トポロジが変わったら土台を取り直す", () => {
     recompute(o.mesh, o.uv);
     const after = o.mesh.uvSets.get(UV_SET)!;
     for (let i = 0; i < before.length; i++) expect(after[i]).toBeCloseTo(before[i], 6);
+  });
+});
+
+describe("U13. 自動の切れ目（C2）", () => {
+  const params = {
+    angle: 65,
+    useHardEdges: true,
+    useCreases: true,
+    usePolygroups: true,
+    symmetric: false,
+  };
+
+  it("立方体は角で切れる（面ごとの島）", () => {
+    const mesh = cube();
+    const seams = autoSeams(mesh, params, 30);
+    // 立方体の辺はすべて 90° なので、12 本とも切れる
+    expect(seams.size).toBe(12);
+    const recipe = emptyRecipe();
+    recipe.seams = seams;
+    const r = recompute(mesh, recipe);
+    expect(r.charts.length).toBe(6);
+    expect(r.maxStretch).toBeLessThan(1.01);
+  });
+
+  it("球は開ける島に分かれて、伸びが 2 未満に収まる", () => {
+    const mesh = PRIMITIVES.sphere.build({ ...defaultParams("sphere"), sdAxis: 12, sdHeight: 8 });
+    const seams = autoSeams(mesh, params, 30);
+    const recipe = emptyRecipe();
+    recipe.seams = seams;
+    const r = recompute(mesh, recipe);
+
+    expect(r.charts.length).toBeGreaterThan(1);
+    // NaN が無い
+    const uv = mesh.uvSets.get(UV_SET)!;
+    for (let i = 0; i < uv.length; i++) expect(Number.isFinite(uv[i])).toBe(true);
+    expect(r.maxStretch).toBeLessThan(2);
+  });
+
+  it("同じメッシュからは同じ切れ目が出る（決定的）", () => {
+    const mesh = PRIMITIVES.cylinder.build(defaultParams("cylinder"));
+    const a = [...autoSeams(mesh, params, 30)].sort();
+    const b = [...autoSeams(mesh, params, 30)].sort();
+    expect(a).toEqual(b);
+    expect(a.length).toBeGreaterThan(0);
+  });
+
+  it("対称なら X の相手にも同じ切れ目が入る", () => {
+    const mesh = PRIMITIVES.cylinder.build({ ...defaultParams("cylinder"), sdAxis: 8 });
+    const seams = autoSeams(mesh, { ...params, symmetric: true }, 30);
+    const p = mesh.positions;
+    const key = (x: number, y: number, z: number) => {
+      const fx = x.toFixed(3) === "-0.000" ? "0.000" : x.toFixed(3);
+      return `${fx},${y.toFixed(3)},${z.toFixed(3)}`;
+    };
+    const index = new Map<string, number>();
+    for (let v = 0; v < mesh.vertexCount; v++) index.set(key(p[v * 3], p[v * 3 + 1], p[v * 3 + 2]), v);
+    const alive = new Set<string>();
+    for (const [a, b] of mesh.edges()) alive.add(edgeKey(a, b));
+
+    for (const k of seams) {
+      const [a, b] = k.split("_").map(Number);
+      const ma = index.get(key(-p[a * 3], p[a * 3 + 1], p[a * 3 + 2]));
+      const mb = index.get(key(-p[b * 3], p[b * 3 + 1], p[b * 3 + 2]));
+      if (ma === undefined || mb === undefined) continue;
+      const mirrored = edgeKey(ma, mb);
+      if (alive.has(mirrored)) expect(seams.has(mirrored)).toBe(true);
+    }
+  });
+});
+
+describe("U14. パッキング（C3）", () => {
+  it("棚詰めは 0〜1 に収まって重ならない", () => {
+    const boxes = [
+      { w: 2, h: 1 },
+      { w: 1, h: 1 },
+      { w: 0.5, h: 2 },
+      { w: 1.5, h: 0.5 },
+    ];
+    const placed = shelfPack(boxes, 1 / 128, true);
+    const rects = placed.map((p, i) => {
+      const w = (p.rotated ? boxes[i].h : boxes[i].w) * p.scale;
+      const h = (p.rotated ? boxes[i].w : boxes[i].h) * p.scale;
+      return { x0: p.x, y0: p.y, x1: p.x + w, y1: p.y + h };
+    });
+    for (const r of rects) {
+      expect(r.x0).toBeGreaterThanOrEqual(-1e-9);
+      expect(r.y0).toBeGreaterThanOrEqual(-1e-9);
+      expect(r.x1).toBeLessThanOrEqual(1 + 1e-9);
+      expect(r.y1).toBeLessThanOrEqual(1 + 1e-9);
+    }
+    // 重なりが無い
+    for (let i = 0; i < rects.length; i++) {
+      for (let j = i + 1; j < rects.length; j++) {
+        const a = rects[i];
+        const b = rects[j];
+        const overlap = a.x0 < b.x1 - 1e-9 && b.x0 < a.x1 - 1e-9 && a.y0 < b.y1 - 1e-9 && b.y0 < a.y1 - 1e-9;
+        expect(overlap).toBe(false);
+      }
+    }
+  });
+
+  it("テクセル密度をそろえると島ごとの比が 1% 以内に収まる", () => {
+    // 同じ形で大きさだけ違う 2 枚
+    const tri = Uint32Array.from([0, 1, 2, 0, 2, 3]);
+    const uvA = Float64Array.from([0, 0, 1, 0, 1, 1, 0, 1]);
+    const uvB = Float64Array.from([0, 0, 4, 0, 4, 4, 0, 4]);
+    // 3D の面積は同じ
+    equalizeTexelDensity([uvA, uvB], [tri, tri], [1, 1], null);
+    const da = Math.sqrt(polygonArea(uvA, tri) / 1);
+    const db = Math.sqrt(polygonArea(uvB, tri) / 1);
+    expect(Math.abs(da / db - 1)).toBeLessThan(0.01);
+  });
+
+  it("展開した島は 0〜1 に収まる", () => {
+    const mesh = PRIMITIVES.sphere.build({ ...defaultParams("sphere"), sdAxis: 12, sdHeight: 8 });
+    const recipe = emptyRecipe();
+    recipe.seams = autoSeams(mesh, recipe.autoSeamParams, 30);
+    recompute(mesh, recipe);
+    const uv = mesh.uvSets.get(UV_SET)!;
+    for (let i = 0; i < uv.length; i++) {
+      expect(uv[i]).toBeGreaterThanOrEqual(-1e-4);
+      expect(uv[i]).toBeLessThanOrEqual(1 + 1e-4);
+    }
+  });
+
+  it("3D の面積が同じ島は UV でも同じ大きさになる", () => {
+    // 立方体を全部切ると 6 枚の同じ正方形
+    const mesh = cube();
+    const recipe = emptyRecipe();
+    recipe.seams = allSeams(mesh);
+    const r = recompute(mesh, recipe);
+    const uv = mesh.uvSets.get(UV_SET)!;
+    const areas = r.charts.map((chart) => {
+      const local = chartMeshFn(mesh, chart, recipe.seams);
+      const flat = new Float64Array(local.count * 2);
+      for (const key of chart.corners) {
+        const at = local.localOf.get(key)!;
+        const corner = cornerIndex(mesh, key);
+        flat[at * 2] = uv[corner * 2];
+        flat[at * 2 + 1] = uv[corner * 2 + 1];
+      }
+      return polygonArea(flat, local.tri);
+    });
+    const min = Math.min(...areas);
+    const max = Math.max(...areas);
+    expect(max / min - 1).toBeLessThan(0.01);
+    // 3D の面積も測れる
+    const local = chartMeshFn(mesh, r.charts[0], recipe.seams);
+    expect(surfaceArea(local.positions, local.tri)).toBeCloseTo(1, 5);
+  });
+});
+
+describe("U15. UV の整え（C3 の ops）", () => {
+  it("整列 U / V は 1 本にそろう", async () => {
+    const { alignU, alignV } = await import("../src/core/uv/ops.js");
+    const uv = Float64Array.from([0, 0, 0.4, 0.2, 0.8, 0.1]);
+    alignU(uv, [0, 1, 2]);
+    expect(uv[0]).toBeCloseTo(0.4, 9);
+    expect(uv[2]).toBeCloseTo(0.4, 9);
+    expect(uv[4]).toBeCloseTo(0.4, 9);
+    alignV(uv, [0, 1, 2], "max");
+    expect(uv[1]).toBeCloseTo(0.2, 9);
+    expect(uv[5]).toBeCloseTo(0.2, 9);
+  });
+
+  it("直線化は主軸に載せる（並びは崩れない）", async () => {
+    const { straightenPoints } = await import("../src/core/uv/ops.js");
+    // ほぼ水平に並んだ 4 点。少しだけ上下にぶれている
+    const uv = Float64Array.from([0, 0.01, 0.3, -0.02, 0.6, 0.03, 0.9, -0.01]);
+    straightenPoints(uv, [0, 1, 2, 3]);
+    // 4 点が 1 本の直線に載る（外積がゼロ）
+    const cross = (a: number, b: number, c: number) =>
+      (uv[b * 2] - uv[a * 2]) * (uv[c * 2 + 1] - uv[a * 2 + 1]) -
+      (uv[c * 2] - uv[a * 2]) * (uv[b * 2 + 1] - uv[a * 2 + 1]);
+    expect(Math.abs(cross(0, 1, 2))).toBeLessThan(1e-9);
+    expect(Math.abs(cross(0, 2, 3))).toBeLessThan(1e-9);
+    // U の並び順は変わらない
+    expect(uv[0]).toBeLessThan(uv[2]);
+    expect(uv[2]).toBeLessThan(uv[4]);
+    expect(uv[4]).toBeLessThan(uv[6]);
+  });
+
+  it("反転と 90° 回転は中心を動かさない", async () => {
+    const { flipU, rotate90 } = await import("../src/core/uv/ops.js");
+    const uv = Float64Array.from([0, 0, 1, 0, 1, 0.5, 0, 0.5]);
+    const center = () => {
+      let cu = 0;
+      let cv = 0;
+      for (let i = 0; i < 4; i++) {
+        cu += uv[i * 2];
+        cv += uv[i * 2 + 1];
+      }
+      return [cu / 4, cv / 4];
+    };
+    const before = center();
+    flipU(uv, [0, 1, 2, 3]);
+    expect(center()[0]).toBeCloseTo(before[0], 9);
+    rotate90(uv, [0, 1, 2, 3]);
+    const after = center();
+    expect(after[0]).toBeCloseTo(before[0], 9);
+    expect(after[1]).toBeCloseTo(before[1], 9);
+    // 90° 回すと縦横が入れ替わる
+    const width = Math.max(uv[0], uv[2], uv[4], uv[6]) - Math.min(uv[0], uv[2], uv[4], uv[6]);
+    expect(width).toBeCloseTo(0.5, 9);
+  });
+
+  it("マージは近い点だけをまとめる", async () => {
+    const { mergeUvs } = await import("../src/core/uv/ops.js");
+    const uv = Float64Array.from([0, 0, 0.01, 0.005, 0.5, 0.5]);
+    const merged = mergeUvs(uv, [0, 1, 2], 0.05);
+    expect(merged).toBe(1);
+    expect(uv[0]).toBeCloseTo(uv[2], 9);
+    expect(uv[1]).toBeCloseTo(uv[3], 9);
+    expect(uv[4]).toBeCloseTo(0.5, 9);
+  });
+
+  it("対称は相手を鏡映した位置に置く", async () => {
+    const { symmetrizeUv } = await import("../src/core/uv/ops.js");
+    const uv = Float64Array.from([0.2, 0.3, 0.9, 0.7]);
+    symmetrizeUv(uv, [[0, 1]], 0.5);
+    expect(uv[2]).toBeCloseTo(0.8, 9);
+    expect(uv[3]).toBeCloseTo(0.3, 9);
+  });
+
+  it("格子化は行と列を等間隔にする", async () => {
+    const { gridding } = await import("../src/core/uv/ops.js");
+    const uv = Float64Array.from([0, 0, 0.4, 0.05, 0.9, 0.02, 0.05, 0.5, 0.6, 0.55, 1, 0.48]);
+    gridding(uv, [
+      [0, 1, 2],
+      [3, 4, 5],
+    ]);
+    expect(uv[2] - uv[0]).toBeCloseTo(uv[4] - uv[2], 9);
+    expect(uv[1]).toBeCloseTo(uv[3], 9);
+    expect(uv[7]).toBeCloseTo(uv[9], 9);
   });
 });

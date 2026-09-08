@@ -26,6 +26,8 @@ export interface PanelHost {
   onManipSizeChange(value: number): void;
   onUvMethodChange(method: "lscm" | "projection" | "none"): void;
   onUvSnapChange(key: "kind" | "step", value: string | number): void;
+  onUvAutoChange(key: "angle" | "useHardEdges" | "useCreases" | "usePolygroups" | "symmetric", value: number | boolean): void;
+  onUvAutoRun(): void;
   onSelect(object: SceneObject): void;
   onRename(object: SceneObject, name: string): void;
   onOutlinerMenu(object: SceneObject, x: number, y: number): void;
@@ -124,8 +126,19 @@ export interface OptionsState {
   compMode: string;
   /** マニピュレータの見た目の大きさ（0.5〜2.0）。 */
   manipSize: number;
-  /** UV モードのときだけ。ソルバーとスナップ。 */
-  uv: { method: "lscm" | "projection" | "none"; snapKind: "grid" | "vertex"; snapStep: number } | null;
+  /** UV モードのときだけ。ソルバー、自動の切れ目、スナップ。 */
+  uv: {
+    method: "lscm" | "projection" | "none";
+    snapKind: "grid" | "vertex";
+    snapStep: number;
+    auto: {
+      angle: number;
+      useHardEdges: boolean;
+      useCreases: boolean;
+      usePolygroups: boolean;
+      symmetric: boolean;
+    };
+  } | null;
 }
 
 /** オプションパネルを描き直す。 */
@@ -184,6 +197,32 @@ export function renderOptions(body: HTMLElement, state: OptionsState, host: Pane
       ),
     );
     body.appendChild(s);
+
+    const auto = section("自動 UV", "AUTO");
+    paramRow(auto, {
+      label: "角度",
+      value: state.uv.auto.angle,
+      min: 10,
+      max: 180,
+      step: 1,
+      format: (v) => `${Math.round(v)}°`,
+      onInput: (v) => host.onUvAutoChange("angle", v),
+    });
+    checkbox(auto, "ハードエッジ", state.uv.auto.useHardEdges, (v) => host.onUvAutoChange("useHardEdges", v));
+    checkbox(auto, "クリース", state.uv.auto.useCreases, (v) => host.onUvAutoChange("useCreases", v));
+    checkbox(auto, "ポリグループ", state.uv.auto.usePolygroups, (v) => host.onUvAutoChange("usePolygroups", v));
+    checkbox(auto, "対称 X", state.uv.auto.symmetric, (v) => host.onUvAutoChange("symmetric", v));
+    const run = el("button", "act", "自動 UV を実行");
+    run.addEventListener("click", () => host.onUvAutoRun());
+    auto.appendChild(run);
+    auto.appendChild(
+      el(
+        "div",
+        "hint",
+        "角度・ハードエッジ・クリース・ポリグループで切れ目を置き、\n大きすぎる島と閉じた island を割ってから開きます。手で動かした分は捨てます。",
+      ),
+    );
+    body.appendChild(auto);
 
     const sn = section(`スナップ${state.snap.active ? "（効いています）" : ""}`, "SNAP");
     const srow = el("div", "row");

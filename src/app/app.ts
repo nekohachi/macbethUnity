@@ -1821,6 +1821,7 @@ export class App {
       { kind: "separator" },
       { kind: "label", text: "UV" },
       { kind: "button", icon: ICONS.smooth, title: "展開（レシピから開き直す）", onTap: () => uv.unfold() },
+      { kind: "button", icon: ICONS.mUV, title: "自動 UV（経験則で切れ目を引き直す）", onTap: () => uv.autoUnwrap() },
       { kind: "button", icon: ICONS.multicut, title: "カット（選んだところを切る）", onTap: () => uv.cutOrSew(true) },
       { kind: "button", icon: ICONS.vEdge, title: "ソー（選んだ切れ目を縫う）", onTap: () => uv.cutOrSew(false) },
       {
@@ -1914,6 +1915,7 @@ export class App {
         selectedFaces: () => (this.state.compMode === "face" ? [...this.state.comp] : []),
         manipSize: () => this.state.manipSize,
         pivotEdit: () => this.state.pivotEdit,
+        smoothAngle: () => this.state.smoothAngle,
       });
       this.buildUvSwitch();
     }
@@ -2008,7 +2010,6 @@ export class App {
   private uvEditMenu(): RadialMenu {
     const uv = this.uv;
     if (!uv) return {};
-    const todo = (name: string) => () => this.hud.toast(`${name} は未実装です`);
     const head: RadialMenu = {
       N: { label: "展開", sub: "Unfold", icon: ICONS.smooth, run: () => uv.unfold() },
       NE: { label: "カット", sub: "Cut", icon: ICONS.multicut, run: () => uv.cutOrSew(true) },
@@ -2017,11 +2018,11 @@ export class App {
     if (uv.unit === "edge") {
       return {
         ...head,
-        SE: { label: "移動してソー", sub: "Move and Sew", icon: ICONS.vEdge, run: todo("移動してソー") },
-        S: { label: "直線化", sub: "Straighten", icon: ICONS.vEdge, run: todo("直線化") },
-        SW: { label: "整列 U", sub: "Align U", icon: ICONS.vMulti, run: todo("整列 U") },
-        W: { label: "整列 V", sub: "Align V", icon: ICONS.vMulti, run: todo("整列 V") },
-        NW: { label: "ループ選択", sub: "Loop", icon: ICONS.vEdge, run: todo("UV のループ選択") },
+        SE: { label: "整列", sub: "Layout", icon: ICONS.vMulti, run: () => uv.repack() },
+        S: { label: "直線化", sub: "Straighten", icon: ICONS.vEdge, run: () => uv.tidy("straighten") },
+        SW: { label: "整列 U", sub: "Align U", icon: ICONS.vMulti, run: () => uv.tidy("alignU") },
+        W: { label: "整列 V", sub: "Align V", icon: ICONS.vMulti, run: () => uv.tidy("alignV") },
+        NW: { label: "マージ", sub: "Merge", icon: ICONS.vVert, run: () => uv.tidy("merge") },
       };
     }
     if (uv.unit === "vertex") {
@@ -2029,15 +2030,15 @@ export class App {
         ...head,
         SE: { label: "ピン", sub: "Pin", icon: ICONS.vVert, run: () => uv.pinOrUnpin(true) },
         S: { label: "ピン解除", sub: "Unpin", icon: ICONS.vVert, run: () => uv.pinOrUnpin(false) },
-        SW: { label: "整列 U", sub: "Align U", icon: ICONS.vMulti, run: todo("整列 U") },
-        W: { label: "整列 V", sub: "Align V", icon: ICONS.vMulti, run: todo("整列 V") },
-        NW: { label: "対称", sub: "Symmetry", icon: ICONS.sym, run: todo("UV の対称") },
+        SW: { label: "整列 U", sub: "Align U", icon: ICONS.vMulti, run: () => uv.tidy("alignU") },
+        W: { label: "整列 V", sub: "Align V", icon: ICONS.vMulti, run: () => uv.tidy("alignV") },
+        NW: { label: "対称", sub: "Symmetry", icon: ICONS.sym, run: () => uv.tidy("symmetry") },
       };
     }
     return {
       ...head,
-      SE: { label: "自動 UV", sub: "Auto", icon: ICONS.mUV, run: todo("自動 UV") },
-      S: { label: "整列", sub: "Layout", icon: ICONS.vMulti, run: todo("整列（パッキング）") },
+      SE: { label: "自動 UV", sub: "Auto", icon: ICONS.mUV, run: () => uv.autoUnwrap() },
+      S: { label: "整列", sub: "Layout", icon: ICONS.vMulti, run: () => uv.repack() },
       SW: { label: "反転 U", sub: "Flip U", icon: ICONS.sym, run: () => uv.transformSelection("flipU") },
       W: { label: "反転 V", sub: "Flip V", icon: ICONS.sym, run: () => uv.transformSelection("flipV") },
       NW: { label: "90° 回転", sub: "Rotate", icon: ICONS.rotate, run: () => uv.transformSelection("rotate90") },
@@ -2995,6 +2996,13 @@ export class App {
         this.uv?.setMethod(method);
         this.refresh();
       },
+      onUvAutoChange: (key, value) => {
+        const recipe = this.state.selected?.uv;
+        if (!recipe) return;
+        if (key === "angle") recipe.autoSeamParams.angle = value as number;
+        else recipe.autoSeamParams[key] = value as boolean;
+      },
+      onUvAutoRun: () => this.uv?.autoUnwrap(),
       onUvSnapChange: (key, value) => {
         if (key === "kind") this.state.uvSnap.kind = value as "grid" | "vertex";
         else this.state.uvSnap.step = value as number;
@@ -3081,6 +3089,7 @@ export class App {
                   method: this.state.selected.uv.method,
                   snapKind: this.state.uvSnap.kind,
                   snapStep: this.state.uvSnap.step,
+                  auto: { ...this.state.selected.uv.autoSeamParams },
                 }
               : null,
         },

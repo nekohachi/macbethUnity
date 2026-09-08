@@ -23,6 +23,7 @@ import {
 import { autoPins, lscm, normalizeScale } from "./lscm.js";
 import { projectChart } from "./projection.js";
 import { measure, type Distortion } from "./distortion.js";
+import { equalizeTexelDensity, shelfPack, surfaceArea, type PackBox } from "./pack.js";
 
 export type UvMethod = "lscm" | "projection" | "none";
 
@@ -104,7 +105,10 @@ export function recompute(mesh: Mesh, recipe: UvRecipe, options: { skipPack?: bo
   const charts = buildCharts(mesh, recipe.seams);
   const uv = new Float32Array(mesh.faceCorners.length * 2);
   const distortion: Distortion[] = [];
-  const boxes: Array<{ min: [number, number]; max: [number, number] }> = [];
+  // パッキングに渡す島ごとの情報
+  const flats: Float64Array[] = [];
+  const tris: Uint32Array[] = [];
+  const areas: number[] = [];
 
   // 「なし」は取り込んだ UV（base）を土台にする。base が無ければ今の map1
   // （古い保存物のため）。map1 を土台にすると手の差分が二重に乗る
@@ -133,26 +137,21 @@ export function recompute(mesh: Mesh, recipe: UvRecipe, options: { skipPack?: bo
         if (at !== undefined) pins.set(at, [pinned[0], pinned[1]]);
       }
       // 2 点足りないと平行移動・回転・拡大が決まらない
-      if (pins.size < 2) for (const [v, p] of autoPins(local.positions)) if (!pins.has(v)) pins.set(v, p);
+      if (pins.size < 2) {
+        for (const [v, p] of autoPins(local.positions, local.tri)) if (!pins.has(v)) pins.set(v, p);
+      }
       flat = lscm(local.positions, local.tri, pins);
+      // 解けなかった島（畳まれた・数値が壊れた）は投影に落とす。
+      // 平面投影は歪むが、少なくとも見える形で出てくる
+      if (!isUsable(flat, local.count)) flat = projectChart(local.positions, local.tri);
       // 固定した 2 点は向きと位置を決めるだけ。大きさは 3D の面積に合わせる
       if (recipe.pins.size < 2) normalizeScale(local.positions, local.tri, flat);
     }
 
     distortion.push(measure(local.positions, local.tri, flat));
-
-    // 島の境界箱を控えて、パッキングに渡す
-    let minU = Infinity;
-    let minV = Infinity;
-    let maxU = -Infinity;
-    let maxV = -Infinity;
-    for (let i = 0; i < local.count; i++) {
-      minU = Math.min(minU, flat[i * 2]);
-      maxU = Math.max(maxU, flat[i * 2]);
-      minV = Math.min(minV, flat[i * 2 + 1]);
-      maxV = Math.max(maxV, flat[i * 2 + 1]);
-    }
-    boxes.push({ min: [minU, minV], max: [maxU, maxV] });
+    flats.push(flat);
+    tris.push(local.tri);
+    areas.push(surfaceArea(local.positions, local.tri));
 
     for (const key of chart.corners) {
       const at = local.localOf.get(key)!;
@@ -162,7 +161,11 @@ export function recompute(mesh: Mesh, recipe: UvRecipe, options: { skipPack?: bo
     }
   }
 
-  if (!options.skipPack && recipe.method !== "none") layout(charts, boxes, uv, mesh, recipe.packing.margin);
+  // テクセル密度をそろえてから棚に詰める（`15` の 5 章）
+  if (!options.skipPack && recipe.method !== "none") {
+    equalizeTexelDensity(flats, tris, areas, recipe.packing.texelDensity);
+    packCharts(charts, flats, uv, mesh, recipe.packing);
+  }
 
   // 手で動かした分を上に乗せる。指紋が合う島だけ
   for (const chart of charts) {
@@ -193,33 +196,72 @@ export function recompute(mesh: Mesh, recipe: UvRecipe, options: { skipPack?: bo
 }
 
 /**
- * C1 の仮のパッキング。島を横に並べて 0〜1 に収める。
- * ちゃんとした棚詰めとテクセル密度は C3（`16` のタスク C3）。
+ * 解が使いものになるか。数値が壊れていないか、1 点に畳まれていないか。
  */
-function layout(
+function isUsable(uv: Float64Array, count: number): boolean {
+  if (!count) return true;
+  let minU = Infinity;
+  let minV = Infinity;
+  let maxU = -Infinity;
+  let maxV = -Infinity;
+  for (let i = 0; i < count; i++) {
+    const u = uv[i * 2];
+    const v = uv[i * 2 + 1];
+    if (!Number.isFinite(u) || !Number.isFinite(v)) return false;
+    minU = Math.min(minU, u);
+    maxU = Math.max(maxU, u);
+    minV = Math.min(minV, v);
+    maxV = Math.max(maxV, v);
+  }
+  const w = maxU - minU;
+  const h = maxV - minV;
+  // 片方が完全に潰れていたら畳まれている
+  return w > 1e-9 && h > 1e-9;
+}
+
+/**
+ * 島を棚に詰めて 0〜1 に収める。島どうしの大きさの比は変えない
+ * （テクセル密度は `equalizeTexelDensity` で先にそろえてある）。
+ */
+function packCharts(
   charts: Chart[],
-  boxes: Array<{ min: [number, number]; max: [number, number] }>,
+  flats: Float64Array[],
   uv: Float32Array,
   mesh: Mesh,
-  margin: number,
+  packing: UvRecipe["packing"],
 ): void {
   if (!charts.length) return;
-  let total = 0;
-  let tallest = 0;
-  for (const box of boxes) {
-    total += Math.max(1e-6, box.max[0] - box.min[0]) + margin;
-    tallest = Math.max(tallest, Math.max(1e-6, box.max[1] - box.min[1]));
-  }
-  const scale = Math.min(1 / Math.max(1e-6, total), 1 / Math.max(1e-6, tallest));
-  let cursor = 0;
+  const boxes: PackBox[] = [];
+  const mins: Array<[number, number]> = [];
+  flats.forEach((flat) => {
+    let minU = Infinity;
+    let minV = Infinity;
+    let maxU = -Infinity;
+    let maxV = -Infinity;
+    for (let i = 0; i < flat.length / 2; i++) {
+      minU = Math.min(minU, flat[i * 2]);
+      maxU = Math.max(maxU, flat[i * 2]);
+      minV = Math.min(minV, flat[i * 2 + 1]);
+      maxV = Math.max(maxV, flat[i * 2 + 1]);
+    }
+    mins.push([minU, minV]);
+    boxes.push({ w: maxU - minU, h: maxV - minV });
+  });
+
+  const placed = shelfPack(boxes, packing.margin, packing.allowRotate);
   charts.forEach((chart, i) => {
-    const box = boxes[i];
+    const p = placed[i];
+    const [minU, minV] = mins[i];
     for (const key of chart.corners) {
       const corner = cornerIndex(mesh, key);
-      uv[corner * 2] = (uv[corner * 2] - box.min[0]) * scale + cursor;
-      uv[corner * 2 + 1] = (uv[corner * 2 + 1] - box.min[1]) * scale;
+      const u = uv[corner * 2] - minU;
+      const v = uv[corner * 2 + 1] - minV;
+      // 寝かせて置いた島は 90° 回す
+      const x = p.rotated ? v : u;
+      const y = p.rotated ? boxes[i].w - u : v;
+      uv[corner * 2] = p.x + x * p.scale;
+      uv[corner * 2 + 1] = p.y + y * p.scale;
     }
-    cursor += (box.max[0] - box.min[0]) * scale + margin;
   });
 }
 
