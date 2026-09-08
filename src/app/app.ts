@@ -29,6 +29,8 @@ import {
   dissolveEdges,
   extrudeEdges,
   extrudeFaces,
+  slideRails,
+  slideVertices,
   weldVertices,
   parseObj,
   subdivide,
@@ -222,6 +224,15 @@ export class App {
     shift: boolean;
     ctrl: boolean;
   } | null = null;
+  /** スライド中の控え（SHF + CTL + 移動）。 */
+  private slideDrag: {
+    base: Float32Array;
+    rails: Map<number, number[]>;
+    railScreen: Map<number, ScreenPoint[]>;
+    anchor: number;
+    start: ScreenPoint;
+    mirror: Array<[number, number]>;
+  } | null = null;
   /** ピボットだけを動かしているときの控え（Maya の D）。 */
   private pivotDrag: {
     axis: number;
@@ -364,6 +375,7 @@ export class App {
         this.drag = null;
         this.pendingDrag = null;
         this.pivotDrag = null;
+        this.slideDrag = null;
         this.dragSnapshot = null;
         this.manipulator.hot = -1;
         this.multicut.clear();
@@ -675,6 +687,22 @@ export class App {
     const snapshot = this.history.snapshot();
     let label = { move: "移動", rotate: "回転", scale: "スケール" }[handleKind(handle) ?? "move"];
 
+    // SHF + CTL + 移動 = スライド（docs/17 の 5 章）
+    if (
+      handleKind(handle) === "move" &&
+      this.state.compMode !== "object" &&
+      this.state.comp.size &&
+      shift &&
+      ctrl
+    ) {
+      if (this.beginSlide(o, p)) {
+        this.dragSnapshot = snapshot;
+        this.manipulator.hot = handle;
+        this.refreshManipulator();
+        return;
+      }
+    }
+
     // Shift + 移動 = 押し出してから移動（Maya と同じ）。
     // 生きた時点で行うので、Shift + タップでは押し出さない
     if (handleKind(handle) === "move" && this.state.compMode !== "object" && this.state.comp.size && shift && !ctrl) {
@@ -700,6 +728,145 @@ export class App {
     });
     this.manipulator.hot = handle;
     this.refreshManipulator();
+  }
+
+  /* ---- スライド（SHF + CTL + 移動） ------------------------------------ */
+
+  /**
+   * スライドを始める。選んだ頂点が、選んでいない隣へ向かう辺（レール）に
+   * 沿って滑る。どのレールを使うかは画面の向きで決めるので、レールの画面上の
+   * 向きをここで控えておく（core は画面を知らない）。
+   */
+  private beginSlide(o: SceneObject, p: ScreenPoint): boolean {
+    const verts = this.selector.selectedVertices();
+    if (!verts.length) return false;
+    const view = this.viewport.viewOf(o);
+    if (!view) return false;
+    view.group.updateMatrixWorld();
+
+    const rails = slideRails(o.mesh, verts);
+    // レールが 1 本も無ければ滑らせようがない
+    if (![...rails.values()].some((list) => list.length)) {
+      this.hud.toast("スライドできる辺がありません（まわりが全部選ばれています）");
+      return false;
+    }
+
+    const screenOf = (v: number): ScreenPoint => {
+      const q = o.mesh.getPosition(v);
+      return this.manipulator.toScreen(
+        new Vector3(q[0], q[1], q[2]).applyMatrix4(view.group.matrixWorld),
+      );
+    };
+    const screen = new Map<number, ScreenPoint>();
+    for (const v of verts) screen.set(v, screenOf(v));
+    const railScreen = new Map<number, ScreenPoint[]>();
+    for (const [v, list] of rails) {
+      const from = screen.get(v)!;
+      railScreen.set(
+        v,
+        list.map((n) => {
+          const s = screenOf(n);
+          return { x: s.x - from.x, y: s.y - from.y };
+        }),
+      );
+    }
+
+    // 押した点にいちばん近い頂点が基準。滑る量はこの 1 点で決めて全体に配る
+    let anchor = verts[0];
+    let best = Infinity;
+    for (const v of verts) {
+      const s = screen.get(v)!;
+      const d = Math.hypot(s.x - p.x, s.y - p.y);
+      if (d < best) {
+        best = d;
+        anchor = v;
+      }
+    }
+
+    this.slideDrag = {
+      base: Float32Array.from(o.mesh.positions),
+      rails,
+      railScreen,
+      anchor,
+      start: p,
+      mirror: this.state.symX ? mirrorPairs(o.mesh, verts) : [],
+    };
+    return true;
+  }
+
+  private updateSlide(o: SceneObject, p: ScreenPoint): void {
+    const s = this.slideDrag;
+    if (!s) return;
+    const dx = p.x - s.start.x;
+    const dy = p.y - s.start.y;
+    const len = Math.hypot(dx, dy);
+    if (len < 1e-6) return;
+
+    // 頂点ごとに、引いた向きといちばん揃うレールを選ぶ
+    const choice = new Map<number, number>();
+    for (const [v, list] of s.rails) {
+      const dirs = s.railScreen.get(v) ?? [];
+      let pick = -1;
+      let bestDot = 0;
+      for (let i = 0; i < list.length; i++) {
+        const d = dirs[i];
+        const norm = Math.hypot(d.x, d.y);
+        if (norm < 1e-6) continue;
+        const dot = (d.x * dx + d.y * dy) / (norm * len);
+        if (dot > bestDot) {
+          bestDot = dot;
+          pick = i;
+        }
+      }
+      if (pick >= 0) choice.set(v, list[pick]);
+    }
+    if (!choice.size) return;
+
+    // 量は基準頂点のレールへの射影。0〜0.99（隣に重なると面が潰れる）
+    const anchorRail = choice.get(s.anchor);
+    let t = 0;
+    if (anchorRail !== undefined) {
+      const i = (s.rails.get(s.anchor) ?? []).indexOf(anchorRail);
+      const d = (s.railScreen.get(s.anchor) ?? [])[i];
+      const norm2 = d ? d.x * d.x + d.y * d.y : 0;
+      if (norm2 > 1e-9) t = (dx * d.x + dy * d.y) / norm2;
+    } else {
+      // 基準にレールが無いときは、選べた中のどれかで代用する
+      const [v, n] = [...choice][0];
+      const i = (s.rails.get(v) ?? []).indexOf(n);
+      const d = (s.railScreen.get(v) ?? [])[i];
+      const norm2 = d ? d.x * d.x + d.y * d.y : 0;
+      if (norm2 > 1e-9) t = (dx * d.x + dy * d.y) / norm2;
+    }
+    t = Math.max(0, Math.min(0.99, t));
+
+    // 対称編集。鏡側は「相手の X を反転した先」に当たるレールを使う
+    if (s.mirror.length) {
+      const neighbors = o.mesh.vertexNeighbors();
+      for (const [v, m] of s.mirror) {
+        const target = choice.get(v);
+        if (target === undefined) continue;
+        const want = [-s.base[target * 3], s.base[target * 3 + 1], s.base[target * 3 + 2]];
+        let hit = -1;
+        for (const n of neighbors.get(m) ?? []) {
+          if (
+            Math.abs(s.base[n * 3] - want[0]) < 1e-4 &&
+            Math.abs(s.base[n * 3 + 1] - want[1]) < 1e-4 &&
+            Math.abs(s.base[n * 3 + 2] - want[2]) < 1e-4
+          ) {
+            hit = n;
+            break;
+          }
+        }
+        if (hit >= 0) choice.set(m, hit);
+      }
+    }
+
+    slideVertices(o.mesh, s.base, choice, t);
+    this.viewport.refreshPositions(o);
+    this.viewport.rebuildOverlay();
+    this.refreshManipulator();
+    byId("hudHint").innerHTML = `スライド <kbd>${t.toFixed(2)}</kbd>`;
   }
 
   /* ---- ピボットの移動（Maya の D） ------------------------------------- */
@@ -881,6 +1048,11 @@ export class App {
     if (this.state.tool === "bevel") return this.dragBevel(p);
     if (this.marquee) return this.updateMarquee(p);
     if (this.pivotDrag) return this.updatePivotDrag(p);
+    if (this.slideDrag) {
+      const o = this.state.selected;
+      if (o) this.updateSlide(o, p);
+      return;
+    }
     // 待たせているドラッグがあれば、生かすかどうかをここで決める
     if (this.pendingDrag) {
       const pend = this.pendingDrag;
@@ -889,6 +1061,12 @@ export class App {
       if (d <= TAP_MOVE && !(d > TOOL_MOVE && held > TAP_DURATION)) return;
       this.pendingDrag = null;
       this.beginToolDrag(pend.handle, pend.point, pend.shift, pend.ctrl);
+      // スライドに化けた場合は、そのまま今の点まで滑らせる
+      if (this.slideDrag) {
+        const o = this.state.selected;
+        if (o) this.updateSlide(o, p);
+        return;
+      }
     }
     const drag = this.drag;
     const o = this.state.selected;
@@ -1048,6 +1226,23 @@ export class App {
     }
     if (this.state.tool === "bevel") {
       this.endBevel(moved);
+      return;
+    }
+    // スライド。動かしていれば履歴に積む
+    if (this.slideDrag) {
+      const s = this.slideDrag;
+      this.slideDrag = null;
+      this.manipulator.hot = -1;
+      const o = this.state.selected;
+      const changed =
+        !!o && s.base.some((v, i) => Math.abs(v - o.mesh.positions[i]) > 1e-6);
+      if (changed && this.dragSnapshot) {
+        this.history.commit("スライド", this.dragSnapshot);
+        this.hud.toast("スライド");
+      }
+      this.dragSnapshot = null;
+      this.refreshManipulator();
+      this.refresh();
       return;
     }
     // ピボットの移動。履歴には積まない（メッシュは変わっていない）

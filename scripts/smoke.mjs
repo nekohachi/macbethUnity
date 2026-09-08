@@ -1846,7 +1846,100 @@ check(
     `（メッシュ据え置き ${manip.meshStill}）/ そのまわりで回る ${manip.rotated}`,
 );
 
-/* 33. 例外が出ていない */
+/* 33. スライド: SHF + CTL + 移動でエッジループが辺に沿って滑る（docs/17 の 5 章） */
+const slide = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const objectsBefore = app.state.doc.objects.length;
+  const object = app.state.doc.addObject("cylinder");
+  object.params.sdAxis = 8;
+  object.params.sdHeight = 2;
+  object.params.sdCaps = 0;
+  object.rebuild();
+  object.transform.position = [0, 0, 0];
+  app.viewport.syncAll();
+  app.viewport.setView("front");
+  app.state.select(object);
+  app.viewport.frameSelected();
+
+  // 真ん中の輪を頂点で選ぶ
+  app.setCompMode("vertex");
+  app.state.comp.clear();
+  const ring = [];
+  for (let v = 0; v < object.mesh.vertexCount; v++) {
+    if (Math.abs(object.mesh.positions[v * 3 + 1]) < 1e-6) {
+      app.state.comp.add(v);
+      ring.push(v);
+    }
+  }
+  app.viewport.rebuildOverlay();
+  app.refreshManipulator();
+
+  const canvas = document.getElementById("gl");
+  const rect = canvas.getBoundingClientRect();
+  const fire = (type, x, y, id) =>
+    canvas.dispatchEvent(
+      new PointerEvent(type, {
+        pointerId: id,
+        pointerType: "mouse",
+        isPrimary: true,
+        clientX: x,
+        clientY: y,
+        button: 0,
+        buttons: type === "pointerup" ? 0 : 1,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+
+  const facesBefore = object.mesh.faceCount;
+  const before = [...object.mesh.positions];
+  app.state.mods.shift = "on";
+  app.state.mods.ctrl = "on";
+  const at = app.manipulator.toScreen(app.pivotWorld());
+  // 上へ引く。輪は上のレールに沿って滑る（front ビューなので画面の上 = +Y）
+  fire("pointerdown", rect.x + at.x, rect.y + at.y, 80);
+  for (let i = 1; i <= 12; i++) fire("pointermove", rect.x + at.x, rect.y + at.y - i * 4, 80);
+  fire("pointerup", rect.x + at.x, rect.y + at.y - 48, 80);
+  await new Promise((r) => setTimeout(r, 40));
+  app.state.mods.shift = "off";
+  app.state.mods.ctrl = "off";
+
+  const facesAfter = object.mesh.faceCount;
+  // 輪の頂点は上がっているが、上の輪は越えていない（t は 0.99 まで）
+  let maxY = -Infinity;
+  let movedUp = 0;
+  for (const v of ring) {
+    const y = object.mesh.positions[v * 3 + 1];
+    maxY = Math.max(maxY, y);
+    if (y > before[v * 3 + 1] + 1e-4) movedUp++;
+  }
+  // 半径は変わらない（辺の上を滑っているので、円柱では横に膨らまない）
+  let radiusOk = true;
+  for (const v of ring) {
+    const r = Math.hypot(object.mesh.positions[v * 3], object.mesh.positions[v * 3 + 2]);
+    if (Math.abs(r - 0.6) > 1e-3) radiusOk = false;
+  }
+  const label = app.history.canUndo;
+  app.doUndo();
+  const restored = before.every((v, i) => Math.abs(v - object.mesh.positions[i]) < 1e-5);
+
+  app.state.select(null);
+  app.state.doc.objects.length = objectsBefore;
+  app.viewport.syncAll();
+  return { ring: ring.length, movedUp, maxY, facesBefore, facesAfter, radiusOk, label, restored };
+});
+check(
+  "SHF + CTL のドラッグでループがスライドする",
+  slide.movedUp === slide.ring &&
+    slide.facesAfter === slide.facesBefore &&
+    slide.maxY < 1 &&
+    slide.radiusOk &&
+    slide.restored,
+  `輪 ${slide.ring} 点が上へ ${slide.movedUp} 点（最大 Y ${slide.maxY.toFixed(3)}）/ ` +
+    `面数 ${slide.facesBefore} → ${slide.facesAfter}（押し出しではない）/ 半径そのまま ${slide.radiusOk}`,
+);
+
+/* 34. 例外が出ていない */
 check("例外なし", errors.length === 0, errors.join(" / "));
 
 await page.screenshot({ path: SHOT });

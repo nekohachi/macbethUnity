@@ -11,6 +11,7 @@ export * from "./bevel.js";
 export * from "./bridge.js";
 export * from "./vertexOps.js";
 export * from "./connect.js";
+export * from "./slide.js";
 export * from "./objectOps.js";
 export * from "./uv/index.js";
 export * from "./selection.js";
