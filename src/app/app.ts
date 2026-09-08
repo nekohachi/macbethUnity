@@ -10,6 +10,8 @@ import {
   PRIMITIVE_ORDER,
   bridgeEdges,
   cloneTransform,
+  connectEdges,
+  connectVertices,
   dissolveVertices,
   extrudeVertices,
   mergeByDistance,
@@ -1208,7 +1210,7 @@ export class App {
         },
         S: { label: "削除", sub: "Delete", icon: ICONS.del, run: () => this.doDeleteEdges() },
         SW: { label: "スピン", sub: "Spin", icon: ICONS.rotate, run: todo("スピンエッジ") },
-        W: { label: "接続", sub: "Connect", icon: ICONS.vMulti, run: todo("接続") },
+        W: { label: "接続", sub: "Connect", icon: ICONS.vMulti, run: () => this.doConnectEdges() },
         NW: { label: "境界を選択", sub: "Boundary", icon: ICONS.vEdge, run: () => this.selectBoundary() },
       };
     }
@@ -1217,7 +1219,7 @@ export class App {
         N: { label: "距離でマージ", sub: "Merge", icon: ICONS.vVert, run: () => this.doMergeByDistance() },
         NE: { label: "中心にマージ", sub: "To Center", icon: ICONS.vObj, run: () => this.doMergeVertices() },
         E: { label: "面取り", sub: "Chamfer", icon: ICONS.scale, run: todo("面取り") },
-        SE: { label: "接続", sub: "Connect", icon: ICONS.vMulti, run: todo("接続") },
+        SE: { label: "接続", sub: "Connect", icon: ICONS.vMulti, run: () => this.doConnectVertices() },
         S: { label: "削除", sub: "Delete", icon: ICONS.del, run: () => this.doDissolveVertices() },
         SW: { label: "平均化", sub: "Average", icon: ICONS.smooth, run: todo("平均化") },
         W: { label: "分離", sub: "Detach", icon: ICONS.vVertFace, run: todo("分離") },
@@ -1504,6 +1506,49 @@ export class App {
         return true;
       },
       () => `ブリッジ — ${r.faces} 面`,
+    );
+  }
+
+  /** 選んだ頂点どうしを結んで面を分ける。 */
+  private doConnectVertices(): void {
+    const o = this.requireComponents("vertex", 2);
+    if (!o) return;
+    const r = connectVertices(o.mesh, this.state.comp);
+    if (!r) {
+      this.hud.toast("結べる組がありません（同じ面にあり、隣り合っていない 2 点を選んでください）");
+      return;
+    }
+    this.applyTopologyChange(
+      o,
+      "接続",
+      () => {
+        o.mesh = r.mesh;
+        return true;
+      },
+      () => `接続 — ${r.edges} 本のエッジ`,
+    );
+  }
+
+  /** 選んだエッジの中点どうしを結ぶ。 */
+  private doConnectEdges(): void {
+    const o = this.requireComponents("edge", 2);
+    if (!o) return;
+    const view = this.viewport.viewOf(o);
+    if (!view) return;
+    const edges = [...this.state.comp].map((i) => view.edges[i]).filter(Boolean);
+    const r = connectEdges(o.mesh, edges);
+    if (!r) {
+      this.hud.toast("結べる組がありません（同じ面に来るエッジを 2 本以上選んでください）");
+      return;
+    }
+    this.applyTopologyChange(
+      o,
+      "接続",
+      () => {
+        o.mesh = r.mesh;
+        return true;
+      },
+      () => `接続 — ${r.edges} 本のエッジ`,
     );
   }
 

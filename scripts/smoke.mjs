@@ -1111,7 +1111,59 @@ check(
     `オブジェクト ${vertexOps.objectsBefore} → ${vertexOps.objects}`,
 );
 
-/* 26. 例外が出ていない */
+/* 26. 接続（頂点どうし / エッジの中点どうし） */
+const connect = await page.evaluate(() => {
+  const app = window.macbeth;
+  const objectsBefore = app.state.doc.objects.length;
+  const object = app.state.doc.addObject("cube");
+  app.viewport.syncAll();
+  app.state.select(object);
+
+  // 頂点: 面 0 の対角を結ぶ
+  app.setCompMode("vertex");
+  const verts = object.mesh.faceVerts(0);
+  app.state.comp.clear();
+  app.state.comp.add(verts[0]);
+  app.state.comp.add(verts[2]);
+  const beforeFaces = object.mesh.faceCount;
+  app.doConnectVertices();
+  const afterVerts = { faces: object.mesh.faceCount, points: object.mesh.vertexCount };
+  app.doUndo();
+
+  // エッジ: 面 0 の向かい合う 2 辺の中点を結ぶ
+  app.setCompMode("edge");
+  const view = app.viewport.viewOf(object);
+  const want = [
+    `${Math.min(verts[0], verts[1])}_${Math.max(verts[0], verts[1])}`,
+    `${Math.min(verts[2], verts[3])}_${Math.max(verts[2], verts[3])}`,
+  ];
+  app.state.comp.clear();
+  view.edges.forEach(([a, b], i) => {
+    if (want.includes(`${Math.min(a, b)}_${Math.max(a, b)}`)) app.state.comp.add(i);
+  });
+  const picked = app.state.comp.size;
+  app.doConnectEdges();
+  const afterEdges = { faces: object.mesh.faceCount, points: object.mesh.vertexCount };
+  app.doUndo();
+
+  app.state.select(null);
+  app.state.doc.objects.length = objectsBefore;
+  app.viewport.syncAll();
+  return { beforeFaces, afterVerts, picked, afterEdges };
+});
+check(
+  "頂点どうし / エッジの中点どうしを接続できる",
+  connect.beforeFaces === 6 &&
+    connect.afterVerts.faces === 7 &&
+    connect.afterVerts.points === 8 &&
+    connect.picked === 2 &&
+    connect.afterEdges.faces === 7 &&
+    connect.afterEdges.points === 10,
+  `頂点 ${connect.beforeFaces}→${connect.afterVerts.faces}面 / ` +
+    `エッジ ${connect.picked}本 → ${connect.afterEdges.faces}面 ${connect.afterEdges.points}点`,
+);
+
+/* 27. 例外が出ていない */
 check("例外なし", errors.length === 0, errors.join(" / "));
 
 await page.screenshot({ path: SHOT });
