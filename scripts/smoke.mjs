@@ -1263,13 +1263,38 @@ const vertexSnap = await page.evaluate(async () => {
   const goal = app.manipulator.toScreen(goalWorld);
   const dx = goal.x - at.x;
   const dy = goal.y - at.y;
+  // CTL ラッチではなく、ツール列のスナップボタンで効かせる（docs/17 の 7.1）
+  const snapButton = [...document.querySelectorAll(".toolcol .ibtn")].find((b) =>
+    b.title.startsWith("スナップ"),
+  );
+  // 長押しでサークルメニューが出るボタンなので、click ではなくポインタで押して離す
+  const br = snapButton.getBoundingClientRect();
+  for (const type of ["pointerdown", "pointerup"]) {
+    snapButton.dispatchEvent(
+      new PointerEvent(type, {
+        pointerId: 21,
+        pointerType: "mouse",
+        isPrimary: true,
+        clientX: br.x + br.width / 2,
+        clientY: br.y + br.height / 2,
+        button: 0,
+        buttons: type === "pointerup" ? 0 : 1,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+  }
   app.state.snap.kind = "vertex";
-  app.state.snapKeyHeld = true;
+  const buttonOn = app.state.snapOn && app.state.snapping;
   fire("pointerdown", rect.x + at.x, rect.y + at.y);
   for (let i = 1; i <= 12; i++) fire("pointermove", rect.x + at.x + (dx * i) / 12, rect.y + at.y + (dy * i) / 12);
   fire("pointerup", rect.x + at.x + dx, rect.y + at.y + dy);
   await new Promise((r) => setTimeout(r, 40));
-  app.state.snapKeyHeld = false;
+  // CTL を立てただけでは寄らないことも見る（Ctrl とスナップは無関係になった）
+  app.state.snapOn = false;
+  app.state.mods.ctrl = "on";
+  const ctrlSnaps = app.state.snapping;
+  app.state.mods.ctrl = "off";
   const landed = mover.transform.position.slice();
 
   // 的の頂点のワールド座標を集めて、その中に一致するものがあるか
@@ -1291,12 +1316,78 @@ const vertexSnap = await page.evaluate(async () => {
   app.state.select(null);
   app.state.doc.objects.length = objectsBefore;
   app.viewport.syncAll();
-  return { landed, hit, objects: app.state.doc.objects.length, objectsBefore };
+  return { landed, hit, buttonOn, ctrlSnaps, objects: app.state.doc.objects.length, objectsBefore };
 });
 check(
-  "頂点スナップで別オブジェクトの頂点に乗る",
-  vertexSnap.hit && vertexSnap.objects === vertexSnap.objectsBefore,
-  `着地 ${vertexSnap.landed.map((n) => n.toFixed(2)).join(",")}`,
+  "スナップボタンで頂点に乗る（CTL とは無関係）",
+  vertexSnap.hit &&
+    vertexSnap.buttonOn &&
+    !vertexSnap.ctrlSnaps &&
+    vertexSnap.objects === vertexSnap.objectsBefore,
+  `着地 ${vertexSnap.landed.map((n) => n.toFixed(2)).join(",")} / CTL だけ ${vertexSnap.ctrlSnaps}`,
+);
+
+/* 27c. サーフェススナップ: 別オブジェクトの面の上に乗る（Maya の Make Live の考え方） */
+const surfaceSnap = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const objectsBefore = app.state.doc.objects.length;
+  // 大きめの板を的にして、その上へ運ぶ
+  const target = app.state.doc.addObject("plane");
+  target.params.width = 6;
+  target.params.height = 6;
+  target.rebuild();
+  target.transform.position = [0, 2.4, 0];
+  const mover = app.state.doc.addObject("cube");
+  mover.transform.position = [2.6, -1.2, 0];
+  app.viewport.syncAll();
+  app.setCompMode("object");
+  app.state.select(mover);
+  app.refreshManipulator();
+
+  const canvas = document.getElementById("gl");
+  const rect = canvas.getBoundingClientRect();
+  const fire = (type, x, y) =>
+    canvas.dispatchEvent(
+      new PointerEvent(type, {
+        pointerId: 11,
+        pointerType: "mouse",
+        isPrimary: true,
+        clientX: x,
+        clientY: y,
+        buttons: type === "pointerup" ? 0 : 1,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+
+  const at = app.manipulator.toScreen(app.pivotWorld());
+  // 板の中央あたりへ運ぶ
+  const goalWorld = app.pivotWorld().clone();
+  goalWorld.set(0, 2.4, 0);
+  const goal = app.manipulator.toScreen(goalWorld);
+  app.state.snap.kind = "surface";
+  app.state.snapOn = true;
+  const dx = goal.x - at.x;
+  const dy = goal.y - at.y;
+  fire("pointerdown", rect.x + at.x, rect.y + at.y);
+  for (let i = 1; i <= 12; i++) fire("pointermove", rect.x + at.x + (dx * i) / 12, rect.y + at.y + (dy * i) / 12);
+  fire("pointerup", rect.x + at.x + dx, rect.y + at.y + dy);
+  await new Promise((r) => setTimeout(r, 40));
+  app.state.snapOn = false;
+  app.state.snap.kind = "grid";
+  const landed = mover.transform.position.slice();
+
+  app.doUndo();
+  app.state.select(null);
+  app.state.doc.objects.length = objectsBefore;
+  app.viewport.syncAll();
+  // 板は y = 2.4 の平面。乗っていれば y がそこに一致する
+  return { landed, onPlane: Math.abs(landed[1] - 2.4) < 1e-3 };
+});
+check(
+  "サーフェススナップで別オブジェクトの面に乗る",
+  surfaceSnap.onPlane,
+  `着地 ${surfaceSnap.landed.map((n) => n.toFixed(3)).join(",")}`,
 );
 
 /* 28. まとまりの操作（複製 / 抽出 / 結合 / 分離 / ミラー） */
@@ -1526,7 +1617,38 @@ check(
   `3D 2 面 → 島 ${uvSync.chosen.join(",")} / 島 1 → 面 ${uvSync.faces.join(",")} / チェッカー ${uvSync.checkerMaterial}`,
 );
 
-/* 30. 例外が出ていない */
+/* 30. 修飾キーは 2 段階。一度使っても消えない（docs/17 の 6 章） */
+await page.evaluate(() => window.macbeth.setMode("model"));
+await page.keyboard.press("F11");
+await page.waitForTimeout(500);
+await page.mouse.click(ON_MESH.x, ON_MESH.y);
+await page.click("#modShift");
+const modAfterTap = await page.evaluate(() => document.getElementById("modShift").dataset.state);
+// SHF を立てたまま面を 2 枚足す。1 回目で消えるなら 2 回目は選び直しになる
+await page.waitForTimeout(500);
+await page.mouse.click(at(0.56, 0.52).x, at(0.56, 0.52).y);
+const compAfterFirst = await page.evaluate(() => window.macbeth.state.comp.size);
+await page.waitForTimeout(500);
+await page.mouse.click(at(0.4, 0.68).x, at(0.4, 0.68).y);
+const modStill = await page.evaluate(() => ({
+  state: document.getElementById("modShift").dataset.state,
+  comp: window.macbeth.state.comp.size,
+  hud: document.getElementById("hudMode").textContent,
+}));
+await page.click("#modShift");
+const modOff = await page.evaluate(() => window.macbeth.state.mods.shift);
+check(
+  "SHF は 2 段階で、使っても消えない",
+  modAfterTap === "on" &&
+    compAfterFirst >= 2 &&
+    modStill.state === "on" &&
+    modStill.comp >= compAfterFirst &&
+    modStill.hud.includes("SHF") &&
+    modOff === "off",
+  `${modAfterTap} → 選択 ${compAfterFirst} → ${modStill.comp}（${modStill.state}）→ ${modOff}`,
+);
+
+/* 31. 例外が出ていない */
 check("例外なし", errors.length === 0, errors.join(" / "));
 
 await page.screenshot({ path: SHOT });

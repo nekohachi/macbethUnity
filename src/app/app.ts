@@ -94,7 +94,12 @@ const COMP_MODES: Array<{ id: CompMode; label: string; key: string }> = [
 ];
 
 /** スナップの行き先の名前。HUD とオプションで使う。 */
-const SNAP_LABEL: Record<SnapKind, string> = { grid: "グリッド", vertex: "頂点", edge: "エッジ" };
+const SNAP_LABEL: Record<SnapKind, string> = {
+  grid: "グリッド",
+  vertex: "頂点",
+  edge: "カーブ / エッジ",
+  surface: "サーフェス",
+};
 
 const DISPLAY_KEYS: Record<string, Display> = {
   "4": "wire",
@@ -129,6 +134,8 @@ type ToolEntry =
       /** 押されている状態を tool / compMode と照合して出す。 */
       tool?: string;
       compMode?: CompMode;
+      /** ツールでもコンポーネントモードでもない、独自のオン / オフ（スナップなど）。 */
+      pressed?: () => boolean;
       /** 長押しのサークルメニュー。 */
       radial?: () => RadialMenu;
       onTap: (button: HTMLElement) => void;
@@ -712,6 +719,15 @@ export class App {
       return hit;
     }
 
+    // サーフェスは Maya の Make Live と同じ考え方。行き先の画面位置からレイを撃って、
+    // 当たった面の上に乗せる。自分のオブジェクトは常に外す（自分の面に貼り付くため）
+    if (kind === "surface") {
+      const at = this.manipulator.toScreen(world);
+      const hit = this.picker.pickSurface(at, this.state.selected);
+      this.snapHit = hit ? hit.point.clone() : null;
+      return this.snapHit;
+    }
+
     // 画面上の距離で探す。ワールドの距離だとカメラの寄り引きで効き方が変わる
     const at = this.manipulator.toScreen(world);
     const limit = 40;
@@ -813,12 +829,10 @@ export class App {
   private finishTool(p: ScreenPoint, e: PointerEvent, moved: boolean): void {
     if (this.state.tool === "multicut") {
       this.doMultiCut();
-      if (this.state.releaseLatches()) this.syncModButtons();
       return;
     }
     if (this.state.tool === "bevel") {
       this.endBevel(moved);
-      if (this.state.releaseLatches()) this.syncModButtons();
       return;
     }
     const m = this.marquee;
@@ -856,7 +870,6 @@ export class App {
     } else if (!moved) {
       this.applySelectResult(this.selector.click(p, e));
     }
-    if (this.state.releaseLatches()) this.syncModButtons();
   }
 
   /* ---- ベベル ---------------------------------------------------------- */
@@ -1465,6 +1478,45 @@ export class App {
       SE: { label: "反転 U", sub: "Flip U", icon: ICONS.sym, run: () => uv.transformSelection("flipU") },
       S: { label: "反転 V", sub: "Flip V", icon: ICONS.sym, run: () => uv.transformSelection("flipV") },
       SW: { label: "90° 回転", sub: "Rotate", icon: ICONS.rotate, run: () => uv.transformSelection("rotate90") },
+    };
+  }
+
+  /** スナップのオン / オフ。種類はそのまま。 */
+  private toggleSnap(): void {
+    this.state.snapOn = !this.state.snapOn;
+    this.syncToggleButtons();
+    this.refresh();
+    this.hud.toast(
+      this.state.snapOn ? `スナップ オン: ${SNAP_LABEL[this.state.snap.kind]}` : "スナップ オフ",
+    );
+  }
+
+  /** 種類を選ぶ。選んだらスナップも立てる（選んだのに効かないと分かりにくい）。 */
+  private setSnapKind(kind: SnapKind): void {
+    this.state.snap.kind = kind;
+    this.state.snapOn = true;
+    this.syncToggleButtons();
+    this.refresh();
+    this.hud.toast(`スナップ: ${SNAP_LABEL[kind]}`);
+  }
+
+  private snapMenu(): RadialMenu {
+    return {
+      N: { label: "グリッド", sub: "Grid  X", icon: ICONS.wire, run: () => this.setSnapKind("grid") },
+      E: { label: "頂点", sub: "Point  V", icon: ICONS.vVert, run: () => this.setSnapKind("vertex") },
+      S: { label: "カーブ / エッジ", sub: "Curve  C", icon: ICONS.vEdge, run: () => this.setSnapKind("edge") },
+      W: { label: "サーフェス", sub: "Surface", icon: ICONS.vFace, run: () => this.setSnapKind("surface") },
+      SW: {
+        label: "オフ",
+        sub: "Off",
+        icon: ICONS.snap,
+        run: () => {
+          this.state.snapOn = false;
+          this.syncToggleButtons();
+          this.refresh();
+          this.hud.toast("スナップ オフ");
+        },
+      },
     };
   }
 
@@ -2078,6 +2130,11 @@ export class App {
     }
   }
 
+  /** スナップのように自前でオン / オフを持つツールボタンを描き直す。 */
+  private syncToggleButtons(): void {
+    this.renderToolColumn();
+  }
+
   private updateHistoryButtons(): void {
     byId<HTMLButtonElement>("btnUndo").disabled = !this.history.canUndo;
     byId<HTMLButtonElement>("btnRedo").disabled = !this.history.canRedo;
@@ -2119,6 +2176,14 @@ export class App {
         title: "ベベル（エッジを選んで左右にドラッグ）",
         tool: "bevel",
         onTap: () => this.setTool("bevel"),
+      },
+      {
+        kind: "button",
+        icon: ICONS.snap,
+        title: "スナップ（長押しで グリッド / 頂点 / カーブ / サーフェス）",
+        pressed: () => this.state.snapOn,
+        radial: () => this.snapMenu(),
+        onTap: () => this.toggleSnap(),
       },
       { kind: "separator" },
       { kind: "label", text: "選択" },
@@ -2200,6 +2265,10 @@ export class App {
       if (entry.compMode) {
         b.dataset.compMode = entry.compMode;
         b.setAttribute("aria-pressed", String(this.state.compMode === entry.compMode));
+      }
+      if (entry.pressed) {
+        b.dataset.toggle = "1";
+        b.setAttribute("aria-pressed", String(entry.pressed()));
       }
       if (entry.radial) {
         b.dataset.radial = "1";
@@ -2285,9 +2354,12 @@ export class App {
         this.refresh();
       },
       onSnapChange: (key, value) => {
-        if (key === "kind") this.state.snap.kind = value as SnapKind;
-        else this.state.snap.step = value as number;
-        this.refresh();
+        // パネルで種類を選ぶのも「使うつもり」なので、サークルメニューと同じく立てる
+        if (key === "kind") this.setSnapKind(value as SnapKind);
+        else {
+          this.state.snap.step = value as number;
+          this.refresh();
+        }
       },
       onBevelChange: (key, value) => {
         if (key === "segments") this.state.bevel.segments = value;
@@ -2415,10 +2487,11 @@ export class App {
   }
 
   private buildCluster(): void {
+    // オンとオフの 2 段階だけ。使っても消えないので、消すのはもう一度押したとき
     const cycle = (name: "shift" | "ctrl" | "alt") => {
-      const cur = this.state.mods[name];
-      this.state.mods[name] = cur === "off" ? "latch" : cur === "latch" ? "lock" : "off";
+      this.state.mods[name] = this.state.mods[name] === "off" ? "on" : "off";
       this.syncModButtons();
+      this.hud.refreshStats();
     };
     byId("modShift").addEventListener("click", () => cycle("shift"));
     byId("modCtrl").addEventListener("click", () => cycle("ctrl"));

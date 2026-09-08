@@ -26,6 +26,10 @@ export const ICONS = {
   smooth: "<circle cx=\"12\" cy=\"12\" r=\"8.6\" fill=\"currentColor\" fill-opacity=\".5\"/><path d=\"M8 15.4a6 6 0 0 1 5-6.6\"/>",
   sym: "<path d=\"M12 3v18\" stroke-dasharray=\"2.4 2.4\"/><path d=\"M9.4 7 4.5 12l4.9 5zM14.6 7l4.9 5-4.9 5z\"/>",
   xform: "<path d=\"M12 3v18M3 12h18\"/><circle cx=\"12\" cy=\"12\" r=\"6.5\"/><rect x=\"16.6\" y=\"16.6\" width=\"4.2\" height=\"4.2\"/><path d=\"M12 3l-2 2M12 3l2 2M3 12l2-2M3 12l2 2\"/>",
+  // 磁石。スナップ
+  snap: "<path d=\"M6 20V10a6 6 0 0 1 12 0v10\"/><path d=\"M6 15h4v5H6zM14 15h4v5h-4z\"/>",
+  // 十字と中心。マニピュレータ / ピボット
+  pivot: "<circle cx=\"12\" cy=\"12\" r=\"2.2\" fill=\"currentColor\"/><path d=\"M12 2.6v5.6M12 15.8v5.6M2.6 12h5.6M15.8 12h5.6\"/><circle cx=\"12\" cy=\"12\" r=\"6.6\" stroke-dasharray=\"2.2 2.4\"/>",
   file: "<path d=\"M6 3h8l5 5v13H6z\"/><path d=\"M14 3v5h5\"/>",
   rename: "<path d=\"M4 20h16\"/><path d=\"M15.4 4.6 19 8.2 8.6 18.6 4.4 19.6l1-4.2z\"/>",
   dup: "<rect x=\"3.6\" y=\"3.6\" width=\"12\" height=\"12\" rx=\"1\"/><path d=\"M8.4 20.4h12v-12\"/>",

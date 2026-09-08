@@ -242,7 +242,8 @@ export function renderOptions(body: HTMLElement, state: OptionsState, host: Pane
     for (const [key, label] of [
       ["grid", "グリッド  X"],
       ["vertex", "頂点  V"],
-      ["edge", "エッジ  C"],
+      ["edge", "カーブ  C"],
+      ["surface", "面"],
     ] as const) {
       const b = el("button", "seg") as HTMLButtonElement;
       b.textContent = label;
@@ -264,7 +265,7 @@ export function renderOptions(body: HTMLElement, state: OptionsState, host: Pane
       el(
         "div",
         "hint",
-        "CTL ラッチ中、または X / V / C を押している間だけ効きます。\n移動のときだけ働き、寄せ先は緑で光ります。",
+        "ツール列のスナップがオンのとき、または X / V / C を押している間だけ効きます。\n移動のときだけ働き、寄せ先は緑で光ります。",
       ),
     );
     body.appendChild(s);

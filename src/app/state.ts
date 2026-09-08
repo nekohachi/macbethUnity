@@ -10,10 +10,16 @@ export type Mode = "model" | "uv" | "sculpt" | "material";
 export type CompMode = "object" | "vertex" | "edge" | "face";
 export type Display = "wire" | "shaded" | "shadedWire" | "smooth" | "checker";
 export type Manip = "all" | "move" | "rotate" | "scale";
-/** スナップの行き先。Maya の X（グリッド）/ V（頂点）/ C（エッジ）に対応する。 */
-export type SnapKind = "grid" | "vertex" | "edge";
-/** 修飾キーのラッチ。off →（タップ）latch →（もう一度）lock。 */
-export type ModState = "off" | "latch" | "lock";
+/**
+ * スナップの行き先。Maya の X（グリッド）/ V（頂点）/ C（カーブ = ここではエッジ）。
+ * サーフェスは Maya の Make Live にあたるもので、キーは無い（docs/17 の 7.3）。
+ */
+export type SnapKind = "grid" | "vertex" | "edge" | "surface";
+/**
+ * 修飾キーのラッチ。オンとオフの 2 段階だけ（docs/17 の 6 章）。
+ * 一度使ったら消える中間の状態は置かない。消すのは自分でもう一度押したとき。
+ */
+export type ModState = "off" | "on";
 
 export interface Mods {
   shift: ModState;
@@ -103,11 +109,16 @@ export class AppState {
   vertexOpts = { mergeDist: 0.05, extrudeWidth: 0.25 };
   /**
    * スナップ。kind が行き先の種類、step はグリッドの刻み。
-   * 効くのは CTL ラッチ中、または X / V / C を押している間。
+   * 効くのはツール列のスナップがオンのとき、または X / V / C を押している間。
+   * CTL とは無関係（docs/17 の 7.1）。
    */
   snap: { kind: SnapKind; step: number } = { kind: "grid", step: 0.5 };
+  /** ツール列のスナップボタン。押している間だけのキーとは別に、ずっと効く。 */
+  snapOn = false;
   /** X / V / C を押している間だけ立つ。キーで一時的にスナップを効かせるため。 */
   snapKeyHeld = false;
+  /** UV モードのスナップ。種類はグリッドと UV 頂点だけ（docs/17 の 7.4）。 */
+  uvSnap: { kind: "grid" | "vertex"; step: number } = { kind: "grid", step: 1 / 8 };
   /** ミラーの軸。0 = X、1 = Y、2 = Z。 */
   mirrorAxis: 0 | 1 | 2 = 0;
   /** マルチカット。snapStep は % で 0 ならオフ。 */
@@ -132,21 +143,18 @@ export class AppState {
     return this.mods[name] !== "off";
   }
 
-  /** スナップが効いているか。CTL ラッチか、X / V / C を押している間。 */
+  /** スナップが効いているか。ツール列のボタンか、X / V / C を押している間。 */
   get snapping(): boolean {
-    return this.snapKeyHeld || this.modOn("ctrl");
+    return this.snapKeyHeld || this.snapOn;
   }
 
-  /** latch は 1 回使ったら解除する。lock は残す。 */
-  releaseLatches(): boolean {
-    let changed = false;
-    for (const k of ["shift", "ctrl", "alt"] as const) {
-      if (this.mods[k] === "latch") {
-        this.mods[k] = "off";
-        changed = true;
-      }
-    }
-    return changed;
+  /** オンになっている修飾の名前。HUD に出して消し忘れに気づけるようにする。 */
+  activeMods(): string[] {
+    const out: string[] = [];
+    if (this.mods.shift !== "off") out.push("SHF");
+    if (this.mods.ctrl !== "off") out.push("CTL");
+    if (this.mods.alt !== "off") out.push("ALT");
+    return out;
   }
 
   select(o: SceneObject | null): void {

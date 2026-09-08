@@ -74,10 +74,15 @@ export class Picker {
     return this.project(view, p[vi * 3], p[vi * 3 + 1], p[vi * 3 + 2]);
   }
 
-  /** 面のレイキャスト。手前のものを 1 つ返す。 */
-  pickSurface(p: ScreenPoint): SurfaceHit | null {
+  /**
+   * 面のレイキャスト。手前のものを 1 つ返す。
+   * `exclude` を渡すとそのオブジェクトを外す（サーフェススナップで自分に当たり続けるのを避ける）。
+   */
+  pickSurface(p: ScreenPoint, exclude?: SceneObject | null): SurfaceHit | null {
     raycaster.setFromCamera(this.ndc(p), this.viewport.camera);
-    const views = this.viewport.allViews().filter((v) => v.object.visible);
+    const views = this.viewport
+      .allViews()
+      .filter((v) => v.object.visible && (!exclude || v.object !== exclude));
     const hits = raycaster.intersectObjects(
       views.map((v) => v.surface),
       false,
