@@ -3307,6 +3307,142 @@ check(
     `島の頂点 ${cubeFlow.chartVerts}/${cubeFlow.wantVerts} / 0〜1 に収まる ${cubeFlow.packed}`,
 );
 
+/* 43c. 手順 B: 円柱をループで切って開いて格子にする（`20` の T5） */
+const cylinderFlow = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const core = window.macbethCore;
+  const objectsBefore = app.state.doc.objects.length;
+  const object = app.state.doc.addObject("cylinder");
+  object.params.sdAxis = 12;
+  object.params.sdHeight = 3;
+  object.params.sdCaps = 1;
+  object.rebuild();
+  app.viewport.syncAll();
+  app.state.select(object);
+  const out = {};
+
+  // 1. UV モードへ。取り込んだ UV（側面の帯 + 上下の円）
+  app.setMode("uv");
+  out.imported = app.uv.stats().charts;
+
+  // 2〜3. 3D で側面の縦の辺をループで選んでカット
+  app.setCompMode("edge");
+  const view = app.viewport.viewOf(object);
+  // 側面の縦の辺（高さが変わり、上下のリングを結ぶもの）
+  let vertical = -1;
+  view.edges.forEach(([a, b], i) => {
+    if (vertical >= 0) return;
+    const pa = object.mesh.getPosition(a);
+    const pb = object.mesh.getPosition(b);
+    const sameXZ = Math.hypot(pa[0] - pb[0], pa[2] - pb[2]) < 1e-6;
+    if (Math.abs(pa[1] - pb[1]) > 1e-6 && !sameXZ) return;
+    if (Math.abs(pa[1] - pb[1]) > 1e-6) vertical = i;
+  });
+  const loop3d = core.edgeLoopFrom(object.mesh, view.edges[vertical][0], view.edges[vertical][1]);
+  const keys = new Set(loop3d.edges.map(([a, b]) => core.edgeKey(a, b)));
+  app.state.comp.clear();
+  view.edges.forEach(([a, b], i) => {
+    if (keys.has(core.edgeKey(a, b))) app.state.comp.add(i);
+  });
+  out.loop3d = app.state.comp.size;
+  app.pushSelectionToUvForTest();
+  out.loop2d = app.uv.chosen.size;
+  app.uv.cutOrSew(true);
+  out.afterCut = app.uv.stats().charts;
+
+  // 4. 展開。帯が立っている（T2）
+  app.uv.unfold();
+  out.afterUnfold = app.uv.stats().charts;
+
+  // 5. 側面の帯の縁を選んで「境界の直線化」
+  const t = app.uv.view.uvTopology;
+  // 側面の島 = いちばん面の多い島
+  const band = t.charts.reduce((best, c, i) => (c.faces.length > t.charts[best].faces.length ? i : best), 0);
+  const border = [];
+  for (let i = 0; i < t.edges.length; i++) {
+    if (t.edgeChart[i] === band && t.edgeFaces[i].length < 2) border.push(i);
+  }
+  // ひと続きの縁だけを選ぶ
+  const loop = core.uvEdgeLoopFrom(t, border[0]);
+  app.uv.setUnit("edge");
+  app.uv.chosen.clear();
+  for (const e of loop.edges) app.uv.chosen.add(e);
+  app.uv.refreshHighlight();
+  // 縁がどれだけ軸に沿っているか。1 本ごとに「短いほうの成分 / 長さ」を見る
+  const crookedness = () => {
+    const now = app.uv.view.uvTopology;
+    let worst = 0;
+    for (const e of app.uv.chosen) {
+      const [a, b] = now.edges[e];
+      const du = Math.abs(now.vertexUv[b * 2] - now.vertexUv[a * 2]);
+      const dv = Math.abs(now.vertexUv[b * 2 + 1] - now.vertexUv[a * 2 + 1]);
+      const len = Math.hypot(du, dv);
+      if (len > 1e-9) worst = Math.max(worst, Math.min(du, dv) / len);
+    }
+    return worst;
+  };
+  // まっすぐな縁を一度わざと波打たせてから直す
+  const map1 = object.mesh.uvSets.get("map1");
+  let nudge = 0;
+  for (const e of app.uv.chosen) {
+    for (const v of t.edges[e]) {
+      for (const key of t.vertexCorners[v] ?? []) {
+        const at = core.cornerIndex(object.mesh, key);
+        if (at >= 0) map1[at * 2 + 1] += ((nudge % 3) - 1) * 0.02;
+      }
+      nudge++;
+    }
+  }
+  app.uv.rebuild();
+  out.borderBefore = crookedness();
+  app.uv.straightenBorderEdges();
+  out.borderAfter = crookedness();
+
+  // 6. 格子化。帯の島が長方形の格子になる
+  app.uv.setUnit("shell");
+  app.uv.chosen.clear();
+  app.uv.chosen.add(band);
+  app.uv.refreshHighlight();
+  app.uv.gridChart();
+  const t2 = app.uv.view.uvTopology;
+  const rows = core.uvGridRows(t2, band);
+  out.gridded = false;
+  if (rows) {
+    out.gridded = rows.every((row) => {
+      const v0 = t2.vertexUv[row[0] * 2 + 1];
+      return row.every((v) => Math.abs(t2.vertexUv[v * 2 + 1] - v0) < 1e-4);
+    });
+    out.rows = `${rows.length}×${rows[0].length}`;
+  }
+
+  // 7. 整列。3 島が 0〜1 に詰まる
+  app.uv.repack();
+  const uv = object.mesh.uvSets.get("map1");
+  out.packed = [...uv].every((n) => n >= -1e-4 && n <= 1 + 1e-4);
+  out.charts = app.uv.stats().charts;
+
+  app.setMode("model");
+  app.setCompMode("object");
+  app.state.select(null);
+  app.state.doc.objects.length = objectsBefore;
+  app.viewport.syncAll();
+  return out;
+});
+check(
+  "円柱: ループで切って開いて格子にする（手順 B）",
+  cylinderFlow.loop3d >= 3 &&
+    cylinderFlow.loop2d >= 3 &&
+    cylinderFlow.afterCut >= 3 &&
+    cylinderFlow.afterUnfold >= 3 &&
+    cylinderFlow.borderBefore > 0.02 &&
+    cylinderFlow.borderAfter < 1e-4 &&
+    cylinderFlow.gridded &&
+    cylinderFlow.packed,
+  `取り込み 島 ${cylinderFlow.imported} / 3D ループ ${cylinderFlow.loop3d} 本 → 2D ${cylinderFlow.loop2d} 本 → 展開 ${cylinderFlow.afterUnfold} 島 / ` +
+    `カット ${cylinderFlow.afterCut} 島 / 境界の直線化 ゆがみ ${cylinderFlow.borderBefore?.toFixed(3)} → ${cylinderFlow.borderAfter?.toExponential(1)} / ` +
+    `格子化 ${cylinderFlow.rows}（そろった ${cylinderFlow.gridded}）/ 整列 ${cylinderFlow.charts} 島・0〜1 ${cylinderFlow.packed}`,
+);
+
 /* 44. ツール列のグループ（`21` の 4 章） */
 
 /* 44-1. ボタンは 7 つ、右のオプションパネルは無い */

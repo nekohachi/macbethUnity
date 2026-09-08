@@ -162,3 +162,81 @@ export function uvVertexPath(t: UvTopology, a: number, b: number): number[] | nu
   }
   return null;
 }
+
+/**
+ * 頂点 `from` から辺 `edge` の向きへ、格子に沿ってまっすぐ進む。通った頂点を順に返す。
+ *
+ * 進み方は `uvEdgeLoopFrom` の内側と同じ「入ってきた辺と面を共有しない辺」。
+ * ただし価数は問わないので、島の縁の上でも角で止まるだけで真っすぐ進める。
+ */
+export function uvStraightRun(t: UvTopology, from: number, edge: number): { verts: number[]; edges: number[] } {
+  const at = uvIncidentEdges(t);
+  const first = t.edges[edge];
+  if (!first) return { verts: [from], edges: [] };
+  let v = first[0] === from ? first[1] : first[0];
+  const verts = [from, v];
+  const edges = [edge];
+  const seen = new Set<number>([edge]);
+
+  for (let guard = 0; guard < 1000000; guard++) {
+    const incoming = t.edgeFaces[edges[edges.length - 1]] ?? [];
+    const next = (at[v] ?? []).filter(
+      (e) => !seen.has(e) && !(t.edgeFaces[e] ?? []).some((f) => incoming.includes(f)),
+    );
+    if (next.length !== 1) break;
+    const e = next[0];
+    const [a, b] = t.edges[e];
+    v = a === v ? b : a;
+    if (verts.includes(v)) break; // 一周した
+    seen.add(e);
+    edges.push(e);
+    verts.push(v);
+  }
+  return { verts, edges };
+}
+
+/**
+ * 島が四角形の格子（帯）なら、行ごとの UV 頂点の並びを返す。格子でなければ null。
+ * 「格子化」（`20` の T5）が使う。
+ */
+export function uvGridRows(t: UvTopology, chart: number): number[][] | null {
+  const faces = t.charts[chart]?.faces ?? [];
+  if (!faces.length) return null;
+
+  const at = uvIncidentEdges(t);
+  const verts = uvChartVertices(t, chart);
+  if (verts.length < 4) return null;
+
+  // 角を探す。格子の四隅は「この島の辺が 2 本だけ集まる点」
+  const inChart = new Set(verts);
+  const degree = (v: number): number[] => (at[v] ?? []).filter((e) => t.edgeChart[e] === chart);
+  const corner = verts.find((v) => degree(v).length === 2);
+  if (corner === undefined) return null;
+
+  const [e0, e1] = degree(corner);
+  // 1 行目と、行の頭を並べる列
+  const firstRow = uvStraightRun(t, corner, e0);
+  const column = uvStraightRun(t, corner, e1);
+  if (firstRow.verts.length < 2 || column.verts.length < 2) return null;
+
+  const rows: number[][] = [firstRow.verts];
+  for (let k = 1; k < column.verts.length; k++) {
+    const v = column.verts[k];
+    const incoming = t.edgeFaces[column.edges[k - 1]] ?? [];
+    // 行の向きは「列の辺と面を共有する辺」。縁の上なので 1 本に決まる
+    const next = degree(v).filter(
+      (e) => e !== column.edges[k - 1] && (t.edgeFaces[e] ?? []).some((f) => incoming.includes(f)),
+    );
+    if (next.length !== 1) return null;
+    const row = uvStraightRun(t, v, next[0]);
+    if (row.verts.length !== firstRow.verts.length) return null;
+    rows.push(row.verts);
+  }
+
+  // 島の頂点をちょうど 1 回ずつ通っていること（格子になっている証拠）
+  const covered = new Set<number>();
+  for (const row of rows) for (const v of row) covered.add(v);
+  if (covered.size !== verts.length) return null;
+  for (const v of covered) if (!inChart.has(v)) return null;
+  return rows;
+}

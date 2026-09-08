@@ -2102,7 +2102,12 @@ export class App {
         ...head,
         SE: { label: "整列", sub: "Layout", icon: ICONS.vMulti, run: () => uv.repack() },
         S: { label: "直線化", sub: "Straighten", icon: ICONS.vEdge, run: () => uv.tidy("straighten") },
-        SW: { label: "整列 U", sub: "Align U", icon: ICONS.vMulti, run: () => uv.tidy("alignU") },
+        SW: {
+          label: "境界の直線化",
+          sub: "Straighten Border",
+          icon: ICONS.vEdge,
+          run: () => uv.straightenBorderEdges(),
+        },
         W: { label: "整列 V", sub: "Align V", icon: ICONS.vMulti, run: () => uv.tidy("alignV") },
         NW: { label: "マージ", sub: "Merge", icon: ICONS.vVert, run: () => uv.tidy("merge") },
       };
@@ -2119,11 +2124,12 @@ export class App {
     }
     return {
       ...head,
-      SE: { label: "自動 UV", sub: "Auto", icon: ICONS.mUV, run: () => uv.autoUnwrap() },
+      // 自動 UV は「展開」の長押しへ移した（`20` の T7）。ここは整えるものだけ
+      SE: { label: "90° 回転", sub: "Rotate", icon: ICONS.rotate, run: () => uv.transformSelection("rotate90") },
       S: { label: "整列", sub: "Layout", icon: ICONS.vMulti, run: () => uv.repack() },
-      SW: { label: "反転 U", sub: "Flip U", icon: ICONS.sym, run: () => uv.transformSelection("flipU") },
-      W: { label: "反転 V", sub: "Flip V", icon: ICONS.sym, run: () => uv.transformSelection("flipV") },
-      NW: { label: "90° 回転", sub: "Rotate", icon: ICONS.rotate, run: () => uv.transformSelection("rotate90") },
+      SW: { label: "格子化", sub: "Gridding", icon: ICONS.wire, run: () => uv.gridChart() },
+      W: { label: "反転 U", sub: "Flip U", icon: ICONS.sym, run: () => uv.transformSelection("flipU") },
+      NW: { label: "反転 V", sub: "Flip V", icon: ICONS.sym, run: () => uv.transformSelection("flipV") },
     };
   }
 

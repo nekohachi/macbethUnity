@@ -19,6 +19,10 @@ import {
   uvArcBetween,
   uvLoopVertices,
   uvVertexPath,
+  uvGridRows,
+  uvStraightRun,
+  gridding,
+  straightenBorder,
   emptyRecipe,
   measure,
   recompute,
@@ -1150,5 +1154,111 @@ describe("U23b. 開いた筒の縁", () => {
     expect(loop.edges.length).toBe(26);
     expect(loop.closed).toBe(true);
     for (const e of loop.edges) expect(t.edgeFaces[e].length).toBe(1);
+  });
+});
+
+/**
+ * U24〜U25. 格子化と境界の直線化（`20` の T5）。
+ *
+ * どちらも「並びが意味を持つ」ので、UV 頂点の順を core が出せることが前提。
+ */
+describe("U24. 格子化", () => {
+  /** 縦 1 本で切った筒。側面だけの四角形の帯になる。 */
+  const bandTopology = () => {
+    const mesh = tube(12, 3);
+    const recipe = emptyRecipe();
+    recipe.seams.add(edgeKey(0, 1));
+    recompute(mesh, recipe);
+    return { mesh, t: buildUvTopology(mesh, recipe.seams)! };
+  };
+
+  it("帯の行と列を取り出せる", () => {
+    const { t } = bandTopology();
+    const rows = uvGridRows(t, 0);
+    expect(rows).not.toBeNull();
+    // 12 面ぶんの帯を縦に切ったので、13 列 × 2 行
+    expect(rows!.length).toBe(2);
+    expect(rows![0].length).toBe(13);
+    expect(rows![1].length).toBe(13);
+    // すべての UV 頂点をちょうど 1 回ずつ通っている
+    expect(new Set(rows!.flat()).size).toBe(26);
+  });
+
+  it("格子化すると行の V と列の U がそろう", () => {
+    const { mesh, t } = bandTopology();
+    const rows = uvGridRows(t, 0)!;
+    // UV 頂点ごとの位置に当てる（コーナーが重なるので、まず 1 点ずつに集める）
+    const count = t.vertexUv.length / 2;
+    const flat = new Float64Array(count * 2);
+    for (let v = 0; v < count; v++) {
+      flat[v * 2] = t.vertexUv[v * 2];
+      flat[v * 2 + 1] = t.vertexUv[v * 2 + 1];
+    }
+    gridding(flat, rows);
+
+    for (const row of rows) {
+      const v0 = flat[row[0] * 2 + 1];
+      for (const v of row) expect(flat[v * 2 + 1]).toBeCloseTo(v0, 9);
+    }
+    for (let c = 0; c < rows[0].length; c++) {
+      const u0 = flat[rows[0][c] * 2];
+      for (const row of rows) expect(flat[row[c] * 2]).toBeCloseTo(u0, 9);
+    }
+    // 列の間隔も等しい
+    const step = flat[rows[0][1] * 2] - flat[rows[0][0] * 2];
+    for (let c = 1; c < rows[0].length; c++) {
+      expect(flat[rows[0][c] * 2] - flat[rows[0][c - 1] * 2]).toBeCloseTo(step, 9);
+    }
+    void mesh;
+  });
+
+  it("格子でない島は null", () => {
+    const mesh = cube();
+    const recipe = emptyRecipe();
+    recipe.seams = netSeams(mesh);
+    recompute(mesh, recipe);
+    const t = buildUvTopology(mesh, recipe.seams)!;
+    // 十字の展開図は長方形の格子ではない
+    expect(uvGridRows(t, 0)).toBeNull();
+  });
+
+  it("まっすぐ進む走査は角で止まる", () => {
+    const { t } = bandTopology();
+    // 角（この島の辺が 2 本だけ集まる点）から進むと、行の端まで行って止まる
+    const at: number[][] = [];
+    for (let v = 0; v < t.vertexUv.length / 2; v++) at.push([]);
+    t.edges.forEach(([a, b], i) => {
+      at[a].push(i);
+      at[b].push(i);
+    });
+    const corner = at.findIndex((list) => list.length === 2);
+    expect(corner).toBeGreaterThanOrEqual(0);
+    const run = uvStraightRun(t, corner, at[corner][0]);
+    expect(run.verts.length).toBeGreaterThan(2);
+    expect(run.verts.length).toBeLessThanOrEqual(13);
+  });
+});
+
+describe("U25. 境界の直線化", () => {
+  it("横に並んだ縁は V がそろう", () => {
+    // 段のある帯を手で作る。上の縁が波打っている
+    const uv = Float64Array.from([0, 0.02, 1, 0.05, 2, -0.03, 3, 0.01]);
+    straightenBorder(uv, [0, 1, 2, 3]);
+    const v0 = uv[1];
+    for (let i = 0; i < 4; i++) expect(uv[i * 2 + 1]).toBeCloseTo(v0, 9);
+    // U は動かさない
+    expect(uv[0]).toBeCloseTo(0, 9);
+    expect(uv[6]).toBeCloseTo(3, 9);
+  });
+
+  it("角では向きが変わるので、まとまりごとにそろう", () => {
+    // 横 3 点 → 縦 2 点の L 字
+    const uv = Float64Array.from([0, 0.02, 1, -0.01, 2, 0.03, 2.04, 1, 1.97, 2]);
+    straightenBorder(uv, [0, 1, 2, 3, 4]);
+    // 横のまとまりは V がそろう
+    expect(uv[1]).toBeCloseTo(uv[3], 9);
+    expect(uv[3]).toBeCloseTo(uv[5], 9);
+    // 縦のまとまりは U がそろう
+    expect(uv[6]).toBeCloseTo(uv[8], 9);
   });
 });

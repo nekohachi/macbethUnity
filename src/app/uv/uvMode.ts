@@ -24,6 +24,10 @@ import {
   uvChartVertices,
   uvEdgeLoopFrom,
   uvVertexPath,
+  uvGridRows,
+  uvLoopVertices,
+  straightenBorder,
+  gridding,
   type CornerKey,
   type SceneObject,
   type UvRecipe,
@@ -799,6 +803,106 @@ export class UvMode {
    * 選んだ UV を整える（`15` の 6.3 の残り。C3）。
    * core の純粋な関数を、選択中のコーナーに当てて差分として記録する。
    */
+  /**
+   * 島の縁を直線に整える（`20` の T5）。選んだ辺が縁の並びになっているときだけ効く。
+   * 縁は角で向きが変わるので、`straightenBorder` が向きのまとまりごとにそろえる。
+   */
+  straightenBorderEdges(): void {
+    const object = this.host.object();
+    const t = this.view.uvTopology;
+    if (!object || !t) return;
+    if (this.unit !== "edge" || this.chosen.size < 2) {
+      this.host.toast("縁の辺を 2 本以上選んでから実行してください");
+      return;
+    }
+    const chosen = [...this.chosen];
+    if (chosen.some((e) => (t.edgeFaces[e]?.length ?? 0) >= 2)) {
+      this.host.toast("縁の辺を選んでください");
+      return;
+    }
+    // 選んだ辺を縁の順に並べる
+    const loop = uvEdgeLoopFrom(t, chosen[0]);
+    const want = new Set(chosen);
+    const part = { edges: loop.edges.filter((e) => want.has(e)), closed: loop.closed };
+    if (part.edges.length !== chosen.length) {
+      this.host.toast("ひと続きの縁を選んでください");
+      return;
+    }
+    const ordered = uvLoopVertices(t, part);
+    this.applyToUvVertices(ordered, "境界の直線化", (temp, list) => straightenBorder(temp, list));
+  }
+
+  /** 島を格子にそろえる（`20` の T5）。四角形の帯のときだけ効く。 */
+  gridChart(): void {
+    const t = this.view.uvTopology;
+    if (!t) return;
+    const chart = this.unit === "shell" ? [...this.chosen][0] : this.selectedCorners().chart;
+    if (chart === undefined || chart < 0) {
+      this.host.toast("島を選んでから実行してください");
+      return;
+    }
+    const rows = uvGridRows(t, chart);
+    if (!rows) {
+      this.host.toast("四角形の帯（格子）になっている島でだけ使えます");
+      return;
+    }
+    const flat = rows.flat();
+    this.applyToUvVertices(flat, "格子化", (temp) => gridding(temp, rows));
+  }
+
+  /**
+   * UV 頂点の並びに core の関数を当てる。
+   *
+   * core の関数は「点の並び」で受けるが、並びが意味を持つもの（縁・格子）は
+   * **UV 頂点**の順でなければならない。同じ UV に何本ものコーナーが重なるので、
+   * UV 頂点ごとの配列に写して当ててから、コーナーへ書き戻す。
+   */
+  private applyToUvVertices(
+    vertices: number[],
+    label: string,
+    run: (temp: Float64Array, list: number[]) => void,
+  ): void {
+    const object = this.host.object();
+    const t = this.view.uvTopology;
+    const uv = object?.mesh.uvSets.get(UV_SET);
+    if (!object || !t || !uv || vertices.length < 2) return;
+
+    const corners: CornerKey[] = [];
+    for (const v of vertices) corners.push(...(t.vertexCorners[v] ?? []));
+    const unique = [...new Set(corners)];
+    const snapshot = this.host.snapshot();
+    const base = this.captureBase(unique);
+    const chart = t.vertexChart[vertices[0]] ?? -1;
+
+    // UV 頂点ごとの位置を集めて、そこへ当てる
+    const temp = new Float64Array(t.vertexUv.length / 2 > 0 ? (t.vertexUv.length / 2) * 2 : 0);
+    for (let v = 0; v < t.vertexUv.length / 2; v++) {
+      const key = t.vertexCorners[v]?.[0];
+      if (!key) continue;
+      const at = cornerIndex(object.mesh, key);
+      if (at < 0) continue;
+      temp[v * 2] = uv[at * 2];
+      temp[v * 2 + 1] = uv[at * 2 + 1];
+    }
+    run(temp, vertices);
+
+    // 同じ UV 頂点に乗るコーナーはすべて同じ位置へ
+    for (const v of vertices) {
+      for (const key of t.vertexCorners[v] ?? []) {
+        const at = cornerIndex(object.mesh, key);
+        if (at < 0) continue;
+        uv[at * 2] = temp[v * 2];
+        uv[at * 2 + 1] = temp[v * 2 + 1];
+      }
+    }
+
+    this.recordFrom(base, chart);
+    this.host.commit(label, snapshot);
+    this.rebuildGeometryOnly();
+    this.rebuild();
+    this.host.changed(label);
+  }
+
   tidy(kind: "alignU" | "alignV" | "straighten" | "merge" | "symmetry"): void {
     const object = this.host.object();
     if (!object) return;

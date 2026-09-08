@@ -78,6 +78,46 @@ const scenes = {
     app.uv.refreshHighlight();
   },
 
+  /** T5: 手順 B。円柱を縦に切って開き、帯を格子にしたところ。 */
+  "20-t5-cylinder": async () => {
+    const app = window.macbeth;
+    const core = window.macbethCore;
+    app.state.doc.objects.length = 0;
+    const object = app.state.doc.addObject("cylinder");
+    object.params.sdAxis = 12;
+    object.params.sdHeight = 3;
+    object.rebuild();
+    app.viewport.syncAll();
+    app.state.select(object);
+    app.setMode("uv");
+    app.setCompMode("edge");
+    const view = app.viewport.viewOf(object);
+    let vertical = -1;
+    view.edges.forEach(([a, b], i) => {
+      if (vertical >= 0) return;
+      const pa = object.mesh.getPosition(a);
+      const pb = object.mesh.getPosition(b);
+      if (Math.abs(pa[1] - pb[1]) > 1e-6 && Math.hypot(pa[0] - pb[0], pa[2] - pb[2]) < 1e-6) vertical = i;
+    });
+    const loop3d = core.edgeLoopFrom(object.mesh, view.edges[vertical][0], view.edges[vertical][1]);
+    const keys = new Set(loop3d.edges.map(([a, b]) => core.edgeKey(a, b)));
+    app.state.comp.clear();
+    view.edges.forEach(([a, b], i) => {
+      if (keys.has(core.edgeKey(a, b))) app.state.comp.add(i);
+    });
+    app.pushSelectionToUvForTest();
+    app.uv.cutOrSew(true);
+    app.uv.unfold();
+    const t = app.uv.view.uvTopology;
+    const band = t.charts.reduce((best, c, i) => (c.faces.length > t.charts[best].faces.length ? i : best), 0);
+    app.uv.setUnit("shell");
+    app.uv.chosen.clear();
+    app.uv.chosen.add(band);
+    app.uv.gridChart();
+    app.uv.repack();
+    app.uv.view.frameUnit();
+  },
+
   /** T8: ツール列のグループと、変形のカットイン。 */
   "20-t8-toolgroups": async () => {
     const app = window.macbeth;
@@ -151,7 +191,7 @@ await page.waitForFunction(() => window.macbeth?.state.doc.objects.length > 0, n
 
 await page.evaluate(scene);
 // 「両方」の表示にして、2D と 3D の両方が写るようにする
-if (NAME.startsWith("20-t2") || NAME.startsWith("20-t3") || NAME.startsWith("20-t4")) {
+if (NAME.startsWith("20-t2") || NAME.startsWith("20-t3") || NAME.startsWith("20-t4") || NAME.startsWith("20-t5")) {
   await page.evaluate(() => {
     document.querySelector('#uvSwitch [data-split="both"]')?.click();
   });
