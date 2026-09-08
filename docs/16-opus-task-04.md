@@ -116,6 +116,8 @@ export function measure(mesh: Mesh, chart: Chart, uv: Float32Array): Distortion;
 
 ---
 
+**ユーザーのフィードバック（2026-09-08）:** 7 点。設計は `17-c1-feedback-design.md`、作業は `18-opus-task-05.md`。**C2 は 18 の後。** 18 で `recipeFromMesh` と `base` が入るので、C2 の「自動 UV」は `seams` を作り直して `method` を `"lscm"` にし、`manual` を捨てて recompute する形になる（`"none"` からの移行を含む）。
+
 ## 3. タスク C2: 自動の切れ目
 
 ```ts
