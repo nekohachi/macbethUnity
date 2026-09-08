@@ -1163,7 +1163,143 @@ check(
     `エッジ ${connect.picked}本 → ${connect.afterEdges.faces}面 ${connect.afterEdges.points}点`,
 );
 
-/* 27. 例外が出ていない */
+/* 27. スナップ（グリッド / 頂点） */
+await page.keyboard.press("F8");
+await page.waitForTimeout(500);
+await page.mouse.click(ON_MESH.x, ON_MESH.y);
+const snap = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const object = app.state.selected;
+  const start = object.transform.position.slice();
+
+  /** マニピュレータの中心をつかんで運ぶ。 */
+  const dragCenter = async (dx, dy) => {
+    const canvas = document.getElementById("gl");
+    const pivot = app.pivotWorld();
+    const at = app.manipulator.toScreen(pivot);
+    const rect = canvas.getBoundingClientRect();
+    const from = { x: rect.x + at.x, y: rect.y + at.y };
+    const fire = (type, x, y) =>
+      canvas.dispatchEvent(
+        new PointerEvent(type, {
+          pointerId: 7,
+          pointerType: "mouse",
+          isPrimary: true,
+          clientX: x,
+          clientY: y,
+          buttons: type === "pointerup" ? 0 : 1,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    fire("pointerdown", from.x, from.y);
+    for (let i = 1; i <= 10; i++) fire("pointermove", from.x + (dx * i) / 10, from.y + (dy * i) / 10);
+    fire("pointerup", from.x + dx, from.y + dy);
+    await new Promise((r) => setTimeout(r, 30));
+  };
+
+  // スナップ無しで運ぶ。刻みには乗らないはず
+  await dragCenter(220, 0);
+  const free = object.transform.position.slice();
+  app.doUndo();
+
+  // グリッドスナップ（刻み 0.5）を効かせて同じ距離だけ運ぶ
+  app.state.snap.kind = "grid";
+  app.state.snap.step = 0.5;
+  app.state.snapKeyHeld = true;
+  await dragCenter(220, 0);
+  const grid = object.transform.position.slice();
+  app.state.snapKeyHeld = false;
+  app.doUndo();
+
+  return { start, free, grid };
+});
+const onGrid = snap.grid.every((v) => Math.abs(v / 0.5 - Math.round(v / 0.5)) < 1e-6);
+const offGrid = snap.free.some((v) => Math.abs(v / 0.5 - Math.round(v / 0.5)) > 1e-6);
+check(
+  "グリッドスナップで刻みに乗る",
+  offGrid && onGrid && Math.abs(snap.grid[0] - snap.start[0]) > 0.4,
+  `素 ${snap.free.map((n) => n.toFixed(3)).join(",")} → 刻み ${snap.grid.map((n) => n.toFixed(2)).join(",")}`,
+);
+
+/* 27b. 頂点スナップ: 別のオブジェクトの頂点にぴたりと乗る */
+const vertexSnap = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const objectsBefore = app.state.doc.objects.length;
+  // 離れた所に的の立方体を置く
+  const target = app.state.doc.addObject("cube");
+  target.transform = { ...target.transform, position: [2.4, 0.7, 0] };
+  const mover = app.state.doc.addObject("cube");
+  app.viewport.syncAll();
+  app.state.select(mover);
+  app.setCompMode("object");
+
+  // マニピュレータの中心を的の方向へ運ぶ
+  const canvas = document.getElementById("gl");
+  const rect = canvas.getBoundingClientRect();
+  const at = app.manipulator.toScreen(app.pivotWorld());
+  const fire = (type, x, y) =>
+    canvas.dispatchEvent(
+      new PointerEvent(type, {
+        pointerId: 9,
+        pointerType: "mouse",
+        isPrimary: true,
+        clientX: x,
+        clientY: y,
+        buttons: type === "pointerup" ? 0 : 1,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+  // 的の頂点 0 の画面位置まで運ぶ。そこまで来れば寄せ先が決まる
+  const tm = target.mesh;
+  // three の Vector3 が要るので、既にあるものを借りて置き換える
+  const goalWorld = app.pivotWorld().clone();
+  goalWorld.set(
+    tm.positions[0] + target.transform.position[0],
+    tm.positions[1] + target.transform.position[1],
+    tm.positions[2] + target.transform.position[2],
+  );
+  const goal = app.manipulator.toScreen(goalWorld);
+  const dx = goal.x - at.x;
+  const dy = goal.y - at.y;
+  app.state.snap.kind = "vertex";
+  app.state.snapKeyHeld = true;
+  fire("pointerdown", rect.x + at.x, rect.y + at.y);
+  for (let i = 1; i <= 12; i++) fire("pointermove", rect.x + at.x + (dx * i) / 12, rect.y + at.y + (dy * i) / 12);
+  fire("pointerup", rect.x + at.x + dx, rect.y + at.y + dy);
+  await new Promise((r) => setTimeout(r, 40));
+  app.state.snapKeyHeld = false;
+  const landed = mover.transform.position.slice();
+
+  // 的の頂点のワールド座標を集めて、その中に一致するものがあるか
+  const view = app.viewport.viewOf(target);
+  view.group.updateMatrixWorld();
+  let hit = false;
+  const m = target.mesh;
+  for (let v = 0; v < m.vertexCount && !hit; v++) {
+    const p = [m.positions[v * 3], m.positions[v * 3 + 1], m.positions[v * 3 + 2]];
+    const w = [
+      p[0] + target.transform.position[0],
+      p[1] + target.transform.position[1],
+      p[2] + target.transform.position[2],
+    ];
+    hit = w.every((c, i) => Math.abs(c - landed[i]) < 1e-4);
+  }
+
+  app.doUndo();
+  app.state.select(null);
+  app.state.doc.objects.length = objectsBefore;
+  app.viewport.syncAll();
+  return { landed, hit, objects: app.state.doc.objects.length, objectsBefore };
+});
+check(
+  "頂点スナップで別オブジェクトの頂点に乗る",
+  vertexSnap.hit && vertexSnap.objects === vertexSnap.objectsBefore,
+  `着地 ${vertexSnap.landed.map((n) => n.toFixed(2)).join(",")}`,
+);
+
+/* 28. 例外が出ていない */
 check("例外なし", errors.length === 0, errors.join(" / "));
 
 await page.screenshot({ path: SHOT });

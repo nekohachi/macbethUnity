@@ -10,6 +10,8 @@ export type Mode = "model" | "uv" | "sculpt" | "material";
 export type CompMode = "object" | "vertex" | "edge" | "face";
 export type Display = "wire" | "shaded" | "shadedWire" | "smooth";
 export type Manip = "all" | "move" | "rotate" | "scale";
+/** スナップの行き先。Maya の X（グリッド）/ V（頂点）/ C（エッジ）に対応する。 */
+export type SnapKind = "grid" | "vertex" | "edge";
 /** 修飾キーのラッチ。off →（タップ）latch →（もう一度）lock。 */
 export type ModState = "off" | "latch" | "lock";
 
@@ -105,6 +107,13 @@ export class AppState {
   toolOpts = { extrudeDist: 0.35 };
   /** 頂点まわり。mergeDist は距離マージのしきい値、extrudeWidth は尖らせるときの根元の太さ。 */
   vertexOpts = { mergeDist: 0.05, extrudeWidth: 0.25 };
+  /**
+   * スナップ。kind が行き先の種類、step はグリッドの刻み。
+   * 効くのは CTL ラッチ中、または X / V / C を押している間。
+   */
+  snap: { kind: SnapKind; step: number } = { kind: "grid", step: 0.5 };
+  /** X / V / C を押している間だけ立つ。キーで一時的にスナップを効かせるため。 */
+  snapKeyHeld = false;
   /** マルチカット。snapStep は % で 0 ならオフ。 */
   cut = { snapStep: 0, edgeFlow: false };
   /** ベベル。segments が 1 なら面取り、2 以上で丸め。 */
@@ -126,6 +135,11 @@ export class AppState {
 
   modOn(name: keyof Mods): boolean {
     return this.mods[name] !== "off";
+  }
+
+  /** スナップが効いているか。CTL ラッチか、X / V / C を押している間。 */
+  get snapping(): boolean {
+    return this.snapKeyHeld || this.modOn("ctrl");
   }
 
   /** latch は 1 回使ったら解除する。lock は残す。 */

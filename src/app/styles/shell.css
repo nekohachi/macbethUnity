@@ -160,6 +160,10 @@ button{font-family:inherit; font-size:inherit; color:inherit; background:none; b
   border-radius:50%; background:var(--accent); border:1px solid #16324a}
 .slider::-moz-range-thumb{width:16px; height:16px; border-radius:50%; background:var(--accent); border:1px solid #16324a}
 .hint{color:var(--text-faint); font-size:10px; line-height:1.55; padding:2px; white-space:pre-line}
+.segmented{grid-column:1/-1; display:flex; gap:3px}
+.seg{flex:1; padding:6px 4px; font-size:10px; color:var(--text-dim); background:var(--panel-lo);
+  border:1px solid var(--line); border-radius:var(--radius); white-space:nowrap}
+.seg[aria-pressed="true"]{background:var(--accent); border-color:var(--accent); color:#0f1418}
 .notice{background:var(--panel-lo); border-left:2px solid var(--warn); border-radius:0 var(--radius) var(--radius) 0;
   padding:7px 9px; color:var(--text-dim); font-size:10px; line-height:1.55; margin-bottom:9px}
 .act{display:block; width:100%; padding:7px; margin-top:4px; background:var(--panel-lo);

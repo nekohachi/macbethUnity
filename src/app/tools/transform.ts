@@ -93,13 +93,19 @@ export function beginDrag(options: {
   };
 }
 
-/** ドラッグ中の 1 フレーム。オブジェクトかメッシュを直接書き換える。 */
+/**
+ * ドラッグ中の 1 フレーム。オブジェクトかメッシュを直接書き換える。
+ *
+ * `snap` を渡すと、移動のときだけ「ピボットの行き先」を通して寄せ先を決める。
+ * null が返れば寄せない。軸ドラッグ中は軸の上に留まるよう、寄せた先を軸へ落とし直す。
+ */
 export function updateDrag(
   drag: DragState,
   object: SceneObject,
   point: ScreenPoint,
   ray: Ray,
   cameraPosition: Vector3,
+  snap?: (world: Vector3) => Vector3 | null,
 ): void {
   if (drag.kind === "move") {
     let delta: Vector3;
@@ -110,6 +116,14 @@ export function updateDrag(
     } else {
       const axis = AXES[drag.axis];
       delta = axis.clone().multiplyScalar(rayAxisT(ray, drag.pivot, axis) - drag.t0);
+    }
+    if (snap) {
+      const landed = snap(drag.pivot.clone().add(delta));
+      if (landed) {
+        const wanted = landed.sub(drag.pivot);
+        // 軸ドラッグなら、その軸の成分だけを取る（軸から外れない）
+        delta = drag.axis < 0 ? wanted : AXES[drag.axis].clone().multiplyScalar(wanted.dot(AXES[drag.axis]));
+      }
     }
     apply(drag, object, (w, weight) => w.clone().addScaledVector(delta, weight), { position: delta });
     return;

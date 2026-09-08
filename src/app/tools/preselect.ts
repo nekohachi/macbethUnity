@@ -25,6 +25,8 @@ const MAT = {
   edge: new LineBasicMaterial({ color: 0xffc46b, transparent: true, opacity: 0.8 }),
   /** ターゲットウェルドの相手。溶接するので選択より強い色にする。 */
   weld: new PointsMaterial({ color: 0x6cf07a, size: 14, sizeAttenuation: false }),
+  /** スナップ先。ウェルドと同じ緑で、少し小さく。 */
+  snap: new PointsMaterial({ color: 0x6cf07a, size: 11, sizeAttenuation: false }),
   face: new MeshBasicMaterial({
     color: 0xffc46b,
     transparent: true,
@@ -62,6 +64,15 @@ export class Preselect {
       MAT.weld,
     );
     this.add(pt, view);
+  }
+
+  /** ワールド座標の 1 点を光らせる。スナップ先を示すのに使う。 */
+  showWorldPoint(x: number, y: number, z: number): void {
+    const key = `s${x.toFixed(4)},${y.toFixed(4)},${z.toFixed(4)}`;
+    if (this.setKey(key)) return;
+    const pt = new Points(positionGeometry([x, y, z]), MAT.snap);
+    pt.renderOrder = 3;
+    this.group.add(pt);
   }
 
   update(p: ScreenPoint, view: ObjectView | undefined): void {

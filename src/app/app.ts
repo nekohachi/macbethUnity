@@ -37,7 +37,15 @@ import {
   TOUCH_TOLERANCE,
   handleKind,
 } from "./render/manipulator.js";
-import { AppState, type CompMode, type Display, type Manip, type Mode, type SavedCamera } from "./state.js";
+import {
+  AppState,
+  type CompMode,
+  type Display,
+  type Manip,
+  type Mode,
+  type SavedCamera,
+  type SnapKind,
+} from "./state.js";
 import { History } from "./history.js";
 import { Autosave } from "./storage/autosave.js";
 import { openFile, saveAs, saveMethodLabel } from "./storage/files.js";
@@ -76,6 +84,9 @@ const COMP_MODES: Array<{ id: CompMode; label: string; key: string }> = [
   { id: "edge", label: "エッジ", key: "F10" },
   { id: "face", label: "フェース", key: "F11" },
 ];
+
+/** スナップの行き先の名前。HUD とオプションで使う。 */
+const SNAP_LABEL: Record<SnapKind, string> = { grid: "グリッド", vertex: "頂点", edge: "エッジ" };
 
 const DISPLAY_KEYS: Record<string, Display> = { "4": "wire", "5": "shaded", "6": "shadedWire", "7": "smooth" };
 
@@ -637,8 +648,10 @@ export class App {
     const o = this.state.selected;
     if (!drag || !o) return;
     void e;
-    updateDrag(drag, o, p, this.ray(p), this.cameraPosition());
-    this.updateWeldTarget(p, e, o);
+    const snapping = this.state.snapping && drag.kind === "move";
+    updateDrag(drag, o, p, this.ray(p), this.cameraPosition(), snapping ? (w) => this.snapPoint(w) : undefined);
+    if (snapping) this.showSnapTarget();
+    else this.updateWeldTarget(p, e, o);
     if (drag.target.kind === "object") {
       const view = this.viewport.viewOf(o);
       if (view) {
@@ -651,6 +664,93 @@ export class App {
     this.viewport.rebuildOverlay();
     this.refreshManipulator();
     this.hud.refreshStats();
+  }
+
+  /* ---- スナップ -------------------------------------------------------- */
+
+  /** 直前に決めた寄せ先。ドラッグ中の表示に使う。 */
+  private snapHit: Vector3 | null = null;
+
+  /**
+   * 寄せ先を返す。効かなければ null。
+   * グリッドは刻みで丸め、頂点とエッジは画面上で近いものを探す（近すぎる相手が無ければ寄せない）。
+   */
+  private snapPoint(world: Vector3): Vector3 | null {
+    const kind = this.state.snap.kind;
+    if (kind === "grid") {
+      const step = Math.max(1e-4, this.state.snap.step);
+      const hit = new Vector3(
+        Math.round(world.x / step) * step,
+        Math.round(world.y / step) * step,
+        Math.round(world.z / step) * step,
+      );
+      this.snapHit = hit;
+      return hit;
+    }
+
+    // 画面上の距離で探す。ワールドの距離だとカメラの寄り引きで効き方が変わる
+    const at = this.manipulator.toScreen(world);
+    const limit = 40;
+    let best: Vector3 | null = null;
+    let bestDistance = limit;
+    const consider = (candidate: Vector3): void => {
+      const s = this.manipulator.toScreen(candidate);
+      const d = Math.hypot(s.x - at.x, s.y - at.y);
+      if (d < bestDistance) {
+        bestDistance = d;
+        best = candidate;
+      }
+    };
+
+    const moving = this.state.selected;
+    // オブジェクトごと動かしているときは、自分の頂点も一緒に動くので寄せ先にならない。
+    // コンポーネントモードでは、動かしている当人だけを外す（残りは寄せ先になる）
+    const skipWhole = this.state.compMode === "object";
+    const movingVerts = this.state.compMode === "vertex" ? this.state.comp : null;
+    for (const o of this.state.doc.objects) {
+      if (skipWhole && o === moving) continue;
+      const view = this.viewport.viewOf(o);
+      if (!view) continue;
+      const m = o.mesh;
+      const toWorld = (v: number): Vector3 =>
+        new Vector3(m.positions[v * 3], m.positions[v * 3 + 1], m.positions[v * 3 + 2]).applyMatrix4(
+          view.group.matrixWorld,
+        );
+      if (kind === "vertex") {
+        for (let v = 0; v < m.vertexCount; v++) {
+          // 動かしている当人には寄せない
+          if (o === moving && movingVerts?.has(v)) continue;
+          consider(toWorld(v));
+        }
+      } else {
+        for (const [a, b] of view.edges) {
+          if (o === moving && movingVerts?.has(a) && movingVerts.has(b)) continue;
+          // 辺の上で world に一番近い点
+          const pa = toWorld(a);
+          const pb = toWorld(b);
+          const ab = pb.clone().sub(pa);
+          const len2 = ab.lengthSq();
+          const t = len2 > 1e-12 ? Math.max(0, Math.min(1, world.clone().sub(pa).dot(ab) / len2)) : 0;
+          consider(pa.clone().addScaledVector(ab, t));
+        }
+      }
+    }
+    this.snapHit = best;
+    return best;
+  }
+
+  /** 寄せ先を光らせる。 */
+  private showSnapTarget(): void {
+    const hit = this.snapHit;
+    this.preselect.clear();
+    if (!hit) {
+      byId("hudHint").innerHTML = `スナップ <kbd>${SNAP_LABEL[this.state.snap.kind]}</kbd> · near なし`;
+      return;
+    }
+    this.preselect.showWorldPoint(hit.x, hit.y, hit.z);
+    byId("hudHint").innerHTML =
+      `スナップ <kbd>${SNAP_LABEL[this.state.snap.kind]}</kbd> · ` +
+      `<kbd>${hit.x.toFixed(2)}, ${hit.y.toFixed(2)}, ${hit.z.toFixed(2)}</kbd>`;
   }
 
   /**
@@ -1827,6 +1927,11 @@ export class App {
       onVertexOptChange: (key, value) => {
         this.state.vertexOpts[key] = value;
       },
+      onSnapChange: (key, value) => {
+        if (key === "kind") this.state.snap.kind = value as SnapKind;
+        else this.state.snap.step = value as number;
+        this.refresh();
+      },
       onBevelChange: (key, value) => {
         if (key === "segments") this.state.bevel.segments = value;
         else this.state.bevel.width = value;
@@ -1905,6 +2010,7 @@ export class App {
           bevelActive: this.bevel.active,
           extrudeDist: this.state.toolOpts.extrudeDist,
           vertex: this.state.vertexOpts,
+          snap: { ...this.state.snap, active: this.state.snapping },
           smoothAngle: this.state.smoothAngle,
           compMode: this.state.compMode,
         },
@@ -2034,7 +2140,19 @@ export class App {
         this.growOrShrink(false);
         return;
       }
-      if (e.key === "x" || e.key === "X") {
+      // Maya と同じ。押している間だけスナップが効く（X = グリッド、V = 頂点、C = エッジ）
+      const snapKey = { x: "grid", v: "vertex", c: "edge" }[e.key.toLowerCase()];
+      if (snapKey && !e.ctrlKey && !e.metaKey) {
+        this.state.snap.kind = snapKey as SnapKind;
+        if (!this.state.snapKeyHeld) {
+          this.state.snapKeyHeld = true;
+          this.hud.toast(`スナップ: ${SNAP_LABEL[this.state.snap.kind]}（押している間）`);
+          this.refresh();
+        }
+        return;
+      }
+      // 対称編集は S。X は Maya に合わせてグリッドスナップに譲った
+      if (e.key === "s" || e.key === "S") {
         this.state.symX = !this.state.symX;
         this.refresh();
         this.hud.toast(`対称編集 X: ${this.state.symX ? "オン" : "オフ"}`);
@@ -2050,6 +2168,15 @@ export class App {
         e.preventDefault();
         this.doRedo();
       }
+    });
+
+    window.addEventListener("keyup", (e) => {
+      if (!this.state.snapKeyHeld) return;
+      if (!["x", "v", "c"].includes(e.key.toLowerCase())) return;
+      this.state.snapKeyHeld = false;
+      this.preselect.clear();
+      this.refresh();
+      this.hud.defaultHint();
     });
   }
 

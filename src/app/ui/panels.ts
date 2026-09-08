@@ -16,6 +16,7 @@ export interface PanelHost {
   onSoftChange(which: "strength" | "radius", value: number): void;
   onExtrudeDistChange(value: number): void;
   onVertexOptChange(key: "mergeDist" | "extrudeWidth", value: number): void;
+  onSnapChange(key: "kind" | "step", value: string | number): void;
   onBevelChange(key: "width" | "segments", value: number): void;
   onCutChange(key: "snapStep" | "edgeFlow", value: number | boolean): void;
   onSmoothAngleChange(value: number): void;
@@ -109,6 +110,7 @@ export interface OptionsState {
   bevelActive: boolean;
   extrudeDist: number;
   vertex: { mergeDist: number; extrudeWidth: number };
+  snap: { kind: string; step: number; active: boolean };
   smoothAngle: number;
   compMode: string;
 }
@@ -184,6 +186,41 @@ export function renderOptions(body: HTMLElement, state: OptionsState, host: Pane
     });
     s.appendChild(
       el("div", "hint", "編集メニューの「押し出し」で使う距離です。\nSHF を押しながらドラッグする場合は距離ではなく動かした量になります。"),
+    );
+    body.appendChild(s);
+  }
+
+  {
+    const s = section(`スナップ${state.snap.active ? "（効いています）" : ""}`, "SNAP");
+    const row = el("div", "row");
+    const group = el("div", "segmented");
+    for (const [key, label] of [
+      ["grid", "グリッド  X"],
+      ["vertex", "頂点  V"],
+      ["edge", "エッジ  C"],
+    ] as const) {
+      const b = el("button", "seg") as HTMLButtonElement;
+      b.textContent = label;
+      b.setAttribute("aria-pressed", String(state.snap.kind === key));
+      b.addEventListener("click", () => host.onSnapChange("kind", key));
+      group.appendChild(b);
+    }
+    row.appendChild(group);
+    s.appendChild(row);
+    paramRow(s, {
+      label: "グリッドの刻み",
+      value: state.snap.step,
+      min: 0.05,
+      max: 2,
+      step: 0.05,
+      onInput: (v) => host.onSnapChange("step", v),
+    });
+    s.appendChild(
+      el(
+        "div",
+        "hint",
+        "CTL ラッチ中、または X / V / C を押している間だけ効きます。\n移動のときだけ働き、寄せ先は緑で光ります。",
+      ),
     );
     body.appendChild(s);
   }
