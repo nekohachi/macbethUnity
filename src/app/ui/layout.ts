@@ -14,6 +14,7 @@ export class Layout {
   /** 横持ちの幅と縦持ちの高さは別々に覚える。 */
   private sizes = { landscape: 236, portrait: 240 };
   private portrait = false;
+  private wide = false;
 
   constructor(
     private stage: HTMLElement,
@@ -38,8 +39,10 @@ export class Layout {
   apply(): void {
     const r = this.stage.getBoundingClientRect();
     const portrait = r.height > r.width;
-    const changed = portrait !== this.portrait;
+    const wide = r.width >= 1200;
+    const changed = portrait !== this.portrait || wide !== this.wide;
     this.portrait = portrait;
+    this.wide = wide;
     this.stage.classList.toggle("portrait", portrait);
     this.setSize(this.size);
     this.grip.classList.toggle("vertical", !portrait);
@@ -106,6 +109,14 @@ export class Layout {
         this.onChange();
       });
     }
+  }
+
+  /**
+   * 広い画面か（`19` の 3.3）。広ければレイヤーはドッキングのまま、
+   * 狭ければ右から出るドロワーにする。
+   */
+  get isWide(): boolean {
+    return this.stage.getBoundingClientRect().width >= 1200;
   }
 
   get isPortrait(): boolean {

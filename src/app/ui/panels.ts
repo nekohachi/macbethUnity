@@ -7,6 +7,7 @@
 import { PRIMITIVES } from "../../core/index.js";
 import type { SceneObject } from "../../core/index.js";
 import { el } from "./dom.js";
+import { ICONS, iconSvg } from "./icons.js";
 
 export interface PanelHost {
   /** スライダーを動かしている最中（履歴には積まない）。 */
@@ -44,6 +45,14 @@ export interface PanelHost {
   onSelect(object: SceneObject): void;
   onRename(object: SceneObject, name: string): void;
   onOutlinerMenu(object: SceneObject, x: number, y: number): void;
+  /** レイヤー（`19` の 3.3）。 */
+  onVisible(object: SceneObject, visible: boolean): void;
+  onLock(object: SceneObject, locked: boolean): void;
+  onReorder(from: number, to: number): void;
+  /** 行を開いた / 閉じたので描き直す。 */
+  onLayersChanged(): void;
+  /** その行のサムネイル（data URL）。作れなければ空文字。 */
+  thumbnail(object: SceneObject): string;
 }
 
 export function panelShell(key: string, title: string): { panel: HTMLElement; body: HTMLElement } {
@@ -735,35 +744,113 @@ export function uvSnapSection(uv: NonNullable<OptionsState["uv"]>, state: Option
 }
 
 /** アウトライナを描き直す。 */
-export function renderOutliner(
+export function renderLayers(
   body: HTMLElement,
   objects: SceneObject[],
   selected: SceneObject | null,
   host: PanelHost,
+  opened: Set<string>,
 ): void {
   body.textContent = "";
   if (!objects.length) {
     body.appendChild(el("div", "empty", "オブジェクトがありません\nツール列から追加してください"));
     return;
   }
-  for (const o of objects) {
-    const row = el("button", "olrow");
+  // Procreate と同じで上が手前。一覧は追加の逆順で出す
+  for (let i = objects.length - 1; i >= 0; i--) {
+    const o = objects[i];
+    const wrap = el("div", "lyitem");
+    const row = el("div", "lyrow");
     row.setAttribute("aria-selected", String(o === selected));
-    row.appendChild(el("i", "dot"));
-    row.appendChild(el("span", "nm", o.name));
-    row.appendChild(el("span", "ty", o.parametric ? o.kind : "mesh"));
+    row.dataset.id = o.id;
+
+    const thumb = el("div", "thumb");
+    const url = host.thumbnail(o);
+    if (url) {
+      const img = el("img") as HTMLImageElement;
+      img.src = url;
+      img.alt = "";
+      thumb.appendChild(img);
+    }
+    row.appendChild(thumb);
+
+    const name = el("div", "nm");
+    name.appendChild(el("span", undefined, o.name));
+    name.appendChild(el("span", "ty", o.parametric ? o.kind : "mesh"));
+    row.appendChild(name);
+
+    const eye = el("button", "eye");
+    eye.setAttribute("aria-pressed", String(o.visible));
+    eye.title = o.visible ? "隠す" : "表示する";
+    eye.innerHTML = iconSvg(o.visible ? ICONS.eye : ICONS.eyeOff);
+    eye.addEventListener("pointerdown", (e) => e.stopPropagation());
+    eye.addEventListener("click", (e) => {
+      e.stopPropagation();
+      host.onVisible(o, !o.visible);
+    });
+    row.appendChild(eye);
+
+    const lock = el("button", "lock");
+    lock.setAttribute("aria-pressed", String(o.locked));
+    lock.title = o.locked ? "ロックを外す" : "ロックする";
+    lock.innerHTML = iconSvg(o.locked ? ICONS.lock : ICONS.lockOpen);
+    lock.addEventListener("pointerdown", (e) => e.stopPropagation());
+    lock.addEventListener("click", (e) => {
+      e.stopPropagation();
+      host.onLock(o, !o.locked);
+    });
+    row.appendChild(lock);
+
+    const more = el("button", "more", opened.has(o.id) ? "▾" : "▸");
+    more.title = "プロパティ";
+    more.addEventListener("pointerdown", (e) => e.stopPropagation());
+    more.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (opened.has(o.id)) opened.delete(o.id);
+      else opened.add(o.id);
+      host.onLayersChanged();
+    });
+    row.appendChild(more);
+
     attachOutlinerRow(row, o, host);
-    body.appendChild(row);
+    wrap.appendChild(row);
+
+    if (opened.has(o.id)) {
+      const props = el("div", "lyprops");
+      const t = transformSectionFor(o, host);
+      if (t) props.appendChild(t);
+      const stats = o.mesh.stats();
+      props.appendChild(el("div", "hint", `頂点 ${stats.vertices} · エッジ ${stats.edges} · 面 ${stats.faces}`));
+      wrap.appendChild(props);
+    }
+    body.appendChild(wrap);
   }
 }
 
-/** 行の操作: タップで選択、ダブルタップで名前変更、長押しでサークルメニュー。 */
+/** レイヤーの行を開いたときのトランスフォーム。数値だけ（`21` の 2.7 でパラメータは「追加」へ）。 */
+function transformSectionFor(o: SceneObject, host: PanelHost): HTMLElement | null {
+  const s = section("トランスフォーム", "TRANSFORM");
+  tripleRow(s, "移動", o.transform.position as [number, number, number], 3, (axis, v) =>
+    host.onTransformInput(o, "position", axis, v),
+  );
+  tripleRow(s, "スケール", o.transform.scale as [number, number, number], 3, (axis, v) =>
+    host.onTransformInput(o, "scale", axis, v),
+  );
+  return s;
+}
+
+/**
+ * レイヤーの行の操作（`19` の 3.3）。
+ * タップで選択、ダブルタップで改名、長押しでメニュー、長押しのままドラッグで並び替え。
+ */
 function attachOutlinerRow(row: HTMLElement, o: SceneObject, host: PanelHost): void {
   let timer: ReturnType<typeof setTimeout> | null = null;
   let sx = 0;
   let sy = 0;
   let opened = false;
   let lastTap = 0;
+  /** 長押しが成立して、並び替えを待っている状態。 */
+  let holding = false;
 
   row.addEventListener("touchstart", (e) => e.preventDefault(), { passive: false });
   row.addEventListener("contextmenu", (e) => e.preventDefault());
@@ -771,14 +858,16 @@ function attachOutlinerRow(row: HTMLElement, o: SceneObject, host: PanelHost): v
     sx = e.clientX;
     sy = e.clientY;
     opened = false;
+    holding = false;
     if (e.pointerType === "mouse" && e.button === 2) {
       opened = true;
       host.onOutlinerMenu(o, e.clientX, e.clientY);
       return;
     }
     timer = setTimeout(() => {
-      opened = true;
-      host.onOutlinerMenu(o, sx, sy);
+      // まず並び替えを待つ。動かさずに離したらメニュー
+      holding = true;
+      row.classList.add("dragging");
     }, 420);
   });
   const stop = () => {
@@ -786,11 +875,34 @@ function attachOutlinerRow(row: HTMLElement, o: SceneObject, host: PanelHost): v
     timer = null;
   };
   row.addEventListener("pointermove", (e) => {
-    if (Math.hypot(e.clientX - sx, e.clientY - sy) > 12) stop();
+    if (!holding) {
+      if (Math.hypot(e.clientX - sx, e.clientY - sy) > 12) stop();
+      return;
+    }
+    // 掴んだまま上下に動かすと入れ替わる
+    const list = row.parentElement?.parentElement;
+    if (!list) return;
+    const rows = [...list.querySelectorAll<HTMLElement>(".lyrow")];
+    const from = rows.indexOf(row);
+    const over = rows.findIndex((r) => {
+      const b = r.getBoundingClientRect();
+      return e.clientY >= b.top && e.clientY <= b.bottom;
+    });
+    if (over >= 0 && over !== from) {
+      opened = true;
+      host.onReorder(from, over);
+    }
   });
-  row.addEventListener("pointerup", () => {
+  row.addEventListener("pointerup", (e) => {
+    const wasHolding = holding;
     stop();
+    row.classList.remove("dragging");
+    holding = false;
     if (opened) return;
+    if (wasHolding) {
+      host.onOutlinerMenu(o, e.clientX, e.clientY);
+      return;
+    }
     const now = performance.now();
     if (now - lastTap < 400) {
       lastTap = 0;
@@ -800,11 +912,15 @@ function attachOutlinerRow(row: HTMLElement, o: SceneObject, host: PanelHost): v
     lastTap = now;
     host.onSelect(o);
   });
-  row.addEventListener("pointercancel", stop);
+  row.addEventListener("pointercancel", () => {
+    stop();
+    row.classList.remove("dragging");
+    holding = false;
+  });
 }
 
 function startRename(row: HTMLElement, o: SceneObject, host: PanelHost): void {
-  const name = row.querySelector(".nm");
+  const name = row.querySelector(".nm span");
   if (!name) return;
   const input = el("input", "olinput") as HTMLInputElement;
   input.value = o.name;

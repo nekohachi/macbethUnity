@@ -93,6 +93,8 @@ export class SceneObject {
   /** 表示中のサブディビジョンレベル。0 はベース。 */
   activeLevel = 0;
   visible = true;
+  /** ロック中。選択も変形も受け付けない（`19` の 3.3 のレイヤー）。 */
+  locked = false;
   /** 最後に書き出したときのトポロジ。往復で戻ってきたときの照合に使う。 */
   exportedTopologyHash: string | null = null;
   /**

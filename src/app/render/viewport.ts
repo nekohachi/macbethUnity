@@ -5,6 +5,7 @@
  * PC の操作割り当ては input 側で行い、ここは動きだけを提供する。
  */
 import {
+  Box3,
   BufferGeometry,
   DirectionalLight,
   Float32BufferAttribute,
@@ -20,6 +21,7 @@ import {
   Points,
   Scene,
   Vector3,
+  WebGLRenderTarget,
   WebGLRenderer,
   type Camera,
 } from "three";
@@ -68,6 +70,8 @@ export class Viewport {
   readonly renderer: WebGLRenderer;
   readonly scene = new Scene();
   readonly persp = new PerspectiveCamera(45, 1, 0.05, 500);
+  /** 床のグリッド。サムネイルのときだけ消す。 */
+  private grid!: GridHelper;
   readonly ortho = new OrthographicCamera(-1, 1, 1, -1, 0.05, 500);
   camera: Camera = this.persp;
 
@@ -113,6 +117,7 @@ export class Viewport {
 
   private addGrid(): void {
     const grid = new GridHelper(24, 24, 0x6d7880, 0x4b545c);
+    this.grid = grid;
     const m = grid.material as LineBasicMaterial;
     m.transparent = true;
     m.opacity = 0.55;
@@ -223,6 +228,64 @@ export class Viewport {
 
   viewOf(o: SceneObject): ObjectView | undefined {
     return this.views.get(o.id);
+  }
+
+  /**
+   * そのオブジェクトだけを小さく描いた画像（レイヤーのサムネイル。`19` の 3.3）。
+   *
+   * ふだんの描画に使っているレンダラを一時的に別の的へ向けて 1 枚描く。
+   * 開いたときに全行ぶん作るだけなので、毎フレームの負担にはならない。
+   */
+  thumbnail(o: SceneObject, size = 80): string {
+    const view = this.views.get(o.id);
+    if (!view) return "";
+    const hidden: Array<[ObjectView, boolean]> = [];
+    for (const v of this.views.values()) {
+      hidden.push([v, v.group.visible]);
+      v.group.visible = v === view;
+    }
+    const gridWas = this.grid.visible;
+    const overlayWas = this.overlay.visible;
+    this.grid.visible = false;
+    this.overlay.visible = false;
+
+    // そのオブジェクトが収まる位置へカメラを置く
+    const box = new Box3().setFromObject(view.group);
+    const center = box.getCenter(new Vector3());
+    const radius = Math.max(1e-3, box.getSize(new Vector3()).length() / 2);
+    const cam = new PerspectiveCamera(35, 1, 0.01, radius * 40);
+    cam.position.set(center.x + radius * 2.2, center.y + radius * 1.6, center.z + radius * 2.6);
+    cam.lookAt(center);
+
+    const target = new WebGLRenderTarget(size, size);
+    const oldTarget = this.renderer.getRenderTarget();
+    this.renderer.setRenderTarget(target);
+    this.renderer.setClearColor(0x2c3238, 1);
+    this.renderer.clear();
+    this.renderer.render(this.scene, cam);
+    const pixels = new Uint8Array(size * size * 4);
+    this.renderer.readRenderTargetPixels(target, 0, 0, size, size, pixels);
+    this.renderer.setRenderTarget(oldTarget);
+    this.renderer.setClearColor(0x000000, 0);
+    target.dispose();
+
+    for (const [v, was] of hidden) v.group.visible = was;
+    this.grid.visible = gridWas;
+    this.overlay.visible = overlayWas;
+
+    // 読み出しは下が原点なので、上下をひっくり返して canvas へ
+    const canvas = document.createElement("canvas");
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return "";
+    const image = ctx.createImageData(size, size);
+    for (let y = 0; y < size; y++) {
+      const from = (size - 1 - y) * size * 4;
+      image.data.set(pixels.subarray(from, from + size * 4), y * size * 4);
+    }
+    ctx.putImageData(image, 0, 0);
+    return canvas.toDataURL("image/png");
   }
 
   allViews(): ObjectView[] {

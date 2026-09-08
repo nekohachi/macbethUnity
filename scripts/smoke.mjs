@@ -350,8 +350,11 @@ check("自動保存が書けている", saved > 0, `${saved} バイト`);
 await page.mouse.click(EMPTY.x, EMPTY.y); // 選択解除
 await page.keyboard.press("F8");
 await page.mouse.click(ON_MESH.x, ON_MESH.y); // オブジェクトを選ぶ
-const outliner = await page.evaluate(() => document.querySelectorAll(".panel[data-panel='outliner'] .olrow").length);
-check("アウトライナが出る", outliner >= 1, `行 ${outliner}`);
+const layers = await page.evaluate(() => ({
+  rows: document.querySelectorAll(".panel[data-panel='layers'] .lyrow").length,
+  thumbs: document.querySelectorAll(".panel[data-panel='layers'] .thumb img").length,
+}));
+check("レイヤーが出る（サムネイル付き）", layers.rows >= 1 && layers.thumbs === layers.rows, `行 ${layers.rows} / サムネ ${layers.thumbs}`);
 
 /* 14. 編集メニューの操作が効く（面の押し出しと削除） */
 await page.keyboard.press("F11");
@@ -377,7 +380,7 @@ check("シェーディングを切り替えられる", wire === "wire" && back =
 
 /* 16. パネルをドラッグして置き場所を変えられる */
 const headBox = await page.evaluate(() => {
-  const h = document.querySelector('.panel[data-panel="outliner"] .phead');
+  const h = document.querySelector('.panel[data-panel="layers"] .phead');
   const r = h.getBoundingClientRect();
   return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
 });
@@ -391,7 +394,7 @@ const stage = await page.evaluate(() => {
 await page.mouse.move(stage.x + 150, stage.y + stage.h / 2, { steps: 10 });
 await page.mouse.up();
 const dockedLeft = await page.evaluate(
-  () => !!document.querySelector('#dockLeft .panel[data-panel="outliner"]'),
+  () => !!document.querySelector('#dockLeft .panel[data-panel="layers"]'),
 );
 check("パネルを別の場所へドッキングできる", dockedLeft);
 
@@ -3595,6 +3598,80 @@ check(
   `取り込み 島 ${sphereFlow.imported} / 赤道 ${sphereFlow.equatorEdges} 本 → カット ${sphereFlow.afterCut} 島 / ` +
     `切れ目の UV エッジ ${sphereFlow.seamEdges} 本 → Move and Sew で ${sphereFlow.afterSew} 島 / ` +
     `対称 ${sphereFlow.symmetryOk} / 0〜1 に収まる ${sphereFlow.packed}`,
+);
+
+/* 43e. レイヤーのドロワー（`20` の T9） */
+await page.setViewportSize({ width: 1024, height: 768 });
+await page.waitForTimeout(250);
+const drawerNarrow = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const objectsBefore = app.state.doc.objects.length;
+  if (app.state.doc.objects.length < 2) app.state.doc.addObject("sphere");
+  app.viewport.syncAll();
+  app.refresh();
+
+  const before = { docked: !!document.querySelector('#dockColRight .panel[data-panel="layers"]') };
+  document.getElementById("btnPanels").click();
+  await new Promise((r) => setTimeout(r, 250));
+  const drawer = document.querySelector(".drawer");
+  const rows = drawer ? drawer.querySelectorAll(".lyrow").length : 0;
+  const vp = document.getElementById("vp").getBoundingClientRect();
+  const gl = document.getElementById("gl").getBoundingClientRect();
+
+  // 目を押すと隠れる
+  const eye = drawer?.querySelector(".lyrow .eye");
+  const target = app.state.doc.objects[app.state.doc.objects.length - 1];
+  eye?.click();
+  const hidden = !target.visible;
+  eye?.click();
+
+  // ロックすると選べない
+  const lock = drawer?.querySelector(".lyrow .lock");
+  lock?.click();
+  const locked = target.locked;
+  lock?.click();
+
+  // 外を触ると閉じる
+  document.getElementById("vp").dispatchEvent(
+    new PointerEvent("pointerdown", { pointerType: "touch", bubbles: true, clientX: vp.x + 20, clientY: vp.y + 20 }),
+  );
+  await new Promise((r) => setTimeout(r, 200));
+  const closed = !document.querySelector(".drawer.open");
+
+  app.state.doc.objects.length = objectsBefore;
+  app.viewport.syncAll();
+  app.refresh();
+  return {
+    dockedBefore: before.docked,
+    open: !!drawer?.classList.contains("open") || rows > 0,
+    rows,
+    // ドロワーはビューポートに被さるだけ。3D の描画幅は変わらない
+    coversViewport: Math.abs(gl.width - vp.width) < 2,
+    hidden,
+    locked,
+    closed,
+  };
+});
+await page.setViewportSize({ width: 1400, height: 900 });
+await page.waitForTimeout(250);
+const drawerWide = await page.evaluate(() => ({
+  docked: !!document.querySelector('#dockColRight .panel[data-panel="layers"]'),
+  drawer: !!document.querySelector(".drawer"),
+}));
+await page.setViewportSize({ width: 1280, height: 800 });
+await page.waitForTimeout(250);
+check(
+  "レイヤー: 狭い画面は右からのドロワー、広い画面はドッキング",
+  !drawerNarrow.dockedBefore &&
+    drawerNarrow.rows >= 2 &&
+    drawerNarrow.coversViewport &&
+    drawerNarrow.hidden &&
+    drawerNarrow.locked &&
+    drawerNarrow.closed &&
+    drawerWide.docked &&
+    !drawerWide.drawer,
+  `狭い: 行 ${drawerNarrow.rows}・ビューポートは縮まない ${drawerNarrow.coversViewport}・目 ${drawerNarrow.hidden}・` +
+    `ロック ${drawerNarrow.locked}・外を触ると閉じる ${drawerNarrow.closed} / 広い: ドッキング ${drawerWide.docked}`,
 );
 
 /* 44. ツール列のグループ（`21` の 4 章） */

@@ -16,6 +16,7 @@ interface ObjectSnapshot {
   params: Record<string, number>;
   transform: Transform;
   visible: boolean;
+  locked: boolean;
   activeLevel: number;
   mesh: Mesh;
   /**
@@ -82,6 +83,7 @@ export class History {
         params: { ...o.params },
         transform: cloneTransform(o.transform),
         visible: o.visible,
+        locked: o.locked,
         activeLevel: o.activeLevel,
         mesh: o.mesh.clone(),
         uv: o.uv ? cloneRecipe(o.uv) : null,
@@ -146,6 +148,7 @@ export class History {
       o.params = { ...s.params };
       o.transform = cloneTransform(s.transform);
       o.visible = s.visible;
+      o.locked = s.locked;
       o.activeLevel = s.activeLevel;
       o.mesh = s.mesh.clone();
       o.uv = s.uv ? cloneRecipe(s.uv) : null;

@@ -118,6 +118,25 @@ const scenes = {
     app.uv.view.frameUnit();
   },
 
+  /** T9: レイヤーのドロワー（狭い画面）。 */
+  "20-t9-layers": async () => {
+    const app = window.macbeth;
+    app.state.doc.objects.length = 0;
+    for (const kind of ["cube", "sphere", "cylinder"]) app.state.doc.addObject(kind);
+    app.state.doc.objects[0].transform.position = [-1.6, 0, 0];
+    app.state.doc.objects[2].transform.position = [1.6, 0, 0];
+    app.state.doc.objects[1].locked = true;
+    app.viewport.syncAll();
+    app.state.select(app.state.doc.objects[2]);
+    app.viewport.frameSelected();
+    app.refresh();
+    document.getElementById("btnPanels").click();
+    await new Promise((r) => setTimeout(r, 250));
+    // 1 行だけ開いてプロパティを見せる
+    const more = document.querySelector(".drawer .lyrow .more");
+    more?.click();
+  },
+
   /** T8: ツール列のグループと、変形のカットイン。 */
   "20-t8-toolgroups": async () => {
     const app = window.macbeth;
@@ -185,7 +204,9 @@ const browser = await chromium.launch({
   args: ["--use-gl=swiftshader", "--enable-unsafe-swiftshader"],
   ...(existsSync(CHROME) ? { executablePath: CHROME } : {}),
 });
-const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+// 画面の大きさは SHOT_SIZE=幅x高さ で変えられる（レイヤーのドロワーは狭い画面のもの）
+const [SW, SH] = (process.env.SHOT_SIZE ?? "1280x800").split("x").map(Number);
+const page = await browser.newPage({ viewport: { width: SW, height: SH } });
 await page.goto(`http://localhost:${PORT}${BASE}${ENTRY}`, { waitUntil: "load" });
 await page.waitForFunction(() => window.macbeth?.state.doc.objects.length > 0, null, { timeout: 5000 });
 

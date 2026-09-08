@@ -102,7 +102,7 @@ import {
   multicutSection,
   panelShell,
   primitiveSection,
-  renderOutliner,
+  renderLayers,
   selectSection,
   snapSection,
   softSelectSection,
@@ -308,6 +308,13 @@ export class App {
   private zones: Record<string, Zone> = { tools: "left", outliner: "rightTop" };
   private toolPanelBody: HTMLElement | null = null;
   private outlinerBody: HTMLElement | null = null;
+  /** レイヤーで開いている行。 */
+  private openedLayers = new Set<string>();
+  /** サムネイルの控え。開いたときに作って、形が変わるまで使い回す。 */
+  private thumbs = new Map<string, { url: string; stamp: string }>();
+  /** レイヤーのドロワー（狭い画面のとき）。 */
+  private drawer: HTMLElement | null = null;
+  private layersPanel: HTMLElement | null = null;
   /** スライダーを触り始めたときの状態。離したときに履歴へ積む。 */
   private paramSnapshot: ReturnType<History["snapshot"]> | null = null;
   private drag: DragState | null = null;
@@ -418,7 +425,11 @@ export class App {
     this.restoreSettings();
     this.buildToolDock();
     this.buildPanels();
-    this.layout = new Layout(byId("stage"), byId("dockColRight"), () => this.viewport.resize());
+    this.layout = new Layout(byId("stage"), byId("dockColRight"), () => {
+      this.placeLayers();
+      this.viewport.resize();
+    });
+    this.placeLayers();
     this.buildGauges();
     this.buildCluster();
     this.bindKeyboard();
@@ -3215,14 +3226,85 @@ export class App {
     };
   }
 
+  /**
+   * レイヤー（`19` の 3.3）。
+   *
+   * 広い画面（1200px 以上）は今までどおり右にドッキング。
+   * 狭ければ右から被さるドロワーにして、描画領域を削らない。
+   */
   private buildPanels(): void {
-    const outliner = panelShell("outliner", "アウトライナ");
-    this.docking.attach(outliner.panel);
-    this.docking.place(outliner.panel, this.zones.outliner ?? "rightTop");
-    this.outlinerBody = outliner.body;
+    const panel = panelShell("layers", "レイヤー");
+    this.layersPanel = panel.panel;
+    this.outlinerBody = panel.body;
+    this.docking.attach(panel.panel);
+    this.placeLayers();
     this.renderPanels();
-
+    this.bindLayerSwipe();
     this.viewport.resize();
+  }
+
+  /** 画面の広さに合わせて、ドッキングとドロワーを入れ替える。 */
+  private placeLayers(): void {
+    const panel = this.layersPanel;
+    if (!panel) return;
+    const wide = this.layout?.isWide ?? true;
+    if (wide) {
+      this.drawer?.remove();
+      this.drawer = null;
+      this.docking.place(panel, this.zones.outliner ?? "rightTop");
+    } else {
+      if (!this.drawer) {
+        this.drawer = el("div", "drawer");
+        byId("vp").appendChild(this.drawer);
+      }
+      this.drawer.appendChild(panel);
+      panel.classList.remove("floating");
+    }
+    this.syncLayersButton();
+  }
+
+  private toggleLayers(): void {
+    if (this.layout?.isWide ?? true) {
+      this.state.panelsHidden = !this.state.panelsHidden;
+      byId("dockColRight").hidden = this.state.panelsHidden;
+      this.syncLayersButton();
+      this.viewport.resize();
+      return;
+    }
+    this.drawer?.classList.toggle("open");
+    // 開いたときだけサムネイルを描き直す（`19` の 3.4）
+    if (this.drawer?.classList.contains("open")) this.renderPanels();
+    this.syncLayersButton();
+  }
+
+  private syncLayersButton(): void {
+    const open = (this.layout?.isWide ?? true) ? !this.state.panelsHidden : !!this.drawer?.classList.contains("open");
+    byId("btnPanels").setAttribute("aria-pressed", String(open));
+  }
+
+  /** 右端から左へのスワイプでレイヤーを出す（指だけ。既存の操作は邪魔しない）。 */
+  private bindLayerSwipe(): void {
+    const vp = byId("vp");
+    let from: { x: number; y: number; id: number } | null = null;
+    vp.addEventListener("pointerdown", (e) => {
+      const r = vp.getBoundingClientRect();
+      from = e.pointerType === "touch" && e.clientX > r.right - 24 ? { x: e.clientX, y: e.clientY, id: e.pointerId } : null;
+    });
+    vp.addEventListener("pointermove", (e) => {
+      if (!from || e.pointerId !== from.id) return;
+      if (from.x - e.clientX > 40 && Math.abs(e.clientY - from.y) < 60) {
+        from = null;
+        if (!(this.layout?.isWide ?? true) && !this.drawer?.classList.contains("open")) this.toggleLayers();
+      }
+    });
+    for (const t of ["pointerup", "pointercancel"] as const) vp.addEventListener(t, () => (from = null));
+    // 外を触ったら閉じる
+    vp.addEventListener("pointerdown", (e) => {
+      if (!this.drawer?.classList.contains("open")) return;
+      if (this.drawer.contains(e.target as Node)) return;
+      this.drawer.classList.remove("open");
+      this.syncLayersButton();
+    });
   }
 
   private panelHost(): PanelHost {
@@ -3385,6 +3467,32 @@ export class App {
         o.name = name;
         this.refresh();
       },
+      onVisible: (o, visible) => {
+        this.history.push(visible ? "表示" : "非表示");
+        o.visible = visible;
+        this.viewport.syncAll();
+        this.refresh();
+      },
+      onLock: (o, locked) => {
+        this.history.push(locked ? "ロック" : "ロック解除");
+        o.locked = locked;
+        // ロックしたものは選べないので、選択から外す
+        if (locked && this.state.selected === o) this.state.select(null);
+        this.viewport.applyDisplayAll();
+        this.refresh();
+      },
+      onReorder: (from, to) => {
+        // 一覧は上が手前（追加の逆順）なので、番号を戻してから入れ替える
+        const n = this.state.doc.objects.length;
+        const a = n - 1 - from;
+        const b = n - 1 - to;
+        if (a === b || a < 0 || b < 0 || a >= n || b >= n) return;
+        const [moved] = this.state.doc.objects.splice(a, 1);
+        this.state.doc.objects.splice(b, 0, moved);
+        this.renderPanels();
+      },
+      onLayersChanged: () => this.renderPanels(),
+      thumbnail: (o) => this.thumbnailOf(o),
       onOutlinerMenu: (o, x, y) => {
         openRadial(
           {
@@ -3427,7 +3535,13 @@ export class App {
 
   private renderPanels(): void {
     if (this.outlinerBody) {
-      renderOutliner(this.outlinerBody, this.state.doc.objects, this.state.selected, this.panelHost());
+      renderLayers(
+        this.outlinerBody,
+        this.state.doc.objects,
+        this.state.selected,
+        this.panelHost(),
+        this.openedLayers,
+      );
     }
   }
 
@@ -3440,6 +3554,19 @@ export class App {
     this.renderToolColumn();
     const fresh = this.toolPanelBody?.querySelector<HTMLElement>(`[data-group="${id}"]`) ?? anchor;
     this.openToolOptions(fresh, id, entry.options);
+  }
+
+  /**
+   * レイヤーのサムネイル。形が変わっていなければ前のものを使い回す
+   * （毎回描くと、行を開くたびにオブジェクトの数だけ描画が走る）。
+   */
+  private thumbnailOf(o: SceneObject): string {
+    const stamp = `${o.mesh.vertexCount}_${o.mesh.faceCount}_${o.kind}_${o.transform.scale.join(",")}`;
+    const cached = this.thumbs.get(o.id);
+    if (cached && cached.stamp === stamp) return cached.url;
+    const url = this.viewport.thumbnail(o);
+    if (url) this.thumbs.set(o.id, { url, stamp });
+    return url;
   }
 
   /** 前に触った設定を戻す（`21` の 3 章）。壊れていても既定で始める。 */
@@ -3665,14 +3792,7 @@ export class App {
   private bindTopBar(): void {
     byId("btnUndo").addEventListener("click", () => this.doUndo());
     byId("btnRedo").addEventListener("click", () => this.doRedo());
-    byId("btnPanels").addEventListener("click", () => {
-      this.state.panelsHidden = !this.state.panelsHidden;
-      byId("btnPanels").setAttribute("aria-pressed", String(this.state.panelsHidden));
-      byId("dockLeft").hidden = this.state.panelsHidden;
-      byId("dockColRight").hidden = this.state.panelsHidden;
-      this.layout.apply();
-      this.viewport.resize();
-    });
+    byId("btnPanels").addEventListener("click", () => this.toggleLayers());
     // モード切替。長押し（PC は右クリック）で 4 モードのサークルメニュー
     attachRadialButton(
       byId("modeBtn"),
