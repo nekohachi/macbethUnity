@@ -300,6 +300,11 @@ export class Viewport {
 
   /** ソフト選択の影響範囲を出すための重み。app 側から差し込む。 */
   softWeightsProvider: (() => Map<number, number>) | null = null;
+  /**
+   * UV の切れ目。3D にも出して、どこで切れているかが分かるようにする
+   * （Maya の Texture Border Edges と同じ考え方。ユーザー要望）。
+   */
+  seamProvider: (() => Set<string> | null) | null = null;
 
   rebuildOverlay(): void {
     for (const c of this.overlay.children.slice()) {
@@ -308,8 +313,27 @@ export class Viewport {
     }
     const o = this.state.selected;
     const view = o ? this.views.get(o.id) : undefined;
-    if (!o || !view || !this.state.comp.size) return;
+    if (!o || !view) return;
     const m = o.mesh;
+
+    // UV の切れ目。選択の有無に関わらず出す。少し浮かせて面に埋もれないように
+    const seams = this.seamProvider?.();
+    if (seams?.size) {
+      const p: number[] = [];
+      for (const [a, b] of view.edges) {
+        const key = `${Math.min(a, b)}_${Math.max(a, b)}`;
+        if (!seams.has(key)) continue;
+        p.push(m.positions[a * 3], m.positions[a * 3 + 1], m.positions[a * 3 + 2]);
+        p.push(m.positions[b * 3], m.positions[b * 3 + 1], m.positions[b * 3 + 2]);
+      }
+      if (p.length) {
+        const ls = new LineSegments(positionGeometry(p), MAT.seam);
+        applyTransform(ls, o.transform).renderOrder = 3;
+        this.overlay.add(ls);
+      }
+    }
+
+    if (!this.state.comp.size) return;
 
     // 影響を受けるが選択そのものではない頂点をオレンジで示す
     if (this.state.soft.strength > 0 && this.state.compMode !== "object" && this.softWeightsProvider) {

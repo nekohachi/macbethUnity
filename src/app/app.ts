@@ -188,6 +188,8 @@ export class App {
   private popup: HTMLElement | null = null;
   /** ポップアップを出したボタン。外を押したときの判定から除く。 */
   private popupAnchor: HTMLElement | null = null;
+  /** 2D ↔ 3D の選択を写している最中。行ったり来たりを止める。 */
+  private syncingSelection = false;
   private router: GestureRouter;
   private manipulator: Manipulator;
   private multicut: MultiCut;
@@ -199,6 +201,10 @@ export class App {
   private gestureDrag: DragState | null = null;
   /** UV モード。最初に入ったときに作る。 */
   uv: UvMode | null = null;
+  /** 通し確認から選択の同期を叩くための入口。 */
+  pushSelectionToUvForTest(): void {
+    this.pushSelectionToUv();
+  }
   private uvSplit: UvSplit = "both";
   /** 3 本指のジェスチャ中に固定しておくカメラ由来の値。 */
   private gestureView: { pixelToWorld: number; horizontal: Vector3 } | null = null;
@@ -261,6 +267,8 @@ export class App {
     this.preselect = new Preselect(this.state, this.picker, this.viewport.preselect);
 
     // ソフト選択の影響範囲をオーバーレイに出すため、重みの求め方を渡しておく
+    // 切れ目は 3D にも出す（どこで切れているか分かるように）
+    this.viewport.seamProvider = () => this.state.selected?.uv?.seams ?? null;
     this.viewport.softWeightsProvider = () => {
       const o = this.state.selected;
       if (!o) return new Map();
@@ -1604,7 +1612,34 @@ export class App {
     if (r.objectChanged) this.viewport.applyDisplayAll();
     this.viewport.rebuildOverlay();
     this.refresh();
+    this.pushSelectionToUv();
     if (r.message) this.hud.toast(r.message);
+  }
+
+  /**
+   * 3D の選択を 2D へ渡す。UV モードのときだけ。
+   * 選択は 2D と 3D で共通にする（Maya と同じ。ユーザー要望）。
+   */
+  private pushSelectionToUv(): void {
+    if (this.state.mode !== "uv" || !this.uv || this.syncingSelection) return;
+    this.syncingSelection = true;
+    const o = this.state.selected;
+    const view = o ? this.viewport.viewOf(o) : undefined;
+    const edges: string[] = [];
+    if (this.state.compMode === "edge" && view) {
+      for (const i of this.state.comp) {
+        const e = view.edges[i];
+        if (e) edges.push(`${Math.min(e[0], e[1])}_${Math.max(e[0], e[1])}`);
+      }
+    }
+    this.uv.syncFromView(this.state.compMode, {
+      verts: this.state.compMode === "vertex" ? [...this.state.comp] : [],
+      edges,
+      faces: this.state.compMode === "face" ? [...this.state.comp] : [],
+    });
+    this.hud.uvNote = this.uv.stats();
+    this.hud.refreshStats();
+    this.syncingSelection = false;
   }
 
   /* ---- 矩形選択 -------------------------------------------------------- */
@@ -1864,14 +1899,31 @@ export class App {
         },
         snapshot: () => this.history.snapshot(),
         commit: (label, snapshot) => this.history.commit(label, snapshot as ReturnType<History["snapshot"]>),
-        syncToView: (faces) => {
-          // 2D の選択を 3D の面の選択へ。同期の単位は面（`15` の 6.2）
-          this.state.compMode = "face";
+        syncToView: (selection) => {
+          // 2D の選択を 3D へ。単位も合わせる（Maya と同じで選択は共通）
+          if (this.syncingSelection) return;
+          this.syncingSelection = true;
+          const o = this.state.selected;
+          this.state.compMode = selection.mode;
           this.state.comp.clear();
-          for (const f of faces) this.state.comp.add(f);
+          if (selection.mode === "vertex") {
+            for (const v of selection.verts) this.state.comp.add(v);
+          } else if (selection.mode === "edge") {
+            // エッジは「頂点の組」で来るので、ビューの並びに直す
+            const view = o ? this.viewport.viewOf(o) : undefined;
+            const want = new Set(selection.edges);
+            view?.edges.forEach(([a, b], i) => {
+              if (want.has(`${Math.min(a, b)}_${Math.max(a, b)}`)) this.state.comp.add(i);
+            });
+          } else {
+            for (const f of selection.faces) this.state.comp.add(f);
+          }
+          this.viewport.applyDisplayAll();
           this.viewport.rebuildOverlay();
           this.refreshManipulator();
           this.hud.refreshStats();
+          this.syncCompModeButtons();
+          this.syncingSelection = false;
         },
         markingMenu: (x, y, edit) => {
           this.closePopup();
@@ -1934,7 +1986,7 @@ export class App {
     this.uv.rebuild();
     this.hud.uvNote = this.uv.stats();
     // 3D で面を選んでいたら、その島を選んでおく
-    if (this.state.compMode === "face" && this.state.comp.size) this.uv.syncFromView(this.state.comp);
+    this.pushSelectionToUv();
     if (imported !== null) {
       this.hud.toast(
         `今の UV を取り込んだ — 島 ${imported}（「展開」を押すまで開き直しません）`,
@@ -3127,6 +3179,7 @@ export class App {
     this.viewport.rebuildOverlay();
     this.refresh();
     this.syncCompModeButtons();
+    this.pushSelectionToUv();
     this.hud.toast(COMP_MODES.find((m) => m.id === mode)?.label ?? mode);
   }
 

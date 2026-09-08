@@ -341,7 +341,13 @@ export class MeshBuilder {
   /** 頂点を追加。溶接が有効なら同じ位置の頂点を再利用する。 */
   vertex(x: number, y: number, z: number): number {
     if (this.weldMap) {
-      const key = `${x.toFixed(5)},${y.toFixed(5)},${z.toFixed(5)}`;
+      // -0.00000 と 0.00000 を同じ鍵にする。cos/sin の丸めで出る −2e-16 が
+      // 別の頂点になってしまい、円柱や球の継ぎ目が割れていた
+      const at = (n: number) => {
+        const t = n.toFixed(5);
+        return t === "-0.00000" ? "0.00000" : t;
+      };
+      const key = `${at(x)},${at(y)},${at(z)}`;
       const found = this.weldMap.get(key);
       if (found !== undefined) return found;
       const index = this.pos.length / 3;

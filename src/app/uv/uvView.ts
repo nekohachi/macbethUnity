@@ -372,12 +372,29 @@ export class UvView {
     faces.renderOrder = 0;
     this.group.add(faces);
 
-    // 辺。切れ目は色を変える
+    // 辺。切れ目は色を変え、太く見えるように少しずらした線を重ねる
+    // （WebGL の線は 1px 固定なので、ずらして描くしかない）
     const plain: number[] = [];
     const cut: number[] = [];
+    const k = this.pixelToUv();
     t.edges.forEach(([a, b], i) => {
-      const into = seams.has(t.edgeKeys[i]) ? cut : plain;
-      into.push(t.vertexUv[a * 2], t.vertexUv[a * 2 + 1], 0.01, t.vertexUv[b * 2], t.vertexUv[b * 2 + 1], 0.01);
+      const ax = t.vertexUv[a * 2];
+      const ay = t.vertexUv[a * 2 + 1];
+      const bx = t.vertexUv[b * 2];
+      const by = t.vertexUv[b * 2 + 1];
+      if (!seams.has(t.edgeKeys[i])) {
+        plain.push(ax, ay, 0.01, bx, by, 0.01);
+        return;
+      }
+      // 辺に直交する向きへ ±1px ずらした線を足して 3px 幅に見せる
+      const dx = bx - ax;
+      const dy = by - ay;
+      const len = Math.hypot(dx, dy) || 1;
+      const nx = (-dy / len) * k;
+      const ny = (dx / len) * k;
+      for (const t2 of [-1, 0, 1]) {
+        cut.push(ax + nx * t2, ay + ny * t2, 0.02, bx + nx * t2, by + ny * t2, 0.02);
+      }
     });
     for (const [points, material] of [
       [plain, MAT.wire],

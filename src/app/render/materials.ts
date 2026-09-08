@@ -62,6 +62,8 @@ export const MAT = {
     depthWrite: false,
   }),
   softPt: new PointsMaterial({ color: 0xd06a2a, size: 7, sizeAttenuation: false }),
+  /** UV の切れ目（テクスチャボーダー）。Maya と同じで 3D にも出す。 */
+  seam: new LineBasicMaterial({ color: 0xff6b4a }),
   cutLine: new LineBasicMaterial({ color: 0xffe14a }),
   cutPt: new PointsMaterial({ color: 0xffe14a, size: 9, sizeAttenuation: false }),
   pivot: new LineBasicMaterial({ color: 0xf2d97a }),

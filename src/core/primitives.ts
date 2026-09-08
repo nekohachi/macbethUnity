@@ -33,6 +33,7 @@ function quadGrid(
   point: (u: number, v: number) => [number, number, number],
   uvAt: (u: number, v: number) => [number, number] = (u, v) => [u, v],
   flip = false,
+  wrap: { u?: boolean; v?: boolean } = {},
 ): void {
   for (let i = 0; i < nu; i++) {
     for (let j = 0; j < nv; j++) {
@@ -54,7 +55,9 @@ function quadGrid(
       for (const [ci, cj] of corners) {
         const u = ci / nu;
         const v = cj / nv;
-        const p = point(u, v);
+        // ぐるりと回る向きは、最後の列が最初の列とぴったり同じ点になるように
+        // 添字で折り返す。丸め誤差で継ぎ目が割れるのを防ぐ（UV は折り返さない）
+        const p = point(wrap.u ? (ci % nu) / nu : u, wrap.v ? (cj % nv) / nv : v);
         verts.push(b.vertex(p[0], p[1], p[2]));
         uvRows.push(uvAt(u, v));
       }
@@ -91,7 +94,8 @@ function cap(
       const verts: number[] = [];
       const uvRows: number[][] = [];
       for (const [ci, cj] of corners) {
-        const a = (ci / sides) * Math.PI * 2;
+        // 輪も折り返す（最後の 1 枚が最初の点に戻る）
+        const a = ((ci % sides) / sides) * Math.PI * 2;
         const r = radius * (1 - cj / rings);
         verts.push(b.vertex(r * Math.cos(a), y, r * Math.sin(a)));
         const t = (r / radius) * uvRadius;
@@ -247,6 +251,8 @@ export const PRIMITIVES: Record<string, PrimitiveDef> = {
           return [p.radius * Math.sin(t) * Math.cos(a), p.radius * Math.cos(t), p.radius * Math.sin(t) * Math.sin(a)];
         },
         (u, v) => [u, 1 - v],
+        false,
+        { u: true },
       );
       return b.build();
     },
@@ -278,6 +284,7 @@ export const PRIMITIVES: Record<string, PrimitiveDef> = {
         },
         (u, v) => [u, v * 0.5],
         true,
+        { u: true },
       );
       cap(b, p.radius, h, p.sdAxis, p.sdCaps, 1, [0.75, 0.75], 0.25);
       cap(b, p.radius, -h, p.sdAxis, p.sdCaps, -1, [0.25, 0.75], 0.25);
@@ -310,6 +317,7 @@ export const PRIMITIVES: Record<string, PrimitiveDef> = {
         // 側面は下半分、フタは上半分の真ん中（Maya と同じ）
         (u, v) => [u, v * 0.5],
         true,
+        { u: true },
       );
       cap(b, p.radius, -h, p.sdAxis, p.sdCap, -1, [0.5, 0.75], 0.25);
       return b.build();
@@ -342,6 +350,7 @@ export const PRIMITIVES: Record<string, PrimitiveDef> = {
         },
         (u, v) => [u, v],
         true,
+        { u: true, v: true },
       );
       return b.build();
     },

@@ -51,8 +51,11 @@ export interface UvHost {
   /** 履歴に積む前の控え。 */
   snapshot(): unknown;
   commit(label: string, snapshot: unknown): void;
-  /** 2D で選んだものを 3D の面の選択へ渡す。 */
-  syncToView(faces: number[]): void;
+  /**
+   * 2D で選んだものを 3D の選択へ渡す。単位ごと渡すので、3D 側でも
+   * 同じもの（頂点 / エッジ / 面）が選ばれる（Maya と同じ）。
+   */
+  syncToView(selection: { mode: "vertex" | "edge" | "face"; verts: number[]; edges: string[]; faces: number[] }): void;
   markingMenu(x: number, y: number, edit: boolean): void;
   /** 矩形選択の枠を出す。null で消す。座標は 2D ペインの中。 */
   marquee(rect: { x0: number; y0: number; x1: number; y1: number } | null): void;
@@ -218,17 +221,86 @@ export class UvMode {
     }
   }
 
-  /** 3D で面を選んだら、その島を選ぶ。 */
-  syncFromView(faces: Iterable<number>): void {
+  /**
+   * 3D の選択を 2D へ写す（Maya と同じで、選択は 2D と 3D で共通）。
+   * 単位も合わせる: 頂点 → UV 頂点、エッジ → UV エッジ、面 → UV シェル。
+   */
+  syncFromView(
+    mode: "object" | "vertex" | "edge" | "face",
+    selection: { verts?: Iterable<number>; edges?: Iterable<string>; faces?: Iterable<number> },
+  ): void {
     const t = this.view.uvTopology;
-    if (!t) return;
-    this.unit = "shell";
-    this.chosen.clear();
-    for (const f of faces) {
-      const ci = t.chartOfFace.get(f);
-      if (ci !== undefined) this.chosen.add(ci);
+    const object = this.host.object();
+    if (!t || !object) return;
+
+    if (mode === "vertex") {
+      this.unit = "vertex";
+      this.chosen.clear();
+      const want = new Set(selection.verts ?? []);
+      // 同じ 3D 頂点に乗る UV 頂点は、切れ目で分かれていても全部選ぶ
+      for (let v = 0; v < t.vertexCorners.length; v++) {
+        for (const key of t.vertexCorners[v] ?? []) {
+          const [f, at] = key.split(":").map(Number);
+          const verts = object.mesh.faceVerts(f);
+          if (verts[at] !== undefined && want.has(verts[at])) {
+            this.chosen.add(v);
+            break;
+          }
+        }
+      }
+    } else if (mode === "edge") {
+      this.unit = "edge";
+      this.chosen.clear();
+      const want = new Set(selection.edges ?? []);
+      t.edgeKeys.forEach((key, i) => {
+        if (want.has(key)) this.chosen.add(i);
+      });
+    } else {
+      this.unit = "shell";
+      this.chosen.clear();
+      for (const f of selection.faces ?? []) {
+        const ci = t.chartOfFace.get(f);
+        if (ci !== undefined) this.chosen.add(ci);
+      }
     }
     this.refreshHighlight();
+  }
+
+  /** 通し確認から選択の同期を叩くための入口。 */
+  pushToViewForTest(): void {
+    this.pushToView();
+  }
+
+  /** 今の選択を 3D 側の形にして渡す。 */
+  private pushToView(): void {
+    const t = this.view.uvTopology;
+    const object = this.host.object();
+    if (!t || !object) {
+      this.host.syncToView({ mode: "face", verts: [], edges: [], faces: [] });
+      return;
+    }
+    if (this.unit === "vertex") {
+      const verts = new Set<number>();
+      for (const v of this.chosen) {
+        for (const key of t.vertexCorners[v] ?? []) {
+          const [f, at] = key.split(":").map(Number);
+          const list = object.mesh.faceVerts(f);
+          if (list[at] !== undefined) verts.add(list[at]);
+        }
+      }
+      this.host.syncToView({ mode: "vertex", verts: [...verts].sort((a, b) => a - b), edges: [], faces: [] });
+      return;
+    }
+    if (this.unit === "edge") {
+      const edges = new Set<string>();
+      for (const e of this.chosen) {
+        const key = t.edgeKeys[e];
+        if (key) edges.add(key);
+      }
+      this.host.syncToView({ mode: "edge", verts: [], edges: [...edges].sort(), faces: [] });
+      return;
+    }
+    this.host.syncToView({ mode: "face", verts: [], edges: [], faces: this.facesOfSelection() });
   }
 
   /** 選んでいるものに含まれる面。3D へ渡す。 */
@@ -883,7 +955,7 @@ export class UvMode {
       this.chosen.add(hit);
     }
     this.refreshHighlight();
-    this.host.syncToView(this.facesOfSelection());
+    this.pushToView();
     this.beginDrag(p, e);
   }
 
@@ -930,7 +1002,7 @@ export class UvMode {
       for (const ci of hit) take(ci);
     }
     this.refreshHighlight();
-    this.host.syncToView(this.facesOfSelection());
+    this.pushToView();
   }
 
   private topologyOrNull(): UvTopology | null {
@@ -1072,7 +1144,7 @@ export class UvMode {
       else if (!m.add && !m.sub && this.chosen.size) {
         this.chosen.clear();
         this.refreshHighlight();
-        this.host.syncToView([]);
+        this.pushToView();
       }
       return;
     }

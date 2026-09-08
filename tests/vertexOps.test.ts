@@ -199,8 +199,22 @@ describe("頂点の押し出し", () => {
   });
 
   it("扇が開いている頂点は尖らせない", () => {
-    // 球の極は UV の切れ目で輪になっていない。輪が無いと蓋が張れないので何もしない
-    expect(extrudeVertices(sphere(), [0], 0.3)).toBeNull();
+    // 板の角は縁なので、まわりの面が輪にならない。輪が無いと蓋が張れない
+    const plane = PRIMITIVES.plane.build({ ...defaultParams("plane"), sdW: 2, sdH: 2 });
+    // 角の頂点（x, z ともに端）
+    let corner = -1;
+    for (let v = 0; v < plane.vertexCount && corner < 0; v++) {
+      const p = plane.getPosition(v);
+      if (Math.abs(Math.abs(p[0]) - 1) < 1e-6 && Math.abs(Math.abs(p[2]) - 1) < 1e-6) corner = v;
+    }
+    expect(corner).toBeGreaterThanOrEqual(0);
+    expect(extrudeVertices(plane, [corner], 0.3)).toBeNull();
+  });
+
+  it("球の極は輪になっているので尖らせられる（継ぎ目は溶接済み）", () => {
+    const r = extrudeVertices(sphere(), [0], 0.3, 0.25);
+    expect(r).not.toBeNull();
+    expect(isClosed(r!.mesh)).toBe(true);
   });
 
   it("UV は持ち越される", () => {

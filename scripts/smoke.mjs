@@ -2086,14 +2086,14 @@ const uvOps = await page.evaluate(() => {
   const started = app.uv.stats().charts;
   app.state.comp.clear();
   app.state.comp.add(0);
-  app.uv.syncFromView([0]);
+  app.uv.syncFromView("face", { faces: [0] });
   app.uv.cutOrSew(true);
   const afterCut = app.uv.stats().charts;
 
   // ソーで戻す（選んだ面どうしの間の切れ目を縫うので、全面を選ぶ）
   app.state.comp.clear();
   for (let f = 0; f < object.mesh.faceCount; f++) app.state.comp.add(f);
-  app.uv.syncFromView([...app.state.comp]);
+  app.uv.syncFromView("face", { faces: [...app.state.comp] });
   app.uv.cutOrSew(false);
   const afterSew = app.uv.stats().charts;
 
@@ -2367,7 +2367,268 @@ check(
   `島 ${packing.charts} / 0〜1 に収まる ${packing.inUnit} / 重なり ${packing.overlap} / 面積の比 ${packing.ratio.toFixed(4)}`,
 );
 
-/* 39. 例外が出ていない */
+/* 39. エッジの区間選択（Maya）: 1 本目を選び、SHF + ダブルクリックで間をまとめて */
+const edgeRange = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const objectsBefore = app.state.doc.objects.length;
+  const object = app.state.doc.addObject("cylinder");
+  object.params.sdAxis = 12;
+  object.params.sdHeight = 4;
+  object.params.sdCaps = 0;
+  object.rebuild();
+  app.viewport.syncAll();
+  app.viewport.setView("front");
+  app.state.select(object);
+  app.viewport.frameSelected();
+  app.setCompMode("edge");
+  app.state.comp.clear();
+  app.viewport.rebuildOverlay();
+
+  // 1 本の柱（同じ x, z）の縦の辺を、下から順に集める
+  const view = app.viewport.viewOf(object);
+  const m = object.mesh;
+  const key = (i) => {
+    const [a, b] = view.edges[i];
+    return `${m.positions[a * 3].toFixed(4)},${m.positions[a * 3 + 2].toFixed(4)}`;
+  };
+  const columns = new Map();
+  view.edges.forEach(([a, b], i) => {
+    const sameXZ =
+      Math.abs(m.positions[a * 3] - m.positions[b * 3]) < 1e-6 &&
+      Math.abs(m.positions[a * 3 + 2] - m.positions[b * 3 + 2]) < 1e-6;
+    if (!sameXZ) return;
+    const k = key(i);
+    const list = columns.get(k);
+    if (list) list.push(i);
+    else columns.set(k, [i]);
+  });
+  // いちばん本数の多い柱を使う
+  let column = [];
+  for (const list of columns.values()) if (list.length > column.length) column = list;
+  const midY = (i) => {
+    const [a, b] = view.edges[i];
+    return (m.positions[a * 3 + 1] + m.positions[b * 3 + 1]) / 2;
+  };
+  column.sort((x, y) => midY(x) - midY(y));
+  if (column.length < 3) return { fail: `柱の辺 ${column.length}` };
+
+  const canvas = document.getElementById("gl");
+  const rect = canvas.getBoundingClientRect();
+  const center = (i) => {
+    const [a, b] = view.edges[i];
+    const p = app.manipulator.toScreen(
+      app.pivotWorld().clone().set(
+        (m.positions[a * 3] + m.positions[b * 3]) / 2,
+        (m.positions[a * 3 + 1] + m.positions[b * 3 + 1]) / 2,
+        (m.positions[a * 3 + 2] + m.positions[b * 3 + 2]) / 2,
+      ),
+    );
+    return { x: rect.x + p.x, y: rect.y + p.y };
+  };
+  const fire = (type, x, y, id, shift) =>
+    canvas.dispatchEvent(
+      new PointerEvent(type, {
+        pointerId: id,
+        pointerType: "mouse",
+        isPrimary: true,
+        clientX: x,
+        clientY: y,
+        button: 0,
+        buttons: type === "pointerup" ? 0 : 1,
+        shiftKey: !!shift,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+  const tap = (at, id, shift) => {
+    fire("pointerdown", at.x, at.y, id, shift);
+    fire("pointerup", at.x, at.y, id, shift);
+  };
+
+  // 下から 1 本目と 3 本目（間に 1 本ある）
+  const a1 = column[0];
+  const a2 = column[2];
+  let id = 100;
+  tap(center(a1), ++id, false);
+  const afterFirst = app.state.comp.size;
+  const pickedFirst = app.state.comp.has(a1);
+  await new Promise((r) => setTimeout(r, 500));
+  const at2 = center(a2);
+  tap(at2, ++id, true);
+  const afterSecond = [...app.state.comp];
+  tap(at2, ++id, true);
+  await new Promise((r) => setTimeout(r, 40));
+  const chosen = [...app.state.comp];
+  const gotRange = [a1, column[1], a2].every((i) => app.state.comp.has(i));
+
+  app.state.select(null);
+  app.state.doc.objects.length = objectsBefore;
+  app.viewport.syncAll();
+  return {
+    afterFirst,
+    pickedFirst,
+    count: chosen.length,
+    gotRange,
+    column: column.length,
+    afterSecond: afterSecond.length,
+    want: [a1, column[1], a2],
+    chosen,
+  };
+});
+check(
+  "SHF + ダブルクリックで 2 本の間のエッジがまとまって選べる",
+  edgeRange.afterFirst === 1 && edgeRange.pickedFirst && edgeRange.gotRange,
+  `1 本 → 2 回目 ${edgeRange.afterSecond} → ${edgeRange.count} 本 / 間も入った ${edgeRange.gotRange} / ` +
+    `欲しい ${edgeRange.want} 実際 ${edgeRange.chosen}（柱は ${edgeRange.column} 本）${edgeRange.fail ?? ""}`,
+);
+
+/* 40. 選択は 2D と 3D で共通（Maya）。切れ目は 3D にも出る */
+const shared = await page.evaluate(() => {
+  const app = window.macbeth;
+  const objectsBefore = app.state.doc.objects.length;
+  const object = app.state.doc.addObject("cube");
+  app.viewport.syncAll();
+  app.state.select(object);
+  app.setCompMode("face");
+  app.setMode("uv");
+
+  // 3D で面を 2 枚選ぶ → 2D の島が選ばれる
+  app.state.comp.clear();
+  app.state.comp.add(0);
+  app.state.comp.add(1);
+  app.pushSelectionToUvForTest();
+  const uvAfterFaces = app.uv.chosen.size;
+  const unitAfterFaces = app.uv.unit;
+
+  // 3D でエッジを選ぶ → 2D も UV エッジになる
+  app.setCompMode("edge");
+  app.state.comp.clear();
+  app.state.comp.add(0);
+  app.state.comp.add(1);
+  app.pushSelectionToUvForTest();
+  const unitAfterEdges = app.uv.unit;
+  const uvEdges = app.uv.chosen.size;
+
+  // 2D で UV 頂点を選ぶ → 3D も頂点モードになる
+  app.uv.setUnit("vertex");
+  app.uv.chosen.clear();
+  app.uv.chosen.add(0);
+  app.uv.chosen.add(1);
+  app.uv.refreshHighlight();
+  app.uv.pushToViewForTest();
+  const modeAfterUv = app.state.compMode;
+  const compAfterUv = app.state.comp.size;
+
+  // 切れ目が 3D の重ね描きに出る
+  app.setMode("model");
+  app.viewport.rebuildOverlay();
+  let seamLines = 0;
+  for (const child of app.viewport.overlay.children) {
+    if (child.type === "LineSegments" && child.material.color.getHex() === 0xff6b4a) {
+      seamLines = child.geometry.attributes.position.count / 2;
+    }
+  }
+
+  app.state.select(null);
+  app.state.doc.objects.length = objectsBefore;
+  app.viewport.syncAll();
+  return { uvAfterFaces, unitAfterFaces, unitAfterEdges, uvEdges, modeAfterUv, compAfterUv, seamLines };
+});
+check(
+  "選択は 2D と 3D で共通、切れ目は 3D にも出る",
+  shared.uvAfterFaces > 0 &&
+    shared.unitAfterFaces === "shell" &&
+    shared.unitAfterEdges === "edge" &&
+    shared.uvEdges >= 2 &&
+    shared.modeAfterUv === "vertex" &&
+    shared.compAfterUv >= 1 &&
+    shared.seamLines === 7,
+  `3D 面 → 2D 島 ${shared.uvAfterFaces} / 3D エッジ → UV エッジ ${shared.uvEdges} / ` +
+    `2D 頂点 → 3D ${shared.modeAfterUv} ${shared.compAfterUv} 点 / 3D の切れ目 ${shared.seamLines} 本`,
+);
+
+/* 41. 2D の指 3 本: つまむと UV スケール、スワイプで UV 平行移動 */
+const uvThree = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const objectsBefore = app.state.doc.objects.length;
+  const object = app.state.doc.addObject("cube");
+  app.viewport.syncAll();
+  app.state.select(object);
+  app.setMode("uv");
+  app.uv.view.frameUnit();
+  app.uv.setUnit("shell");
+  app.uv.chosen.clear();
+  app.uv.chosen.add(0);
+  app.uv.refreshHighlight();
+
+  const canvas = document.getElementById("uvgl");
+  const rect = document.getElementById("paneUv").getBoundingClientRect();
+  const fire = (type, id, x, y) =>
+    canvas.dispatchEvent(
+      new PointerEvent(type, {
+        pointerId: id,
+        pointerType: "touch",
+        isPrimary: id === 1,
+        clientX: x,
+        clientY: y,
+        buttons: type === "pointerup" ? 0 : 1,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+  const box = () => {
+    const uv = object.mesh.uvSets.get("map1");
+    let minU = Infinity, maxU = -Infinity, minV = Infinity, maxV = -Infinity;
+    for (let i = 0; i < uv.length; i += 2) {
+      minU = Math.min(minU, uv[i]);
+      maxU = Math.max(maxU, uv[i]);
+      minV = Math.min(minV, uv[i + 1]);
+      maxV = Math.max(maxV, uv[i + 1]);
+    }
+    return { minU, maxU, minV, maxV, w: maxU - minU, h: maxV - minV };
+  };
+
+  // つまんで広げる → UV が大きくなる
+  const before = box();
+  const cx = rect.x + rect.width / 2;
+  const cy = rect.y + rect.height / 2;
+  const seats = [[-40, 0], [40, 0], [0, 40]];
+  seats.forEach(([dx, dy], i) => fire("pointerdown", i + 1, cx + dx, cy + dy));
+  for (let step = 1; step <= 8; step++) {
+    seats.forEach(([dx, dy], i) => fire("pointermove", i + 1, cx + dx * (1 + step * 0.12), cy + dy * (1 + step * 0.12)));
+  }
+  seats.forEach((_, i) => fire("pointerup", i + 1, cx, cy));
+  await new Promise((r) => setTimeout(r, 40));
+  const scaled = box();
+
+  // 左右スワイプ → U に平行移動
+  const beforeSwipe = box();
+  seats.forEach(([dx, dy], i) => fire("pointerdown", i + 11, cx + dx, cy + dy));
+  for (let step = 1; step <= 8; step++) {
+    seats.forEach(([dx, dy], i) => fire("pointermove", i + 11, cx + dx + step * 8, cy + dy));
+  }
+  seats.forEach(([dx, dy], i) => fire("pointerup", i + 11, cx + dx + 64, cy + dy));
+  await new Promise((r) => setTimeout(r, 40));
+  const moved = box();
+
+  app.setMode("model");
+  app.state.select(null);
+  app.state.doc.objects.length = objectsBefore;
+  app.viewport.syncAll();
+  return {
+    grew: scaled.w > before.w + 1e-4,
+    ratio: scaled.w / before.w,
+    movedU: moved.minU - beforeSwipe.minU,
+    movedV: moved.minV - beforeSwipe.minV,
+  };
+});
+check(
+  "2D の指 3 本で UV を拡大縮小 / 平行移動",
+  uvThree.grew && uvThree.movedU > 0.01 && Math.abs(uvThree.movedV) < 1e-3,
+  `つまむ ×${uvThree.ratio.toFixed(2)} / 左右スワイプ U ${uvThree.movedU.toFixed(3)}（V ${uvThree.movedV.toFixed(3)}）`,
+);
+
+/* 42. 例外が出ていない */
 check("例外なし", errors.length === 0, errors.join(" / "));
 
 await page.screenshot({ path: SHOT });
