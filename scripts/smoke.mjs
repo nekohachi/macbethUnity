@@ -2694,18 +2694,23 @@ const exported = await page.evaluate(async () => {
   const menu = document.getElementById("fileBtn");
   menu.click();
   const items = [...document.querySelectorAll(".panel.floating .act")].map((b) => b.textContent);
+  // ビルドの目印は、メニューを閉じる前に読む
+  const build = [...document.querySelectorAll(".panel.floating .hint")].map((h) => h.textContent).join("");
   const glb = [...document.querySelectorAll(".panel.floating .act")].find((b) => b.textContent.includes("glTF"));
   glb?.click();
   await new Promise((r) => setTimeout(r, 300));
 
   HTMLAnchorElement.prototype.click = realClick;
   window.showSaveFilePicker = original;
-  return { items, saved };
+  return { items, saved, build };
 });
 check(
-  "ファイルメニューに glTF と PNG がある",
-  exported.items.some((t) => t.includes("glTF")) && exported.items.some((t) => t.includes("png")),
-  exported.items.join(" / "),
+  "ファイルメニューに glTF と PNG と更新の確認がある",
+  exported.items.some((t) => t.includes("glTF")) &&
+    exported.items.some((t) => t.includes("png")) &&
+    exported.items.some((t) => t.includes("更新を確認")) &&
+    /ビルド \d{4}-\d{2}-\d{2}/.test(exported.build ?? ""),
+  `${exported.items.join(" / ")} / ${exported.build}`,
 );
 
 /* 42b. 書き出した .glb が読み戻せる */

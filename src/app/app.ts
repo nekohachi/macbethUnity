@@ -3644,9 +3644,30 @@ export class App {
     item("OBJ を書き出す", () => this.exportObj());
     item("glTF を書き出す (.glb)", () => this.exportGlb());
     item("画面を画像で保存 (.png)", () => this.exportPng());
+    item("更新を確認して開き直す", () => this.checkForUpdate());
+    // 今開いているものがいつのビルドか。ホーム画面から開いたときの確認用
+    body.appendChild(el("div", "hint", `ビルド ${__BUILD__}`));
     pop.appendChild(body);
     document.body.appendChild(pop);
     this.popup = pop;
+  }
+
+  /**
+   * 新しいビルドが出ていないか見て、あれば開き直す。
+   *
+   * ふだんは開き直すだけで新しくなる（サービスワーカーは入口の HTML を
+   * ネットワークから先に取る）。ホーム画面から開いたアプリは閉じないことがあるので、
+   * ここから手で確かめられるようにしておく。
+   */
+  private async checkForUpdate(): Promise<void> {
+    this.hud.toast("更新を確認しています…");
+    try {
+      const reg = await navigator.serviceWorker?.getRegistration();
+      await reg?.update();
+    } catch {
+      /* サービスワーカーが無い環境（開発中）でも、下の再読み込みは効く */
+    }
+    location.reload();
   }
 
   /* ---- ファイル -------------------------------------------------------- */

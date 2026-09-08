@@ -14,9 +14,18 @@ document.addEventListener("selectstart", (e) => {
 // オフラインで開けるようにする。開発中は登録しない（更新が回りくどくなるため）
 if (import.meta.env.PROD && "serviceWorker" in navigator) {
   window.addEventListener("load", () => {
-    void navigator.serviceWorker.register(`${import.meta.env.BASE_URL}sw.js`, {
-      scope: import.meta.env.BASE_URL,
-    });
+    void navigator.serviceWorker
+      .register(`${import.meta.env.BASE_URL}sw.js`, {
+        scope: import.meta.env.BASE_URL,
+        // sw.js 自体を HTTP の控えから読ませない。ここを既定にすると、
+        // サービスワーカーを直したとき最大 24 時間古いものが動き続ける
+        updateViaCache: "none",
+      })
+      // ホーム画面から開いたアプリは長く生きるので、起動のたびに確かめる
+      .then((reg) => reg.update())
+      .catch(() => {
+        /* 登録できなくてもアプリは動く（オフラインにならないだけ） */
+      });
   });
 }
 
