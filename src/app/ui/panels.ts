@@ -37,6 +37,8 @@ export interface PanelHost {
   onPivotEditToggle(): void;
   onCamOptChange(key: "focal" | "near" | "far", value: number): void;
   onCamOrthoChange(on: boolean): void;
+  /** カメラを既定の設定へ戻す。 */
+  onCamReset(): void;
   /** 「次に追加するプリミティブ」のパラメータ（`21` の 2.7）。 */
   onDefaultParamChange(kind: string, key: string, value: number): void;
   onSelect(object: SceneObject): void;
@@ -619,6 +621,10 @@ export function cameraSection(state: OptionsState, host: PanelHost): HTMLElement
   updateAov(state.cam.focal);
   s.appendChild(aov);
   checkbox(s, "平行投影", state.cam.ortho, (v) => host.onCamOrthoChange(v));
+  const reset = el("button", "act", "初期設定に戻す");
+  reset.addEventListener("click", () => host.onCamReset());
+  s.appendChild(reset);
+  s.appendChild(el("div", "hint", "焦点距離 35mm・ニア 0.05・ファー 500・パースに戻します。"));
   return s;
 }
 

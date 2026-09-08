@@ -1071,6 +1071,12 @@ export class App {
       E: { label: "移動", sub: "Move  W", icon: ICONS.move, run: () => this.setManip("move") },
       SE: { label: "ピボットを戻す", sub: "Center", icon: ICONS.vObj, run: () => this.resetPivot() },
       S: { label: "回転", sub: "Rotate  E", icon: ICONS.rotate, run: () => this.setManip("rotate") },
+      SW: {
+        label: "距離でマージ",
+        sub: "Merge",
+        icon: ICONS.vVert,
+        run: () => this.doMergeByDistance(),
+      },
       W: { label: "スケール", sub: "Scale  R", icon: ICONS.scale, run: () => this.setManip("scale") },
       NW: {
         label: "初期設定に戻す",
@@ -2996,6 +3002,8 @@ export class App {
     const state = this.optionsState();
     const host = this.panelHost();
     const out = [manipulatorSection(state, host)];
+    // マージがこのグループに入っているので、頂点モードならその距離もここで触れる
+    if (this.state.compMode === "vertex") out.push(vertexSection(state, host));
     const t = transformSection(state, host);
     if (t) out.push(t);
     return out;
@@ -3295,6 +3303,13 @@ export class App {
         this.state.camOpts.ortho = on;
         this.viewport.applyCamera();
         this.refresh();
+      },
+      onCamReset: () => {
+        this.state.camOpts = { focal: 35, near: 0.05, far: 500, ortho: false };
+        this.setView("persp");
+        this.refreshManipulator();
+        this.reopenToolOptions("camera");
+        this.hud.toast("カメラを初期設定に戻した");
       },
       onDefaultParamChange: (kind, key, value) => {
         const params = (this.state.primitiveDefaults[kind] ??= defaultParams(kind));

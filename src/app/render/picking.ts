@@ -5,7 +5,7 @@
  * Maya と同じく、近ければ拾えるようにピクセル半径で許容する。
  */
 import { Matrix3, Raycaster, Vector2, Vector3 } from "three";
-import type { SceneObject } from "../../core/index.js";
+import { edgeKey, type SceneObject } from "../../core/index.js";
 import type { ObjectView } from "./meshView.js";
 import type { Viewport } from "./viewport.js";
 
@@ -51,6 +51,8 @@ export class Picker {
   cameraBased: () => boolean = () => false;
   /** 面がカメラを向いているかの控え。1 回の呼び出しの間だけ持つ。 */
   private facingCache: { view: ObjectView; front: Uint8Array } | null = null;
+  /** 辺 → その辺を使っている面。エッジの判定に要る。同じく 1 回ぶん。 */
+  private edgeFaceCache: { view: ObjectView; map: Map<string, number[]> } | null = null;
 
   constructor(
     private viewport: Viewport,
@@ -96,14 +98,38 @@ export class Picker {
     return front;
   }
 
+  private edgeFaces(view: ObjectView): Map<string, number[]> {
+    if (this.edgeFaceCache?.view === view) return this.edgeFaceCache.map;
+    const map = view.object.mesh.edgeFaceMap();
+    this.edgeFaceCache = { view, map };
+    return map;
+  }
+
   /** この呼び出しの間だけ控えを持つ。選択が終わったら捨てる。 */
   private withFacing<T>(run: () => T): T {
     this.facingCache = null;
+    this.edgeFaceCache = null;
     try {
       return run();
     } finally {
       this.facingCache = null;
+      this.edgeFaceCache = null;
     }
+  }
+
+  /**
+   * エッジがカメラを向いているか。**その辺を使っている面**で見る。
+   *
+   * 端点のどちらかが見えていれば通す、では緩すぎる。立方体をパースで見ると
+   * 裏の 3 本も端点が見えているので、12 本すべて拾ってしまう（見えるのは 9 本）。
+   */
+  private edgeFacing(view: ObjectView, a: number, b: number): boolean {
+    if (!this.cameraBased()) return true;
+    const front = this.frontFaces(view);
+    const uses = this.edgeFaces(view).get(edgeKey(a, b));
+    // どの面にも属さない辺（宙に浮いた辺）は隠せないので通す
+    if (!uses?.length) return true;
+    return uses.some((f) => front[f] === 1);
   }
 
   /** 面がカメラを向いているか。カメラベース選択がオフなら常に真。 */
@@ -212,7 +238,6 @@ export class Picker {
    */
   pickEdge(view: ObjectView, p: ScreenPoint, radius: number): EdgeHit {
     return this.withFacing(() => {
-      const faces = this.cameraBased() ? view.object.mesh.vertexFaces() : new Map<number, number[]>();
       let best = -1;
       let bestD = radius;
       let bestT = 0.5;
@@ -227,8 +252,7 @@ export class Picker {
         const t = len2 ? Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2)) : 0;
         const d = Math.hypot(a.x + dx * t - p.x, a.y + dy * t - p.y);
         if (d >= bestD) continue;
-        // エッジは両端のどちらかが見えていれば拾える
-        if (!this.vertexVisible(view, ia, faces) && !this.vertexVisible(view, ib, faces)) continue;
+        if (!this.edgeFacing(view, ia, ib)) continue;
         bestD = d;
         best = i;
         bestT = t;
@@ -255,12 +279,9 @@ export class Picker {
     });
   }
 
-  /** 矩形選択で、そのエッジ / 面がカメラを向いているか。 */
+  /** 矩形選択で、そのエッジがカメラを向いているか。 */
   edgeVisible(view: ObjectView, a: number, b: number): boolean {
     if (!this.cameraBased()) return true;
-    return this.withFacing(() => {
-      const faces = view.object.mesh.vertexFaces();
-      return this.vertexVisible(view, a, faces) || this.vertexVisible(view, b, faces);
-    });
+    return this.edgeFacing(view, a, b);
   }
 }

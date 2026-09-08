@@ -3151,13 +3151,25 @@ const cameraBased = await page.evaluate(async () => {
   const pane = document.getElementById("vp").getBoundingClientRect();
   const all = { x0: 0, y0: 0, x1: pane.width, y1: pane.height };
 
+  const zOf = (list) => list.map((v) => object.mesh.getPosition(v)[2]);
   app.state.cameraBased = false;
   const off = app.picker.vertsInRect(view, all.x0, all.y0, all.x1, all.y1).length;
 
   app.state.cameraBased = true;
   const t0 = performance.now();
-  const on = app.picker.vertsInRect(view, all.x0, all.y0, all.x1, all.y1).length;
+  const picked = app.picker.vertsInRect(view, all.x0, all.y0, all.x1, all.y1);
   const ms = performance.now() - t0;
+  const on = picked.length;
+  // 前ビューなので、拾えたのは手前（+Z）の 4 点だけのはず
+  const allFront = zOf(picked).every((z) => z > 0);
+
+  // パースでは、立方体の見えるエッジは 9 本（裏の 3 本は拾わない）
+  app.viewport.setView("persp");
+  app.viewport.frameSelected();
+  await new Promise((r) => setTimeout(r, 60));
+  let visibleEdges = 0;
+  for (const [a, b] of view.edges) if (app.picker.edgeVisible(view, a, b)) visibleEdges++;
+  const perspVerts = app.picker.vertsInRect(view, all.x0, all.y0, all.x1, all.y1).length;
 
   // 重さの目安。細かい球で 1 回ぶん測る（`21` の 2.1）
   const heavy = app.state.doc.addObject("sphere");
@@ -3178,12 +3190,17 @@ const cameraBased = await page.evaluate(async () => {
   app.state.select(null);
   app.state.doc.objects.length = objectsBefore;
   app.viewport.syncAll();
-  return { off, on, ms, heavyCount, heavyMs, heavyVerts: heavy.mesh.vertexCount };
+  return { off, on, allFront, visibleEdges, perspVerts, ms, heavyCount, heavyMs, heavyVerts: heavy.mesh.vertexCount };
 });
 check(
-  "カメラベース選択: 裏の頂点を拾わない",
-  cameraBased.off === 8 && cameraBased.on === 4,
-  `オフ ${cameraBased.off} 点 → オン ${cameraBased.on} 点（${cameraBased.ms.toFixed(0)}ms）/ ` +
+  "カメラベース選択: 裏の頂点とエッジを拾わない",
+  cameraBased.off === 8 &&
+    cameraBased.on === 4 &&
+    cameraBased.allFront &&
+    cameraBased.visibleEdges === 9 &&
+    cameraBased.perspVerts === 7,
+  `前ビュー ${cameraBased.off} → ${cameraBased.on} 点（手前だけ ${cameraBased.allFront}）/ ` +
+    `パース ${cameraBased.perspVerts} 点・${cameraBased.visibleEdges}/12 エッジ / ` +
     `球 ${cameraBased.heavyVerts} 点で ${cameraBased.heavyCount} 点・${cameraBased.heavyMs.toFixed(0)}ms`,
 );
 
