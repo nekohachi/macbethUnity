@@ -24,7 +24,7 @@ import { autoPins, lscm, normalizeScale } from "./lscm.js";
 import { projectChart } from "./projection.js";
 import { measure, type Distortion } from "./distortion.js";
 import { uprightChart } from "./orient.js";
-import { equalizeTexelDensity, shelfPack, surfaceArea, type PackBox } from "./pack.js";
+import { equalizeTexelDensity, marginUv, shelfPack, surfaceArea, type PackBox, type PackSettings } from "./pack.js";
 
 export type UvMethod = "lscm" | "projection" | "none";
 
@@ -40,7 +40,7 @@ export interface UvRecipe {
    * `map1` を土台にすると、再計算のたびに手の差分が二重に乗ってしまう。
    */
   base: Float32Array | null;
-  packing: { margin: number; allowRotate: boolean; texelDensity: number | null };
+  packing: PackSettings;
   /** 手で動かした差分。島の指紋 → コーナーごとの (du, dv)。 */
   manual: Map<string, Map<CornerKey, [number, number]>>;
   autoSeamParams: {
@@ -60,7 +60,7 @@ export function emptyRecipe(): UvRecipe {
     pins: new Map(),
     method: "lscm",
     base: null,
-    packing: { margin: 1 / 128, allowRotate: true, texelDensity: null },
+    packing: { marginTexels: 8, textureSize: 1024, allowRotate: false, texelDensity: null },
     manual: new Map(),
     autoSeamParams: {
       angle: 65,
@@ -256,7 +256,7 @@ function packCharts(
     boxes.push({ w: maxU - minU, h: maxV - minV });
   });
 
-  const placed = shelfPack(boxes, packing.margin, packing.allowRotate);
+  const placed = shelfPack(boxes, marginUv(packing), packing.allowRotate);
   charts.forEach((chart, i) => {
     const p = placed[i];
     const [minU, minV] = mins[i];
@@ -515,7 +515,19 @@ export function deserializeRecipe(json: UvRecipeJson | null | undefined): UvReci
   for (const [key, u, v] of json.pins ?? []) recipe.pins.set(key, [u, v]);
   if (json.method) recipe.method = json.method;
   if (json.base) recipe.base = Float32Array.from(json.base);
-  if (json.packing) recipe.packing = { ...recipe.packing, ...json.packing };
+  if (json.packing) {
+    // 古い保存物は余白を UV の比率（`margin`）で持っていた。テクセルに直す（`19` の 1.2）
+    const old = json.packing as Partial<PackSettings> & { margin?: number };
+    recipe.packing = { ...recipe.packing, ...json.packing };
+    if (old.marginTexels === undefined && typeof old.margin === "number") {
+      recipe.packing.marginTexels = Math.max(1, Math.round(old.margin * 1024));
+      recipe.packing.textureSize = 1024;
+    }
+    // 90° 回して詰めるかは、島を立てる決め（`19` の 1.1）と噛み合わないので
+    // 明示されていなければ切っておく
+    if (old.allowRotate === undefined) recipe.packing.allowRotate = false;
+    delete (recipe.packing as Partial<PackSettings> & { margin?: number }).margin;
+  }
   if (json.autoSeamParams) recipe.autoSeamParams = { ...recipe.autoSeamParams, ...json.autoSeamParams };
   for (const [fingerprint, deltas] of json.manual ?? []) {
     recipe.manual.set(fingerprint, new Map(deltas.map(([k, du, dv]) => [k, [du, dv] as [number, number]])));

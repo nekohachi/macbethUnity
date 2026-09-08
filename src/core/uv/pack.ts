@@ -10,6 +10,33 @@ export interface PackBox {
   h: number;
 }
 
+/**
+ * パッキングの決め（`19` の 1.2）。
+ *
+ * 余白は **テクセル**で持つ。UV の比率で持つと、テクスチャの大きさによって
+ * 画面上の隙間の意味が変わってしまう。
+ */
+export interface PackSettings {
+  /** 島どうしの余白（テクセル）。 */
+  marginTexels: number;
+  /** 想定するテクスチャの一辺（px）。 */
+  textureSize: number;
+  /** 縦長の島を寝かせて詰めてよいか。島の向き（`orient.ts`）を崩すので既定は false。 */
+  allowRotate: boolean;
+  /** 目標のテクセル密度。null なら最大の島に合わせる。 */
+  texelDensity: number | null;
+}
+
+/**
+ * 余白を UV の比率に直す。どのテクスチャでも **最低 5px** は空ける
+ * （ユーザー要望。1024 を基準に必要なテクセル数へ引き上げる）。
+ */
+export function marginUv(packing: PackSettings): number {
+  const size = Math.max(1, packing.textureSize);
+  const texels = Math.max(packing.marginTexels, Math.ceil((5 * 1024) / size));
+  return texels / size;
+}
+
 export interface PackPlacement {
   x: number;
   y: number;
@@ -22,6 +49,11 @@ export interface PackPlacement {
 /**
  * 棚詰め。高い順に並べて、横に置けなくなったら次の段へ。
  * 最後に全体を 0〜1 へ収める倍率を返す（島どうしの比は変えない）。
+ *
+ * `margin` は **最終的な UV での隙間**。島を縮めてから隙間を入れるので、
+ * 全体を縮めても隙間は縮まない（先に隙間ごと並べてから縮めると、
+ * 島が増えるほど隙間が詰まって、最後にはくっついて見えてしまう）。
+ * そのぶん「収まる最大の倍率」が閉じた形で出ないので、二分探索で決める。
  *
  * `allowRotate` なら、縦長の島は寝かせて詰める。
  */
@@ -42,39 +74,63 @@ export function shelfPack(boxes: PackBox[], margin: number, allowRotate: boolean
   });
   // 高い順。同じ高さなら幅の広い順、それも同じなら元の並び（決定的に）
   const order = [...item].sort((a, b) => b.h - a.h || b.w - a.w || a.i - b.i);
+  const inner = Math.max(1e-6, 1 - margin * 2);
 
-  // 棚の幅は「いちばん広い島」と「面積の平方根」の大きいほうを目安にする
-  let area = 0;
-  for (const it of item) area += (it.w + margin) * (it.h + margin);
-  const widest = Math.max(...item.map((it) => it.w));
-  const shelfWidth = Math.max(widest, Math.sqrt(area) * 1.05);
-
-  let cursorX = 0;
-  let cursorY = 0;
-  let shelfHeight = 0;
-  let usedWidth = 0;
-  for (const it of order) {
-    if (cursorX > 0 && cursorX + it.w > shelfWidth) {
-      cursorY += shelfHeight + margin;
-      cursorX = 0;
-      shelfHeight = 0;
+  /** 倍率 s で棚に並べる。隙間は倍率に依らず margin のまま。 */
+  const layout = (
+    s: number,
+  ): { place: Array<{ x: number; y: number }>; usedWidth: number; usedHeight: number } => {
+    // 棚の幅は「いちばん広い島」と「面積の平方根」の大きいほうを目安にする
+    let area = 0;
+    let widest = 0;
+    for (const it of item) {
+      area += (it.w * s + margin) * (it.h * s + margin);
+      widest = Math.max(widest, it.w * s);
     }
-    out[it.i] = { x: cursorX, y: cursorY, rotated: it.rotated, scale: 1 };
-    cursorX += it.w + margin;
-    usedWidth = Math.max(usedWidth, cursorX - margin);
-    shelfHeight = Math.max(shelfHeight, it.h);
-  }
-  const usedHeight = cursorY + shelfHeight;
+    const shelfWidth = Math.max(widest, Math.sqrt(area) * 1.05);
 
-  // 0〜1 に収める。余白は両端に均等に残す
-  const scale = Math.min(
-    (1 - margin * 2) / Math.max(1e-6, usedWidth),
-    (1 - margin * 2) / Math.max(1e-6, usedHeight),
-  );
-  for (const p of out) {
-    p.x = p.x * scale + margin;
-    p.y = p.y * scale + margin;
-    p.scale = scale;
+    const place: Array<{ x: number; y: number }> = new Array(n);
+    let cursorX = 0;
+    let cursorY = 0;
+    let shelfHeight = 0;
+    let usedWidth = 0;
+    for (const it of order) {
+      const w = it.w * s;
+      const h = it.h * s;
+      if (cursorX > 0 && cursorX + w > shelfWidth) {
+        cursorY += shelfHeight + margin;
+        cursorX = 0;
+        shelfHeight = 0;
+      }
+      place[it.i] = { x: cursorX, y: cursorY };
+      cursorX += w + margin;
+      usedWidth = Math.max(usedWidth, cursorX - margin);
+      shelfHeight = Math.max(shelfHeight, h);
+    }
+    return { place, usedWidth, usedHeight: cursorY + shelfHeight };
+  };
+
+  const fits = (s: number): boolean => {
+    const r = layout(s);
+    return r.usedWidth <= inner && r.usedHeight <= inner;
+  };
+
+  // 収まる最大の倍率を探す。回数を固定しているので結果は決定的（U3）
+  let lo = 0;
+  let hi = 1;
+  for (let k = 0; k < 40 && fits(hi); k++) {
+    lo = hi;
+    hi *= 2;
+  }
+  for (let k = 0; k < 40; k++) {
+    const mid = (lo + hi) / 2;
+    if (fits(mid)) lo = mid;
+    else hi = mid;
+  }
+
+  const final = layout(lo);
+  for (let i = 0; i < n; i++) {
+    out[i] = { x: final.place[i].x + margin, y: final.place[i].y + margin, rotated: item[i].rotated, scale: lo };
   }
   return out;
 }

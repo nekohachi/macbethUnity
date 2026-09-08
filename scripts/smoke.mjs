@@ -2684,6 +2684,71 @@ check(
   `${glb.bytes} バイト / ノード ${glb.nodes} / UV ${glb.hasUv}`,
 );
 
+/* 42e. 島どうしが 5px 以上離れる（`20` の T3） */
+const packed = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const core = window.macbethCore;
+  const objectsBefore = app.state.doc.objects.length;
+  const object = app.state.doc.addObject("sphere");
+  app.viewport.syncAll();
+  app.state.select(object);
+  app.setMode("uv");
+  app.uv.autoUnwrap();
+
+  const boxesOf = () => {
+    const uv = object.mesh.uvSets.get("map1");
+    const charts = core.buildCharts(object.mesh, object.uv.seams);
+    return charts.map((chart) => {
+      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+      for (const key of chart.corners) {
+        const at = core.cornerIndex(object.mesh, key);
+        x0 = Math.min(x0, uv[at * 2]);
+        x1 = Math.max(x1, uv[at * 2]);
+        y0 = Math.min(y0, uv[at * 2 + 1]);
+        y1 = Math.max(y1, uv[at * 2 + 1]);
+      }
+      return { x0, y0, x1, y1 };
+    });
+  };
+  const worstGap = (boxes) => {
+    let worst = Infinity;
+    for (let i = 0; i < boxes.length; i++) {
+      const a = boxes[i];
+      worst = Math.min(worst, a.x0, a.y0, 1 - a.x1, 1 - a.y1);
+      for (let j = i + 1; j < boxes.length; j++) {
+        const b = boxes[j];
+        worst = Math.min(worst, Math.max(b.x0 - a.x1, a.x0 - b.x1, b.y0 - a.y1, a.y0 - b.y1));
+      }
+    }
+    return worst;
+  };
+
+  const boxes = boxesOf();
+  const gap1024 = worstGap(boxes);
+  const want1024 = core.marginUv(object.uv.packing);
+
+  // 512 に落とすと余白は 10 テクセルへ上がる（5px を割らない）
+  object.uv.packing.textureSize = 512;
+  app.uv.repack();
+  const want512 = core.marginUv(object.uv.packing);
+  const gap512 = worstGap(boxesOf());
+
+  app.setMode("model");
+  app.state.select(null);
+  app.state.doc.objects.length = objectsBefore;
+  app.viewport.syncAll();
+  return { charts: boxes.length, gap1024, want1024, gap512, want512 };
+});
+check(
+  "島どうしが 5px 以上離れる",
+  packed.charts > 1 &&
+    packed.gap1024 >= packed.want1024 - 1e-6 &&
+    packed.gap512 >= packed.want512 - 1e-6 &&
+    Math.abs(packed.want512 - 10 / 512) < 1e-9,
+  `島 ${packed.charts} / 1024: 隙間 ${(packed.gap1024 * 1024).toFixed(1)}px（要 ${(packed.want1024 * 1024).toFixed(1)}）` +
+    ` / 512: ${(packed.gap512 * 512).toFixed(1)}px（要 ${(packed.want512 * 512).toFixed(1)}）`,
+);
+
 /* 42d. 展開した島がまっすぐ（`20` の T2） */
 const upright = await page.evaluate(async () => {
   const app = window.macbeth;

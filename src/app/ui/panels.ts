@@ -28,6 +28,7 @@ export interface PanelHost {
   onUvSnapChange(key: "kind" | "step", value: string | number): void;
   onUvAutoChange(key: "angle" | "useHardEdges" | "useCreases" | "usePolygroups" | "symmetric", value: number | boolean): void;
   onUvAutoRun(): void;
+  onUvPackingChange(key: "marginTexels" | "textureSize" | "allowRotate", value: number | boolean): void;
   onSelect(object: SceneObject): void;
   onRename(object: SceneObject, name: string): void;
   onOutlinerMenu(object: SceneObject, x: number, y: number): void;
@@ -138,7 +139,50 @@ export interface OptionsState {
       usePolygroups: boolean;
       symmetric: boolean;
     };
+    packing: { marginTexels: number; textureSize: number; allowRotate: boolean };
   } | null;
+}
+
+/**
+ * パッキングの区画（`19` の 1.2）。余白はテクセルで持つ。
+ * `20` の T8 でツールのカットインへ移すので、1 つの関数に分けてある。
+ */
+export function packingSection(
+  state: NonNullable<OptionsState["uv"]>,
+  host: PanelHost,
+): HTMLElement {
+  const s = section("パッキング", "PACK");
+  paramRow(s, {
+    label: "余白",
+    value: state.packing.marginTexels,
+    min: 2,
+    max: 64,
+    step: 1,
+    format: (v) => `${Math.round(v)} tx`,
+    onInput: (v) => host.onUvPackingChange("marginTexels", Math.round(v)),
+  });
+
+  const row = el("div", "row");
+  const group = el("div", "segmented");
+  for (const size of [512, 1024, 2048, 4096]) {
+    const b = el("button", "seg") as HTMLButtonElement;
+    b.textContent = String(size);
+    b.setAttribute("aria-pressed", String(state.packing.textureSize === size));
+    b.addEventListener("click", () => host.onUvPackingChange("textureSize", size));
+    group.appendChild(b);
+  }
+  row.appendChild(group);
+  s.appendChild(row);
+
+  checkbox(s, "90° 回転を許す", state.packing.allowRotate, (v) => host.onUvPackingChange("allowRotate", v));
+  s.appendChild(
+    el(
+      "div",
+      "hint",
+      "余白はテクスチャのテクセルで持ちます。どの大きさでも最低 5px は空きます。\n90° 回転は島の向き（上が +V）を崩すので、既定は切ってあります。",
+    ),
+  );
+  return s;
 }
 
 /** オプションパネルを描き直す。 */
@@ -223,6 +267,7 @@ export function renderOptions(body: HTMLElement, state: OptionsState, host: Pane
       ),
     );
     body.appendChild(auto);
+    body.appendChild(packingSection(state.uv, host));
 
     const sn = section(`スナップ${state.snap.active ? "（効いています）" : ""}`, "SNAP");
     const srow = el("div", "row");

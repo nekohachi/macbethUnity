@@ -20,6 +20,8 @@ import {
   autoSeams,
   equalizeTexelDensity,
   shelfPack,
+  marginUv,
+  deserializeRecipe,
   surfaceArea,
   polygonArea,
   chartMesh as chartMeshFn,
@@ -900,5 +902,120 @@ describe("U19. 天面は X が +U を向く", () => {
     const dv = q[1] - p[1];
     expect(du).toBeGreaterThan(0);
     expect(Math.abs(dv) / Math.hypot(du, dv)).toBeLessThan(1e-4);
+  });
+});
+
+/**
+ * U20〜U21. 余白をテクセルで持つ（`19` の 1.2、`20` の T3）。
+ *
+ * 島どうしがくっついて見えないよう、どのテクスチャでも最低 5px 空ける。
+ * 余白を UV の比率で持つと、島が増えて全体を縮めたときに一緒に縮んでしまう。
+ */
+describe("U20. 島と島の間が空く", () => {
+  /** 島ごとの UV 境界箱。 */
+  const boxesOf = (mesh: Mesh, recipe: ReturnType<typeof emptyRecipe>) => {
+    const uv = mesh.uvSets.get(UV_SET)!;
+    return buildCharts(mesh, recipe.seams).map((chart) => {
+      let x0 = Infinity;
+      let y0 = Infinity;
+      let x1 = -Infinity;
+      let y1 = -Infinity;
+      for (const key of chart.corners) {
+        const at = cornerIndex(mesh, key);
+        x0 = Math.min(x0, uv[at * 2]);
+        x1 = Math.max(x1, uv[at * 2]);
+        y0 = Math.min(y0, uv[at * 2 + 1]);
+        y1 = Math.max(y1, uv[at * 2 + 1]);
+      }
+      return { x0, y0, x1, y1 };
+    });
+  };
+
+  /** 2 つの箱の隙間（重なっていれば負）。 */
+  const gap = (a: { x0: number; y0: number; x1: number; y1: number }, b: typeof a): number =>
+    Math.max(b.x0 - a.x1, a.x0 - b.x1, b.y0 - a.y1, a.y0 - b.y1);
+
+  const check = (textureSize: number, marginTexels: number): void => {
+    const mesh = PRIMITIVES.sphere.build({ ...defaultParams("sphere"), sdAxis: 12, sdHeight: 8 });
+    const recipe = emptyRecipe();
+    recipe.packing.textureSize = textureSize;
+    recipe.packing.marginTexels = marginTexels;
+    recipe.seams = autoSeams(mesh, recipe.autoSeamParams, 30);
+    recompute(mesh, recipe);
+
+    const want = marginUv(recipe.packing);
+    const boxes = boxesOf(mesh, recipe);
+    expect(boxes.length).toBeGreaterThan(1);
+    for (let i = 0; i < boxes.length; i++) {
+      // 外周からも同じだけ離れている
+      expect(boxes[i].x0).toBeGreaterThanOrEqual(want - 1e-6);
+      expect(boxes[i].y0).toBeGreaterThanOrEqual(want - 1e-6);
+      expect(boxes[i].x1).toBeLessThanOrEqual(1 - want + 1e-6);
+      expect(boxes[i].y1).toBeLessThanOrEqual(1 - want + 1e-6);
+      for (let j = i + 1; j < boxes.length; j++) {
+        expect(gap(boxes[i], boxes[j])).toBeGreaterThanOrEqual(want - 1e-6);
+      }
+    }
+  };
+
+  it("既定（1024 で 8 テクセル）なら 8px 空く", () => {
+    expect(marginUv({ marginTexels: 8, textureSize: 1024, allowRotate: false, texelDensity: null })).toBeCloseTo(
+      8 / 1024,
+      12,
+    );
+    check(1024, 8);
+  });
+
+  it("512 のときは 10 テクセルに上がる（5px を割らない）", () => {
+    expect(marginUv({ marginTexels: 8, textureSize: 512, allowRotate: false, texelDensity: null })).toBeCloseTo(
+      10 / 512,
+      12,
+    );
+    check(512, 8);
+  });
+
+  it("島が多くても隙間は縮まない", () => {
+    // 同じ大きさの島を 40 枚。先に隙間ごと並べてから縮めると、ここで潰れる
+    const boxes = Array.from({ length: 40 }, () => ({ w: 1, h: 1 }));
+    const margin = 8 / 1024;
+    const placed = shelfPack(boxes, margin, false);
+    const rects = placed.map((p, i) => ({
+      x0: p.x,
+      y0: p.y,
+      x1: p.x + boxes[i].w * p.scale,
+      y1: p.y + boxes[i].h * p.scale,
+    }));
+    for (let i = 0; i < rects.length; i++) {
+      expect(rects[i].x0).toBeGreaterThanOrEqual(margin - 1e-9);
+      expect(rects[i].x1).toBeLessThanOrEqual(1 - margin + 1e-9);
+      expect(rects[i].y1).toBeLessThanOrEqual(1 - margin + 1e-9);
+      for (let j = i + 1; j < rects.length; j++) {
+        expect(gap(rects[i], rects[j])).toBeGreaterThanOrEqual(margin - 1e-9);
+      }
+    }
+  });
+});
+
+describe("U21. 古い保存物の読み直し", () => {
+  it("`margin` はテクセルに直り、90° 回転は明示が無ければ切れる", () => {
+    const old = deserializeRecipe({ packing: { margin: 1 / 128, texelDensity: null } } as never)!;
+    expect(old.packing.marginTexels).toBe(8);
+    expect(old.packing.textureSize).toBe(1024);
+    expect(old.packing.allowRotate).toBe(false);
+    expect((old.packing as { margin?: number }).margin).toBeUndefined();
+  });
+
+  it("明示された 90° 回転は残る", () => {
+    const kept = deserializeRecipe({ packing: { margin: 1 / 64, allowRotate: true, texelDensity: null } } as never)!;
+    expect(kept.packing.marginTexels).toBe(16);
+    expect(kept.packing.allowRotate).toBe(true);
+  });
+
+  it("新しい形はそのまま読める", () => {
+    const now = deserializeRecipe({
+      packing: { marginTexels: 12, textureSize: 2048, allowRotate: false, texelDensity: null },
+    } as never)!;
+    expect(now.packing.marginTexels).toBe(12);
+    expect(now.packing.textureSize).toBe(2048);
   });
 });

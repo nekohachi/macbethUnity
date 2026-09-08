@@ -3062,6 +3062,14 @@ export class App {
         else recipe.autoSeamParams[key] = value as boolean;
       },
       onUvAutoRun: () => this.uv?.autoUnwrap(),
+      onUvPackingChange: (key, value) => {
+        const recipe = this.state.selected?.uv;
+        if (!recipe) return;
+        if (key === "allowRotate") recipe.packing.allowRotate = value as boolean;
+        else recipe.packing[key] = value as number;
+        this.uv?.repack();
+        this.refresh();
+      },
       onUvSnapChange: (key, value) => {
         if (key === "kind") this.state.uvSnap.kind = value as "grid" | "vertex";
         else this.state.uvSnap.step = value as number;
@@ -3149,6 +3157,7 @@ export class App {
                   snapKind: this.state.uvSnap.kind,
                   snapStep: this.state.uvSnap.step,
                   auto: { ...this.state.selected.uv.autoSeamParams },
+                  packing: { ...this.state.selected.uv.packing },
                 }
               : null,
         },
