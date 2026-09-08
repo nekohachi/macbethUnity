@@ -278,3 +278,11 @@ button{font-family:inherit; font-size:inherit; color:inherit; background:none; b
 .stub li b{font-weight:500; color:var(--text); flex:0 0 auto; min-width:104px}
 .stub li span{color:var(--text-dim); font-size:11px; line-height:1.5}
 .stub li em{font-style:normal; margin-left:auto; font-size:9px; letter-spacing:.07em; text-transform:uppercase; color:var(--text-faint); flex:0 0 auto; padding-left:12px}
+
+/* 折りたたむ区画（20 の T7）。自動 UV と方式はここへ入れて奥に置く */
+.sect.fold{padding:0}
+.sect.fold summary{cursor:pointer; list-style:none; user-select:none}
+.sect.fold summary::-webkit-details-marker{display:none}
+.sect.fold summary::after{content:"▸"; margin-left:auto; color:var(--text-faint); font-size:10px}
+.sect.fold details[open] summary::after{content:"▾"}
+.sect.fold .sect{margin:0}

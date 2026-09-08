@@ -65,6 +65,24 @@ function section(title: string, badge?: string): HTMLElement {
   return s;
 }
 
+/**
+ * 折りたためる区画。奥へ下げたいもの（自動 UV・方式）に使う（`20` の T7）。
+ * 中身は `<details>` なので、開いた状態はブラウザが覚える。
+ */
+function foldedSection(title: string, badge?: string): { wrap: HTMLElement; body: HTMLElement } {
+  const wrap = el("div", "sect fold");
+  const details = document.createElement("details");
+  const summary = document.createElement("summary");
+  summary.className = "sect-h";
+  summary.appendChild(el("span", undefined, title));
+  if (badge) summary.appendChild(el("b", undefined, badge));
+  details.appendChild(summary);
+  const body = el("div");
+  details.appendChild(body);
+  wrap.appendChild(details);
+  return { wrap, body };
+}
+
 /** ラベル + 数値 + スライダーの 1 行。 */
 function paramRow(
   parent: HTMLElement,
@@ -632,6 +650,10 @@ export function cameraSection(state: OptionsState, host: PanelHost): HTMLElement
 export function uvUnfoldSection(uv: NonNullable<OptionsState["uv"]>, host: PanelHost): HTMLElement[] {
   const out: HTMLElement[] = [packingSection(uv, host)];
 
+  // 方式と自動 UV は既定の入口ではないので、折りたたんで奥に置く（`20` の T7）
+  const folded = foldedSection("詳細（自動 UV・方式）", "ADVANCED");
+  out.push(folded.wrap);
+
   const s = section("展開", "UNFOLD");
   const row = el("div", "row");
   const group = el("div", "segmented");
@@ -655,7 +677,7 @@ export function uvUnfoldSection(uv: NonNullable<OptionsState["uv"]>, host: Panel
       "「取り込んだまま」はメッシュが持っている UV をそのまま見せます。\n「展開」を押すと LSCM に切り替わります。",
     ),
   );
-  out.push(s);
+  folded.body.appendChild(s);
 
   const auto = section("自動 UV", "AUTO");
   paramRow(auto, {
@@ -681,7 +703,7 @@ export function uvUnfoldSection(uv: NonNullable<OptionsState["uv"]>, host: Panel
       "角度・ハードエッジ・クリース・ポリグループで切れ目を置き、\n大きすぎる島と閉じた island を割ってから開きます。手で動かした分は捨てます。",
     ),
   );
-  out.push(auto);
+  folded.body.appendChild(auto);
   return out;
 }
 

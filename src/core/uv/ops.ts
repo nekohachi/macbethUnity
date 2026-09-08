@@ -255,3 +255,53 @@ export function symmetrizeUv(uv: UvArray, pairs: Array<[number, number]>, axis?:
     uv[b * 2 + 1] = uv[a * 2 + 1];
   }
 }
+
+/** 相似変換（移動 + 回転 + 一様スケール）。 */
+export interface Similarity {
+  du: number;
+  dv: number;
+  /** ラジアン。 */
+  angle: number;
+  scale: number;
+}
+
+/**
+ * 2 点の対応から相似変換を出す（`20` の T6 の Move and Sew）。
+ *
+ * `a0 → b0`、`a1 → b1` に重なる変換。2 点なら一意に決まる
+ * （Procrustes の 2 点版。回転と一様スケールは複素数の割り算 1 回で出る）。
+ */
+export function similarityFrom2(
+  a0: [number, number],
+  a1: [number, number],
+  b0: [number, number],
+  b1: [number, number],
+): Similarity {
+  const ax = a1[0] - a0[0];
+  const ay = a1[1] - a0[1];
+  const bx = b1[0] - b0[0];
+  const by = b1[1] - b0[1];
+  const len2 = ax * ax + ay * ay;
+  if (len2 < 1e-18) return { du: b0[0] - a0[0], dv: b0[1] - a0[1], angle: 0, scale: 1 };
+  // (bx + i·by) / (ax + i·ay)
+  const rx = (bx * ax + by * ay) / len2;
+  const ry = (by * ax - bx * ay) / len2;
+  const scale = Math.hypot(rx, ry);
+  const angle = Math.atan2(ry, rx);
+  // a0 を b0 へ運ぶ平行移動は、回転と拡大のあとで決まる
+  const moved = applySimilarity(a0, a0, { du: 0, dv: 0, angle, scale });
+  return { du: b0[0] - moved[0], dv: b0[1] - moved[1], angle, scale };
+}
+
+/** 点 `p` を、基点 `origin` のまわりで回して拡大し、平行移動する。 */
+export function applySimilarity(
+  p: [number, number],
+  origin: [number, number],
+  t: Similarity,
+): [number, number] {
+  const x = p[0] - origin[0];
+  const y = p[1] - origin[1];
+  const cos = Math.cos(t.angle) * t.scale;
+  const sin = Math.sin(t.angle) * t.scale;
+  return [origin[0] + x * cos - y * sin + t.du, origin[1] + x * sin + y * cos + t.dv];
+}

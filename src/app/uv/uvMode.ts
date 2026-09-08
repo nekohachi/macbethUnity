@@ -27,8 +27,11 @@ import {
   uvGridRows,
   uvLoopVertices,
   straightenBorder,
+  similarityFrom2,
+  applySimilarity,
   gridding,
   type CornerKey,
+  type EdgeKey,
   type SceneObject,
   type UvRecipe,
 } from "../../core/index.js";
@@ -767,6 +770,127 @@ export class UvMode {
       if (wanted) keys.push(key);
     }
     return keys.sort();
+  }
+
+  /**
+   * Move and Sew（`20` の T6）。切れ目の向こう側の島を動かしてから縫う。
+   *
+   * 選んだ切れ目の両端が相手側の両端に重なるよう、**小さいほうの島**を
+   * 相似変換（移動 + 回転 + 一様スケール）で寄せる。動かした分は差分として残るので、
+   * 縫ったあとの再計算でも位置が保たれる。
+   */
+  moveAndSew(): void {
+    const object = this.host.object();
+    const recipe = this.host.recipe();
+    const t = this.view.uvTopology;
+    const uv = object?.mesh.uvSets.get(UV_SET);
+    if (!object || !recipe || !t || !uv) return;
+
+    // 縫う対象の切れ目
+    const targets = this.edgesForCutSew(false).filter((key) => recipe.seams.has(key));
+    if (!targets.length) {
+      this.host.toast("切れ目を選んでから実行してください");
+      return;
+    }
+
+    // その切れ目の両側にある UV エッジを集めて、島ごとに分ける
+    const want = new Set(targets);
+    const sides = new Map<number, number[]>();
+    t.edgeKeys.forEach((key, i) => {
+      if (!want.has(key)) return;
+      const chart = t.edgeChart[i];
+      const list = sides.get(chart);
+      if (list) list.push(i);
+      else sides.set(chart, [i]);
+    });
+    if (sides.size !== 2) {
+      // 同じ島の中の切れ目（縫っても島は増減しない）はそのまま縫う
+      this.cutOrSew(false);
+      return;
+    }
+
+    // 面の少ないほうを動かす。同じなら番号の大きいほう
+    const [first, second] = [...sides.keys()];
+    const sizeOf = (c: number) => t.charts[c]?.faces.length ?? 0;
+    const moving = sizeOf(first) < sizeOf(second) || (sizeOf(first) === sizeOf(second) && first > second)
+      ? first
+      : second;
+    const fixed = moving === first ? second : first;
+
+    // 切れ目の端どうしを対応させる。同じ 3D の辺の端点で結びつける
+    const endpointOf = (chart: number, key: EdgeKey): [number, number] | null => {
+      const i = (sides.get(chart) ?? []).find((e) => t.edgeKeys[e] === key);
+      return i === undefined ? null : t.edges[i];
+    };
+    const pairs: Array<[number, number]> = [];
+    for (const key of targets) {
+      const a = endpointOf(moving, key);
+      const b = endpointOf(fixed, key);
+      if (!a || !b) continue;
+      // 3D の頂点で向きを合わせる
+      const vertsOf = (v: number): number => {
+        const corner = t.vertexCorners[v]?.[0];
+        if (!corner) return -1;
+        const [f, at] = corner.split(":").map(Number);
+        return object.mesh.faceVerts(f)[at] ?? -1;
+      };
+      const [a0, a1] = a;
+      const [b0, b1] = b;
+      if (vertsOf(a0) === vertsOf(b0)) pairs.push([a0, b0], [a1, b1]);
+      else pairs.push([a0, b1], [a1, b0]);
+    }
+    if (pairs.length < 2) {
+      this.cutOrSew(false);
+      return;
+    }
+
+    const at = (v: number): [number, number] => [t.vertexUv[v * 2], t.vertexUv[v * 2 + 1]];
+    // いちばん離れた 2 組で相似変換を決める（近い 2 点だと向きが決まらない）
+    let best: [number, number] = [0, 1];
+    let far = -1;
+    for (let i = 0; i < pairs.length; i++) {
+      for (let j = i + 1; j < pairs.length; j++) {
+        const p = at(pairs[i][0]);
+        const q = at(pairs[j][0]);
+        const d = Math.hypot(q[0] - p[0], q[1] - p[1]);
+        if (d > far) {
+          far = d;
+          best = [i, j];
+        }
+      }
+    }
+    if (far < 1e-9) {
+      this.cutOrSew(false);
+      return;
+    }
+    const transform = similarityFrom2(
+      at(pairs[best[0]][0]),
+      at(pairs[best[1]][0]),
+      at(pairs[best[0]][1]),
+      at(pairs[best[1]][1]),
+    );
+
+    const corners = t.charts[moving]?.corners ?? [];
+    const snapshot = this.host.snapshot();
+    const base = this.captureBase(corners);
+    const origin = at(pairs[best[0]][0]);
+    for (const key of corners) {
+      const index = cornerIndex(object.mesh, key);
+      if (index < 0) continue;
+      const moved = applySimilarity([uv[index * 2], uv[index * 2 + 1]], origin, transform);
+      uv[index * 2] = moved[0];
+      uv[index * 2 + 1] = moved[1];
+    }
+    this.recordFrom(base, moving);
+
+    // 動かしたところで縫う
+    for (const key of targets) recipe.seams.delete(key);
+    if (recipe.method === "none" && recipe.base) sewInBase(object.mesh, recipe.base, targets);
+    recompute(object.mesh, recipe);
+    this.host.commit("Move and Sew", snapshot);
+    this.chosen.clear();
+    this.rebuild();
+    this.host.changed(`Move and Sew — ${targets.length} 本`);
   }
 
   /** 選んだ UV 頂点をピン留めする / 外す。 */

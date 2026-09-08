@@ -1262,3 +1262,32 @@ describe("U25. 境界の直線化", () => {
     expect(uv[6]).toBeCloseTo(uv[8], 9);
   });
 });
+
+/**
+ * U26. 相似変換（`20` の T6）。Move and Sew が使う。
+ */
+describe("U26. 2 点の対応から相似変換", () => {
+  it("(0,0)-(1,0) を (2,2)-(2,4) に写す", async () => {
+    const { similarityFrom2, applySimilarity } = await import("../src/core/uv/ops.js");
+    const t = similarityFrom2([0, 0], [1, 0], [2, 2], [2, 4]);
+    expect(t.scale).toBeCloseTo(2, 9);
+    expect(t.angle).toBeCloseTo(Math.PI / 2, 9);
+
+    const p0 = applySimilarity([0, 0], [0, 0], t);
+    const p1 = applySimilarity([1, 0], [0, 0], t);
+    expect(p0[0]).toBeCloseTo(2, 9);
+    expect(p0[1]).toBeCloseTo(2, 9);
+    expect(p1[0]).toBeCloseTo(2, 9);
+    expect(p1[1]).toBeCloseTo(4, 9);
+  });
+
+  it("同じ 2 点なら何もしない変換になる", async () => {
+    const { similarityFrom2, applySimilarity } = await import("../src/core/uv/ops.js");
+    const t = similarityFrom2([0.2, 0.3], [0.7, 0.9], [0.2, 0.3], [0.7, 0.9]);
+    expect(t.scale).toBeCloseTo(1, 9);
+    expect(t.angle).toBeCloseTo(0, 9);
+    const p = applySimilarity([0.5, 0.5], [0.2, 0.3], t);
+    expect(p[0]).toBeCloseTo(0.5, 9);
+    expect(p[1]).toBeCloseTo(0.5, 9);
+  });
+});

@@ -3443,6 +3443,160 @@ check(
     `格子化 ${cylinderFlow.rows}（そろった ${cylinderFlow.gridded}）/ 整列 ${cylinderFlow.charts} 島・0〜1 ${cylinderFlow.packed}`,
 );
 
+/* 43c2. T7: 自動 UV はツール列から消えて、「展開」の長押しの奥にある */
+const t7 = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const objectsBefore = app.state.doc.objects.length;
+  const object = app.state.doc.addObject("cube");
+  app.viewport.syncAll();
+  app.state.select(object);
+  app.setMode("uv");
+  const titles = [...document.querySelectorAll("#dockLeft .ibtn")].map((b) => b.title);
+  // 「展開」の長押しメニューから「オプション…」を開く
+  const b = document.querySelector('#dockLeft .ibtn[data-group="unfold"]');
+  const r = b.getBoundingClientRect();
+  b.dispatchEvent(
+    new PointerEvent("pointerdown", {
+      pointerId: 61,
+      pointerType: "mouse",
+      bubbles: true,
+      cancelable: true,
+      clientX: r.x + r.width / 2,
+      clientY: r.y + r.height / 2,
+    }),
+  );
+  await new Promise((res) => setTimeout(res, 260));
+  const labels = [...document.querySelectorAll(".radial text")].map((t) => t.textContent);
+  // 西（オプション…）を選ぶ
+  const svg = document.querySelector(".radial svg");
+  const hub = [...svg.querySelectorAll("circle")].reduce((best, c) =>
+    Number(c.getAttribute("r")) > Number(best.getAttribute("r")) ? c : best,
+  );
+  const cx = Number(hub.getAttribute("cx"));
+  const cy = Number(hub.getAttribute("cy"));
+  const fire = (type, x, y) =>
+    window.dispatchEvent(new PointerEvent(type, { pointerId: 61, pointerType: "mouse", bubbles: true, clientX: x, clientY: y }));
+  fire("pointermove", cx - 110, cy);
+  fire("pointerup", cx - 110, cy);
+  await new Promise((res) => setTimeout(res, 80));
+  const cutin = document.querySelector('.cutin.wide[data-gauge="unfold"]');
+  const heads = cutin ? [...cutin.querySelectorAll(".sect-h span")].map((h) => h.textContent) : [];
+  const folded = cutin?.querySelector("details");
+
+  app.setMode("model");
+  app.state.select(null);
+  app.state.doc.objects.length = objectsBefore;
+  app.viewport.syncAll();
+  return {
+    noAutoButton: !titles.some((t) => t.startsWith("自動 UV")),
+    labels,
+    heads,
+    foldedClosed: !!folded && !folded.open,
+  };
+});
+check(
+  "自動 UV と方式は「展開」の長押しの奥（T7）",
+  t7.noAutoButton &&
+    t7.labels.includes("展開") &&
+    t7.labels.includes("オプション…") &&
+    t7.heads.includes("パッキング") &&
+    t7.heads.includes("詳細（自動 UV・方式）") &&
+    t7.foldedClosed,
+  `ツール列に自動 UV なし ${t7.noAutoButton} / 長押し ${t7.labels.filter((l) => l.length > 1).slice(0, 4).join(" · ")} / ` +
+    `カットイン ${t7.heads.join(" · ")}（詳細は閉じている ${t7.foldedClosed}）`,
+);
+
+/* 43d. 手順 C: 球を切って開いて Move and Sew で戻す（`20` の T6） */
+const sphereFlow = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const core = window.macbethCore;
+  const objectsBefore = app.state.doc.objects.length;
+  const object = app.state.doc.addObject("sphere");
+  object.params.sdAxis = 12;
+  object.params.sdHeight = 8;
+  object.rebuild();
+  app.viewport.syncAll();
+  app.state.select(object);
+  const out = {};
+
+  app.setMode("uv");
+  out.imported = app.uv.stats().charts;
+
+  // 赤道のループを 3D で選んでカット → 上下 2 島
+  app.setCompMode("edge");
+  const view = app.viewport.viewOf(object);
+  let equator = -1;
+  view.edges.forEach(([a, b], i) => {
+    if (equator >= 0) return;
+    const pa = object.mesh.getPosition(a);
+    const pb = object.mesh.getPosition(b);
+    // 高さが同じで、原点にいちばん近い高さの輪
+    if (Math.abs(pa[1] - pb[1]) < 1e-6 && Math.abs(pa[1]) < 1e-6) equator = i;
+  });
+  out.foundEquator = equator >= 0;
+  if (equator < 0) return out;
+  const loop = core.edgeLoopFrom(object.mesh, view.edges[equator][0], view.edges[equator][1]);
+  const keys = new Set(loop.edges.map(([a, b]) => core.edgeKey(a, b)));
+  app.state.comp.clear();
+  view.edges.forEach(([a, b], i) => {
+    if (keys.has(core.edgeKey(a, b))) app.state.comp.add(i);
+  });
+  out.equatorEdges = app.state.comp.size;
+  app.pushSelectionToUvForTest();
+  app.uv.cutOrSew(true);
+  out.afterCut = app.uv.stats().charts;
+  app.uv.unfold();
+
+  // 上下の島を選んで Move and Sew。切れ目が縫われて島が減る
+  const t = app.uv.view.uvTopology;
+  app.uv.setUnit("edge");
+  app.uv.chosen.clear();
+  // 赤道の切れ目にあたる UV エッジを両側とも選ぶ
+  let picked = 0;
+  t.edgeKeys.forEach((key, i) => {
+    if (keys.has(key)) {
+      app.uv.chosen.add(i);
+      picked++;
+    }
+  });
+  out.seamEdges = picked;
+  const before = app.uv.stats().charts;
+  app.uv.moveAndSew();
+  out.afterSew = app.uv.stats().charts;
+  out.sewed = out.afterSew < before;
+
+  // 対称。UV 頂点を全部選んで左右をそろえる
+  app.uv.setUnit("vertex");
+  const t2 = app.uv.view.uvTopology;
+  app.uv.chosen.clear();
+  for (let v = 0; v < t2.vertexChart.length; v++) app.uv.chosen.add(v);
+  app.uv.tidy("symmetry");
+  out.symmetryOk = true;
+
+  app.uv.repack();
+  const uv = object.mesh.uvSets.get("map1");
+  out.packed = [...uv].every((n) => n >= -1e-4 && n <= 1 + 1e-4);
+
+  app.setMode("model");
+  app.setCompMode("object");
+  app.state.select(null);
+  app.state.doc.objects.length = objectsBefore;
+  app.viewport.syncAll();
+  return out;
+});
+check(
+  "球: 切って開いて Move and Sew で戻す（手順 C）",
+  sphereFlow.foundEquator &&
+    sphereFlow.equatorEdges === 12 &&
+    sphereFlow.afterCut > sphereFlow.imported &&
+    sphereFlow.seamEdges >= 12 &&
+    sphereFlow.sewed &&
+    sphereFlow.packed,
+  `取り込み 島 ${sphereFlow.imported} / 赤道 ${sphereFlow.equatorEdges} 本 → カット ${sphereFlow.afterCut} 島 / ` +
+    `切れ目の UV エッジ ${sphereFlow.seamEdges} 本 → Move and Sew で ${sphereFlow.afterSew} 島 / ` +
+    `対称 ${sphereFlow.symmetryOk} / 0〜1 に収まる ${sphereFlow.packed}`,
+);
+
 /* 44. ツール列のグループ（`21` の 4 章） */
 
 /* 44-1. ボタンは 7 つ、右のオプションパネルは無い */

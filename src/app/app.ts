@@ -1869,7 +1869,9 @@ export class App {
         onTap: () => uv.unfold(),
       },
       cmd("cut", ICONS.multicut, "カット（選んだところを切る）", () => uv.cutOrSew(true)),
-      cmd("sew", ICONS.vEdge, "ソー（選んだ切れ目を縫う）", () => uv.cutOrSew(false)),
+      cmd("sew", ICONS.vEdge, "ソー（切れ目を縫う。エッジ / シェルは動かしてから縫う）", () =>
+        uv.unit === "vertex" ? uv.cutOrSew(false) : uv.moveAndSew(),
+      ),
       { kind: "separator" },
       cmd("frame", ICONS.frame, "選択にフレーム", () => uv.frame()),
       // 3D ビューも出ているので、カメラと追加はモデリングと同じものを置く
@@ -2080,7 +2082,12 @@ export class App {
       // 選択メニューからもカット / ソーに届くようにする（`17` の 2.1）
       SE: { label: "カット", sub: "Cut", icon: ICONS.multicut, run: () => uv?.cutOrSew(true) },
       S: { label: "面（3D と同期）", sub: "Face", icon: ICONS.vFace, run: go("shell") },
-      SW: { label: "ソー", sub: "Sew", icon: ICONS.vEdge, run: () => uv?.cutOrSew(false) },
+      SW: {
+        label: "移動して縫う",
+        sub: "Move and Sew",
+        icon: ICONS.vEdge,
+        run: () => (uv?.unit === "vertex" ? uv?.cutOrSew(false) : uv?.moveAndSew()),
+      },
       W: { label: "UV 頂点", sub: "UV Vertex", icon: ICONS.vVert, run: go("vertex") },
     };
   }
@@ -2095,7 +2102,12 @@ export class App {
     const head: RadialMenu = {
       N: { label: "展開", sub: "Unfold", icon: ICONS.smooth, run: () => uv.unfold() },
       NE: { label: "カット", sub: "Cut", icon: ICONS.multicut, run: () => uv.cutOrSew(true) },
-      E: { label: "ソー", sub: "Sew", icon: ICONS.vEdge, run: () => uv.cutOrSew(false) },
+      E: {
+        label: uv.unit === "vertex" ? "ソー" : "移動して縫う",
+        sub: uv.unit === "vertex" ? "Sew" : "Move and Sew",
+        icon: ICONS.vEdge,
+        run: () => (uv.unit === "vertex" ? uv.cutOrSew(false) : uv.moveAndSew()),
+      },
     };
     if (uv.unit === "edge") {
       return {
