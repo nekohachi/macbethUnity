@@ -324,8 +324,8 @@ const dockedLeft = await page.evaluate(
 check("パネルを別の場所へドッキングできる", dockedLeft);
 
 /* 17. モードを切り替えると予定表が出て、戻すとキャンバスが戻る */
-await page.evaluate(() => window.macbeth.setMode("uv"));
-const inUv = await page.evaluate(() => ({
+await page.evaluate(() => window.macbeth.setMode("sculpt"));
+const inStub = await page.evaluate(() => ({
   stub: !document.getElementById("modeStub").hidden,
   stage: document.getElementById("stage").hidden,
   label: document.getElementById("modeLabel").textContent,
@@ -339,10 +339,10 @@ const backToModel = await page.evaluate(() => ({
   tools: document.querySelectorAll("#dockLeft .ibtn").length,
 }));
 check(
-  "モードを切り替えられる",
-  inUv.stub && inUv.stage && inUv.label === "UV" && inUv.tools === 0 &&
+  "未実装のモードは予定表が出て、戻すとキャンバスが戻る",
+  inStub.stub && inStub.stage && inStub.label === "スカルプト" && inStub.tools === 0 &&
     !backToModel.stub && !backToModel.stage && backToModel.tools > 0,
-  `UV: 予定表 ${inUv.stub} / ツール ${inUv.tools} / ゲージ「${inUv.gauge}」→ モデリング: ツール ${backToModel.tools}`,
+  `スカルプト: 予定表 ${inStub.stub} / ツール ${inStub.tools} / ゲージ「${inStub.gauge}」→ モデリング: ツール ${backToModel.tools}`,
 );
 
 /* 18. 縦持ちで右のドックがビューポートの下に来る */
@@ -1379,7 +1379,154 @@ check(
     `ミラー ${groupOps.beforeMirror}→${groupOps.mirror}面 / 結合 ${groupOps.combined.faces}面 → 分離 / Y=${groupOps.typed}`,
 );
 
-/* 29. 例外が出ていない */
+/* 29. UV モード（C1）: 2D ビュー、カット、展開、島の移動 */
+const uv = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const objectsBefore = app.state.doc.objects.length;
+  const object = app.state.doc.addObject("cube");
+  app.viewport.syncAll();
+  app.state.select(object);
+  app.setCompMode("object");
+
+  app.setMode("uv");
+  const mode = app.uv;
+  const paneShown = !document.getElementById("paneUv").hidden;
+  const split = document.getElementById("vp").classList.contains("split");
+  const started = { charts: mode.view.uvTopology.charts.length, verts: mode.view.uvTopology.vertexUv.length / 2 };
+
+  // すべての辺を切って、6 枚に開く
+  const recipe = object.uv;
+  for (const [a, b] of object.mesh.edges()) recipe.seams.add(`${Math.min(a, b)}_${Math.max(a, b)}`);
+  mode.unfold();
+  const opened = {
+    charts: mode.view.uvTopology.charts.length,
+    verts: mode.view.uvTopology.vertexUv.length / 2,
+  };
+
+  // 島を 1 つ選んで、UV 空間で動かす
+  mode.setUnit("shell");
+  mode.chosen.clear();
+  mode.chosen.add(0);
+  const cornersOfFirst = mode.view.uvTopology.charts[0].corners;
+  const uvOf = () => {
+    const set = object.mesh.uvSets.get("map1");
+    return cornersOfFirst.map((key) => {
+      const [f, at] = key.split(":").map(Number);
+      const corner = object.mesh.faceOffsets[f] + at;
+      return [set[corner * 2], set[corner * 2 + 1]];
+    });
+  };
+  const before = uvOf();
+
+  const pane = document.getElementById("paneUv");
+  const rect = pane.getBoundingClientRect();
+  const canvas = document.getElementById("uvgl");
+  const at = mode.view.toScreen(before[0][0], before[0][1]);
+  const fire = (type, x, y) =>
+    canvas.dispatchEvent(
+      new PointerEvent(type, {
+        pointerId: 200,
+        pointerType: "mouse",
+        isPrimary: true,
+        clientX: x,
+        clientY: y,
+        buttons: type === "pointerup" ? 0 : 1,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+  // 島の中を押してドラッグ
+  const inside = mode.view.toScreen(
+    before.reduce((s, p) => s + p[0], 0) / before.length,
+    before.reduce((s, p) => s + p[1], 0) / before.length,
+  );
+  fire("pointerdown", rect.x + inside.x, rect.y + inside.y);
+  for (let i = 1; i <= 8; i++) fire("pointermove", rect.x + inside.x + i * 5, rect.y + inside.y);
+  fire("pointerup", rect.x + inside.x + 40, rect.y + inside.y);
+  await new Promise((r) => setTimeout(r, 40));
+  const moved = uvOf();
+  const shift = moved[0][0] - before[0][0];
+
+  // もう一度展開しても、動かした分は残る（差分）
+  mode.unfold();
+  const afterUnfold = uvOf();
+  const keptShift = afterUnfold[0][0] - before[0][0];
+  const manualIslands = recipe.manual.size;
+
+  void at;
+  app.setMode("model");
+  app.state.select(null);
+  app.state.doc.objects.length = objectsBefore;
+  app.viewport.syncAll();
+  return { paneShown, split, started, opened, shift, keptShift, manualIslands };
+});
+check(
+  "UV モード: 2D が出て、切って開いて、動かした分が残る",
+  uv.paneShown &&
+    uv.split &&
+    uv.started.charts === 1 &&
+    uv.opened.charts === 6 &&
+    uv.opened.verts === 24 &&
+    Math.abs(uv.shift) > 0.01 &&
+    uv.manualIslands >= 1 &&
+    Math.abs(uv.keptShift) > 0.001,
+  `島 ${uv.started.charts} → ${uv.opened.charts} / UV 頂点 ${uv.opened.verts} / ` +
+    `動かした量 ${uv.shift.toFixed(3)} → 展開後 ${uv.keptShift.toFixed(3)}`,
+);
+
+/* 29b. 3D で面を選んで UV モードに入ると、その島が選ばれている */
+const uvSync = await page.evaluate(() => {
+  const app = window.macbeth;
+  const objectsBefore = app.state.doc.objects.length;
+  const object = app.state.doc.addObject("cube");
+  app.viewport.syncAll();
+  app.state.select(object);
+
+  // 先に UV を用意して、全部の辺を切っておく
+  app.setMode("uv");
+  const recipe = object.uv;
+  for (const [a, b] of object.mesh.edges()) recipe.seams.add(`${Math.min(a, b)}_${Math.max(a, b)}`);
+  app.uv.unfold();
+  app.setMode("model");
+
+  // 3D で面を 2 枚選んでから UV モードへ
+  app.setCompMode("face");
+  app.state.comp.clear();
+  app.state.comp.add(0);
+  app.state.comp.add(3);
+  app.setMode("uv");
+  const chosen = [...app.uv.chosen].sort((x, y) => x - y);
+  const unit = app.uv.unit;
+
+  // 逆向き: 2D で島を 1 つ選ぶと 3D の面が選ばれる
+  app.uv.chosen.clear();
+  app.uv.chosen.add(1);
+  const faces = app.uv.facesOfSelection();
+
+  // チェッカー表示
+  app.setMode("model");
+  app.setDisplay("checker");
+  const view = app.viewport.viewOf(object);
+  const hasUvAttribute = !!view.surface.geometry.getAttribute("uv");
+  const checkerMaterial = view.surface.material !== undefined && !!view.surface.material.map;
+  app.setDisplay("shadedWire");
+
+  app.state.select(null);
+  app.state.doc.objects.length = objectsBefore;
+  app.viewport.syncAll();
+  return { chosen, unit, faces, hasUvAttribute, checkerMaterial };
+});
+check(
+  "3D と 2D の選択が面の単位で同期する",
+  uvSync.unit === "shell" &&
+    uvSync.chosen.length === 2 &&
+    uvSync.faces.length === 1 &&
+    uvSync.hasUvAttribute &&
+    uvSync.checkerMaterial,
+  `3D 2 面 → 島 ${uvSync.chosen.join(",")} / 島 1 → 面 ${uvSync.faces.join(",")} / チェッカー ${uvSync.checkerMaterial}`,
+);
+
+/* 30. 例外が出ていない */
 check("例外なし", errors.length === 0, errors.join(" / "));
 
 await page.screenshot({ path: SHOT });

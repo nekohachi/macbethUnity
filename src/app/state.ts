@@ -8,7 +8,7 @@ import { Document, type CameraBookmark, type SceneObject } from "../core/index.j
 
 export type Mode = "model" | "uv" | "sculpt" | "material";
 export type CompMode = "object" | "vertex" | "edge" | "face";
-export type Display = "wire" | "shaded" | "shadedWire" | "smooth";
+export type Display = "wire" | "shaded" | "shadedWire" | "smooth" | "checker";
 export type Manip = "all" | "move" | "rotate" | "scale";
 /** スナップの行き先。Maya の X（グリッド）/ V（頂点）/ C（エッジ）に対応する。 */
 export type SnapKind = "grid" | "vertex" | "edge";

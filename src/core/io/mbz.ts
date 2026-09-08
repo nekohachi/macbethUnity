@@ -7,6 +7,7 @@
  */
 import { unzipSync, zipSync } from "fflate";
 import { Document, SceneObject, identityTransform, type MultiresLevel, type SculptLayer } from "../document.js";
+import { deserializeRecipe, serializeRecipe, type UvRecipeJson } from "../uv/recipe.js";
 import { decodeMesh, encodeMesh } from "./binary.js";
 import { topologyHash } from "./hash.js";
 
@@ -34,6 +35,8 @@ interface SceneObjectJson {
   multires: Array<{ level: number; count: number }>;
   sculptLayers: Array<Omit<SculptLayer, "delta"> & { count: number }>;
   paintLayers: SceneObject["paintLayers"];
+  /** UV の作り方（`15`）。無い版のファイルもあるので任意。 */
+  uv?: UvRecipeJson | null;
 }
 
 interface SceneJson {
@@ -93,6 +96,7 @@ export function packMbz(doc: Document, options: PackOptions = {}): Uint8Array {
           count: l.delta.length,
         })),
         paintLayers: o.paintLayers,
+        uv: o.uv ? serializeRecipe(o.uv) : null,
       };
     }),
     settings: doc.settings,
@@ -199,6 +203,7 @@ export function unpackMbz(bytes: Uint8Array): UnpackResult {
       .filter((x): x is SculptLayer => x !== null);
 
     o.paintLayers = j.paintLayers ?? [];
+    o.uv = deserializeRecipe(j.uv);
     doc.objects.push(o);
   }
   doc.syncIdCounter();

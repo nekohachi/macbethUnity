@@ -3,14 +3,46 @@
  *   オブジェクト選択 = グリーン、コンポーネント選択 = オレンジ、未選択の頂点 = パープル
  */
 import {
+  CanvasTexture,
   DoubleSide,
   LineBasicMaterial,
   MeshBasicMaterial,
   MeshPhongMaterial,
   PointsMaterial,
+  RepeatWrapping,
 } from "three";
 
 export const AXIS_COLORS = [0xd8524f, 0x6cc94a, 0x4f8fe0];
+
+/**
+ * UV の確認用チェッカー。UV セットをそのまま貼るので、歪みと継ぎ目が目で分かる。
+ * テクスチャは初めて要るときに作る（UV を見ない人には作らない）。
+ */
+let checker: CanvasTexture | null = null;
+export function checkerMaterial(): MeshPhongMaterial {
+  if (!checker) {
+    const size = 512;
+    const cells = 16;
+    const canvas = document.createElement("canvas");
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext("2d")!;
+    const step = size / cells;
+    for (let y = 0; y < cells; y++) {
+      for (let x = 0; x < cells; x++) {
+        ctx.fillStyle = (x + y) % 2 === 0 ? "#d7dde3" : "#7d8891";
+        ctx.fillRect(x * step, y * step, step, step);
+      }
+    }
+    // 向きが分かるように、左下の升だけ色を変える
+    ctx.fillStyle = "#e0723c";
+    ctx.fillRect(0, size - step, step, step);
+    checker = new CanvasTexture(canvas);
+    checker.wrapS = RepeatWrapping;
+    checker.wrapT = RepeatWrapping;
+  }
+  return new MeshPhongMaterial({ map: checker, specular: 0x1a2026, shininess: 14, side: DoubleSide });
+}
 
 export const MAT = {
   surf: new MeshPhongMaterial({ color: 0x9aa4ad, specular: 0x2a3138, shininess: 24, side: DoubleSide }),

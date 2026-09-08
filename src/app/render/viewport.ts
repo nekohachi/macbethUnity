@@ -25,7 +25,7 @@ import {
 } from "three";
 import type { SceneObject } from "../../core/index.js";
 import type { AppState } from "../state.js";
-import { MAT } from "./materials.js";
+import { MAT, checkerMaterial } from "./materials.js";
 import {
   applyTransform,
   buildObjectView,
@@ -280,6 +280,8 @@ export class Viewport {
     // Shift で足したオブジェクトも同じ色で光らせる（結合の相手が見えるように）
     const selected = view.object === this.state.selected || this.state.also.has(view.object);
     view.surface.visible = d !== "wire";
+    // チェッカーは UV をそのまま貼る。歪みと継ぎ目が目で分かる
+    view.surface.material = d === "checker" ? (view.checker ??= checkerMaterial()) : MAT.surf;
     view.wire.visible = d === "wire" || d === "shadedWire" || selected;
     view.wire.material = !selected
       ? MAT.wire

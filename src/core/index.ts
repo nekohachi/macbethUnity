@@ -12,6 +12,7 @@ export * from "./bridge.js";
 export * from "./vertexOps.js";
 export * from "./connect.js";
 export * from "./objectOps.js";
+export * from "./uv/index.js";
 export * from "./selection.js";
 export * from "./subdivide.js";
 export * from "./multires.js";

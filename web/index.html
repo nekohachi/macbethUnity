@@ -56,7 +56,9 @@
     <div class="dock narrow" id="dockLeft" data-zone="left"></div>
 
     <div class="vp" id="vp">
-      <canvas id="gl"></canvas>
+      <div class="pane paneuv" id="paneUv" hidden><canvas id="uvgl"></canvas></div>
+      <div class="pane pane3d" id="pane3d"><canvas id="gl"></canvas></div>
+      <div class="uvswitch" id="uvSwitch" hidden></div>
       <div class="marquee" id="marquee"></div>
       <div class="hud hud-stats" id="hudStats"></div>
       <div class="hud hud-mode" id="hudMode"></div>

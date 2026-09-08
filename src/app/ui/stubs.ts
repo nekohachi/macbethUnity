@@ -25,20 +25,6 @@ export interface StubDef {
 const item = (label: string, detail: string, note: string): StubItem => ({ label, detail, note });
 
 export const STUBS: Record<string, StubDef> = {
-  uv: {
-    kicker: "未実装 — 次のフェーズ",
-    title: "UV エディタ",
-    body:
-      "2D の UV ビューと 3D ビューを左右に並べ、片方の選択がもう片方に同期します。" +
-      "モデリングモードで面を選択すると、対応する UV シェルが選択された状態でこのモードに入ります。",
-    items: [
-      item("展開", "LSCM による対話的なアンフォールド", "自前実装"),
-      item("自動 UV", "シーム自動生成とアトラス化", "xatlas"),
-      item("カット / ソー", "ペンでシームを描いて切り開く、縫い合わせる", "自前実装"),
-      item("レイアウト", "シェルのパッキングと UDIM 1001–1010", "xatlas"),
-      item("歪みの可視化", "チェッカーマップとヒートマップ表示", "自前実装"),
-    ],
-  },
   sculpt: {
     kicker: "未実装 — v1.5 の中核",
     title: "スカルプト",

@@ -11,6 +11,8 @@ import {
   bridgeEdges,
   cloneTransform,
   combineMeshes,
+  emptyRecipe,
+  recompute,
   type CameraBookmark,
   connectEdges,
   connectVertices,
@@ -74,6 +76,7 @@ import { Gauge } from "./ui/gauges.js";
 import { Hud } from "./ui/hud.js";
 import { panelShell, renderOptions, renderOutliner, type PanelHost } from "./ui/panels.js";
 import { STUBS, buildStub } from "./ui/stubs.js";
+import { UvMode, type UvSplit, type UvUnit } from "./uv/uvMode.js";
 import { ICONS, iconSvg } from "./ui/icons.js";
 import {
   attachRadialButton,
@@ -93,7 +96,13 @@ const COMP_MODES: Array<{ id: CompMode; label: string; key: string }> = [
 /** スナップの行き先の名前。HUD とオプションで使う。 */
 const SNAP_LABEL: Record<SnapKind, string> = { grid: "グリッド", vertex: "頂点", edge: "エッジ" };
 
-const DISPLAY_KEYS: Record<string, Display> = { "4": "wire", "5": "shaded", "6": "shadedWire", "7": "smooth" };
+const DISPLAY_KEYS: Record<string, Display> = {
+  "4": "wire",
+  "5": "shaded",
+  "6": "shadedWire",
+  "7": "smooth",
+  "8": "checker",
+};
 
 const MODE_LABELS: Record<Mode, string> = {
   model: "モデリング",
@@ -157,6 +166,9 @@ export class App {
   private weldTarget: number | null = null;
   /** 3 本指の変形。ジェスチャ中だけ生きている。 */
   private gestureDrag: DragState | null = null;
+  /** UV モード。最初に入ったときに作る。 */
+  uv: UvMode | null = null;
+  private uvSplit: UvSplit = "both";
   /** 3 本指のジェスチャ中に固定しておくカメラ由来の値。 */
   private gestureView: { pixelToWorld: number; horizontal: Vector3 } | null = null;
   private gestureMoved = false;
@@ -177,7 +189,7 @@ export class App {
   private raycaster = new Raycaster();
 
   constructor() {
-    const vp = byId("vp");
+    const vp = byId("pane3d");
     const canvas = byId<HTMLCanvasElement>("gl");
     this.viewport = new Viewport(vp, canvas, this.state);
     this.picker = new Picker(this.viewport, vp);
@@ -990,14 +1002,18 @@ export class App {
     this.viewport.syncAll();
     this.refresh();
     this.hud.toast(
-      { wire: "ワイヤーフレーム", shaded: "シェード", shadedWire: "シェード + ワイヤー", smooth: "スムースシェード" }[
-        display
-      ],
+      {
+        wire: "ワイヤーフレーム",
+        shaded: "シェード",
+        shadedWire: "シェード + ワイヤー",
+        smooth: "スムースシェード",
+        checker: "チェッカー（UV の確認）",
+      }[display],
     );
   }
 
   private cycleDisplay(): void {
-    const order: Display[] = ["wire", "shaded", "shadedWire", "smooth"];
+    const order: Display[] = ["wire", "shaded", "shadedWire", "smooth", "checker"];
     this.setDisplay(order[(order.indexOf(this.state.display) + 1) % order.length]);
   }
 
@@ -1253,6 +1269,8 @@ export class App {
     const stub = byId("modeStub");
     stub.textContent = "";
     const def = STUBS[mode];
+    if (mode === "uv") this.enterUv();
+    else this.leaveUv();
     if (def) {
       stub.appendChild(buildStub(def));
       stub.hidden = false;
@@ -1268,12 +1286,195 @@ export class App {
     this.hud.toast(MODE_LABELS[mode]);
   }
 
+  /** UV モードのツール列。選択の単位と、よく使う操作だけ。 */
+  private uvToolColumn(): ToolEntry[] {
+    const uv = this.uv;
+    if (!uv) return [];
+    const unit = (id: UvUnit, icon: string, title: string): ToolEntry => ({
+      kind: "button",
+      icon,
+      title,
+      compMode: (uv.unit === id ? id : `${id}_off`) as CompMode,
+      onTap: () => {
+        uv.setUnit(id);
+        this.renderToolColumn();
+      },
+    });
+    return [
+      { kind: "label", text: "選択" },
+      unit("vertex", ICONS.vVert, "UV 頂点"),
+      unit("edge", ICONS.vEdge, "UV エッジ"),
+      unit("shell", ICONS.vFace, "UV シェル"),
+      { kind: "separator" },
+      { kind: "label", text: "UV" },
+      { kind: "button", icon: ICONS.smooth, title: "展開（レシピから開き直す）", onTap: () => uv.unfold() },
+      { kind: "button", icon: ICONS.multicut, title: "カット（選んだ UV エッジを切る）", onTap: () => uv.cutOrSew(true) },
+      { kind: "button", icon: ICONS.vEdge, title: "ソー（選んだ切れ目を縫う）", onTap: () => uv.cutOrSew(false) },
+      { kind: "separator" },
+      { kind: "button", icon: ICONS.frame, title: "選択にフレーム", onTap: () => uv.frame() },
+    ];
+  }
+
+  /* ---- UV モード -------------------------------------------------------- */
+
+  /** UV モードへ入る。初回はここで 2D ビューを作る。 */
+  private enterUv(): void {
+    const object = this.state.selected;
+    if (!this.uv) {
+      this.uv = new UvMode(byId("paneUv"), byId<HTMLCanvasElement>("uvgl"), {
+        object: () => this.state.selected,
+        recipe: () => this.state.selected?.uv ?? null,
+        changed: (note) => {
+          const o = this.state.selected;
+          if (o) this.viewport.rebuildObject(o);
+          this.viewport.rebuildOverlay();
+          this.hud.uvNote = this.uv?.stats() ?? null;
+          this.refresh();
+          if (note) this.hud.toast(note);
+        },
+        snapshot: () => this.history.snapshot(),
+        commit: (label, snapshot) => this.history.commit(label, snapshot as ReturnType<History["snapshot"]>),
+        syncToView: (faces) => {
+          // 2D の選択を 3D の面の選択へ。同期の単位は面（`15` の 6.2）
+          this.state.compMode = "face";
+          this.state.comp.clear();
+          for (const f of faces) this.state.comp.add(f);
+          this.viewport.rebuildOverlay();
+          this.refreshManipulator();
+          this.hud.refreshStats();
+        },
+        markingMenu: (x, y, edit) => {
+          this.closePopup();
+          openRadial(edit ? this.uvEditMenu() : this.uvSelectMenu(), x, y);
+        },
+        cameraMenu: (x, y) => {
+          this.closePopup();
+          openRadial(
+            {
+              N: { label: "0〜1 にフレーム", sub: "Unit", icon: ICONS.frame, run: () => this.uv?.view.frameUnit() },
+              S: { label: "選択にフレーム", sub: "Frame  F", icon: ICONS.frame, run: () => this.uv?.frame() },
+            },
+            x,
+            y,
+          );
+        },
+        hint: (html) => {
+          byId("hudHint").innerHTML = html;
+        },
+        toast: (text) => this.hud.toast(text),
+        undo: () => this.doUndo(),
+        redo: () => this.doRedo(),
+        shiftOn: (e) => this.state.modOn("shift") || e.shiftKey,
+        ctrlOn: (e) => this.state.modOn("ctrl") || e.ctrlKey || e.metaKey,
+      });
+      this.buildUvSwitch();
+    }
+    // レシピが無ければここで用意する。切れ目ゼロ = 1 島から始まる
+    if (object && !object.uv) {
+      object.uv = emptyRecipe();
+      recompute(object.mesh, object.uv);
+      this.viewport.rebuildObject(object);
+    }
+    byId("paneUv").hidden = false;
+    byId("uvSwitch").hidden = false;
+    this.applyUvSplit();
+    this.uv.start();
+    this.uv.rebuild();
+    this.hud.uvNote = this.uv.stats();
+    // 3D で面を選んでいたら、その島を選んでおく
+    if (this.state.compMode === "face" && this.state.comp.size) this.uv.syncFromView(this.state.comp);
+  }
+
+  private leaveUv(): void {
+    this.hud.uvNote = null;
+    if (!this.uv) return;
+    this.uv.stop();
+    byId("paneUv").hidden = true;
+    byId("uvSwitch").hidden = true;
+    byId("vp").classList.remove("split", "uvonly");
+    this.viewport.resize();
+  }
+
+  /** 2D / 両方 / 3D の切替。 */
+  private buildUvSwitch(): void {
+    const host = byId("uvSwitch");
+    host.textContent = "";
+    for (const [key, label] of [
+      ["uv", "2D"],
+      ["both", "両方"],
+      ["view", "3D"],
+    ] as const) {
+      const b = el("button") as HTMLButtonElement;
+      b.textContent = label;
+      b.dataset.split = key;
+      b.addEventListener("click", () => {
+        this.uvSplit = key;
+        this.applyUvSplit();
+      });
+      host.appendChild(b);
+    }
+  }
+
+  private applyUvSplit(): void {
+    const vp = byId("vp");
+    vp.classList.toggle("split", this.uvSplit === "both");
+    vp.classList.toggle("uvonly", this.uvSplit === "uv");
+    byId("paneUv").hidden = this.uvSplit === "view";
+    for (const b of byId("uvSwitch").querySelectorAll("button")) {
+      b.setAttribute("aria-pressed", String((b as HTMLElement).dataset.split === this.uvSplit));
+    }
+    // レイアウトが変わったので両方に伝える
+    requestAnimationFrame(() => {
+      this.viewport.resize();
+      this.uv?.resize();
+    });
+  }
+
+  /** UV の選択モード。マーキングメニュー（`15` の 6.2）。 */
+  private uvSelectMenu(): RadialMenu {
+    const go = (unit: UvUnit) => () => this.uv?.setUnit(unit);
+    return {
+      N: { label: "UV エッジ", sub: "UV Edge", icon: ICONS.vEdge, run: go("edge") },
+      NE: { label: "オブジェクト", sub: "Object", icon: ICONS.vObj, run: () => this.setMode("model") },
+      E: { label: "UV シェル", sub: "Shell", icon: ICONS.vFace, run: go("shell") },
+      S: { label: "面（3D と同期）", sub: "Face", icon: ICONS.vFace, run: go("shell") },
+      W: { label: "UV 頂点", sub: "UV Vertex", icon: ICONS.vVert, run: go("vertex") },
+    };
+  }
+
+  /** UV の編集メニュー。単位ごとに中身が変わる（`15` の 6.3）。 */
+  private uvEditMenu(): RadialMenu {
+    const uv = this.uv;
+    if (!uv) return {};
+    if (uv.unit === "edge") {
+      return {
+        N: { label: "カット", sub: "Cut", icon: ICONS.multicut, run: () => uv.cutOrSew(true) },
+        NE: { label: "ソー", sub: "Sew", icon: ICONS.vEdge, run: () => uv.cutOrSew(false) },
+        S: { label: "展開", sub: "Unfold", icon: ICONS.smooth, run: () => uv.unfold() },
+      };
+    }
+    if (uv.unit === "vertex") {
+      return {
+        N: { label: "ピン", sub: "Pin", icon: ICONS.vVert, run: () => uv.pinOrUnpin(true) },
+        NE: { label: "ピン解除", sub: "Unpin", icon: ICONS.vVert, run: () => uv.pinOrUnpin(false) },
+        S: { label: "展開", sub: "Unfold", icon: ICONS.smooth, run: () => uv.unfold() },
+      };
+    }
+    return {
+      N: { label: "展開", sub: "Unfold", icon: ICONS.smooth, run: () => uv.unfold() },
+      SE: { label: "反転 U", sub: "Flip U", icon: ICONS.sym, run: () => uv.transformSelection("flipU") },
+      S: { label: "反転 V", sub: "Flip V", icon: ICONS.sym, run: () => uv.transformSelection("flipV") },
+      SW: { label: "90° 回転", sub: "Rotate", icon: ICONS.rotate, run: () => uv.transformSelection("rotate90") },
+    };
+  }
+
   private shadingMenu(): RadialMenu {
     return {
       N: { label: "ワイヤーフレーム", sub: "4", icon: ICONS.wire, run: () => this.setDisplay("wire") },
       E: { label: "シェード", sub: "5", icon: ICONS.shaded, run: () => this.setDisplay("shaded") },
       S: { label: "シェード + ワイヤー", sub: "6", icon: ICONS.shadedWire, run: () => this.setDisplay("shadedWire") },
       W: { label: "スムースシェード", sub: "7", icon: ICONS.smooth, run: () => this.setDisplay("smooth") },
+      NW: { label: "チェッカー", sub: "8", icon: ICONS.mUV, run: () => this.setDisplay("checker") },
     };
   }
 
@@ -1889,6 +2090,7 @@ export class App {
    * UV モードなどを足すときは、この関数に枝を増やすだけで済む。
    */
   private toolColumn(): ToolEntry[] {
+    if (this.state.mode === "uv") return this.uvToolColumn();
     if (this.state.mode !== "model") return [];
 
     const entries: ToolEntry[] = [

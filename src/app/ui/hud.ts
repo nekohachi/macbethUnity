@@ -14,12 +14,16 @@ const DISPLAY_NAME: Record<string, string> = {
   shaded: "SHADED",
   shadedWire: "SHADED+WIRE",
   smooth: "SMOOTH",
+  checker: "CHECKER",
 };
 
 export class Hud {
   private toastTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(private state: AppState) {}
+
+  /** UV モードのときに出す情報。島の数と歪み。 */
+  uvNote: { charts: number; maxStretch: number; unit: string } | null = null;
 
   refreshStats(): void {
     const s = this.state.doc.stats();
@@ -31,6 +35,13 @@ export class Hud {
       `<i>Faces</i><span>${s.faces}</span>` +
       `<i>Tris</i><span>${s.triangles}</span>`;
 
+    if (this.state.mode === "uv" && this.uvNote) {
+      const n = this.uvNote;
+      byId("hudMode").innerHTML =
+        `UV · <b>${n.unit}</b><br>島 ${n.charts} · 伸び ×${n.maxStretch.toFixed(2)}` +
+        (this.state.selected ? ` · ${this.state.selected.name}` : "");
+      return;
+    }
     const comp = COMP_NAME[this.state.compMode];
     const disp = DISPLAY_NAME[this.state.display];
     byId("hudMode").innerHTML =

@@ -11,6 +11,7 @@ import {
   LineSegments,
   Mesh as ThreeMesh,
   Object3D,
+  type MeshPhongMaterial,
   Points,
   Quaternion,
   Vector3,
@@ -68,6 +69,30 @@ export function surfaceGeometry(
   const g = new BufferGeometry();
   g.setAttribute("position", new Float32BufferAttribute(pos, 3));
   g.setAttribute("normal", new Float32BufferAttribute(nor, 3));
+
+  // UV。チェッカー表示で使う。三角形分割は面ごとの扇なので、
+  // 面が変わるたびに数え直せばコーナーの位置が分かる
+  const set = mesh.uvSets.get("map1");
+  if (set) {
+    const uv = new Float32Array(count * 2);
+    let face = -1;
+    let step = 0;
+    for (let k = 0; k < count; k += 3) {
+      const fi = tri.triToFace[k / 3];
+      if (fi !== face) {
+        face = fi;
+        step = 0;
+      }
+      const corners = [0, step + 1, step + 2];
+      for (let j = 0; j < 3; j++) {
+        const at = mesh.faceOffsets[fi] + corners[j];
+        uv[(k + j) * 2] = set[at * 2] ?? 0;
+        uv[(k + j) * 2 + 1] = set[at * 2 + 1] ?? 0;
+      }
+      step++;
+    }
+    g.setAttribute("uv", new Float32BufferAttribute(uv, 2));
+  }
   return g;
 }
 
@@ -115,6 +140,8 @@ export interface ObjectView {
   object: SceneObject;
   group: Group;
   surface: ThreeMesh;
+  /** チェッカー表示の材質。初めて使うときに作る。 */
+  checker?: MeshPhongMaterial;
   wire: LineSegments;
   points: Points;
   tri: { tri: Uint32Array; triToFace: Uint32Array };

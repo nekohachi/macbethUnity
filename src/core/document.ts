@@ -14,6 +14,7 @@
 import { Mesh } from "./mesh.js";
 import { PRIMITIVES, defaultParams, type PrimitiveParams } from "./primitives.js";
 import { topologyHash } from "./io/hash.js";
+import { reconcile, type UvRecipe } from "./uv/recipe.js";
 
 export type Vec3 = [number, number, number];
 export type Quat = [number, number, number, number];
@@ -94,6 +95,11 @@ export class SceneObject {
   visible = true;
   /** 最後に書き出したときのトポロジ。往復で戻ってきたときの照合に使う。 */
   exportedTopologyHash: string | null = null;
+  /**
+   * UV の作り方（`15`）。切れ目・ピン・ソルバー・手の差分を持つ。
+   * ここから `mesh.uvSets` を作り直す。null なら UV は素のまま（プリミティブの UV）。
+   */
+  uv: UvRecipe | null = null;
 
   constructor(kind: string, id: string, name?: string) {
     this.id = id;
@@ -114,14 +120,16 @@ export class SceneObject {
   }
 
   /** トポロジを変えた。上位レベルとスカルプトレイヤーは対応関係を失うので破棄する（docs/03）。 */
-  markTopologyChanged(): { droppedLevels: number; droppedLayers: number } {
+  markTopologyChanged(): { droppedLevels: number; droppedLayers: number; droppedSeams: number; droppedIslands: number } {
     const droppedLevels = this.multires.length;
     const droppedLayers = this.sculptLayers.length;
     this.parametric = false;
     this.multires = [];
     this.sculptLayers = [];
     this.activeLevel = 0;
-    return { droppedLevels, droppedLayers };
+    // UV は全部捨てずに、対応が取れなくなった分だけ落とす（`15` の 2.4）
+    const uv = this.uv ? reconcile(this.uv, this.mesh) : { droppedSeams: 0, droppedIslands: 0 };
+    return { droppedLevels, droppedLayers, ...uv };
   }
 
   topologyHash(): string {
