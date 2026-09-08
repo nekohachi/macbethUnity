@@ -2,7 +2,7 @@
   "name": "macbeth",
   "short_name": "macbeth",
   "description": "タブレットで完結するポリゴンモデリング",
-  "start_url": "./app.html",
+  "start_url": "./",
   "scope": "./",
   "display": "standalone",
   "orientation": "any",

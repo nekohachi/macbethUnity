@@ -1,4 +1,4 @@
-/** 起動。app.html から読み込まれる。 */
+/** 起動。web/index.html から読み込まれる。 */
 import "./styles/shell.css";
 import { App } from "./app.js";
 

@@ -110,6 +110,8 @@ export function applyGestureTransform(
 - README の「タブレットで開く」表を書き直す。「新しいシェル」という言い回しをやめて、これが本体だと分かる書き方にする
 - 通し確認は `ENTRY` の自動判定でそのまま通るはず。`npm run smoke` と `node scripts/smoke.mjs app` の両方が緑であること
 
+**実装時の報告（Opus）:** 「入口を `index.html` に改名」と「リポジトリ直下の `index.html` を転送ページにする」は、同じ 1 つのパスを取り合うので両立しません（Vite の入口がリポジトリ直下にあると、ブランチ配信のルートがその開発用 HTML を返してしまい、`/src/app/main.ts` を読もうとして壊れます）。転送ページの方をリポジトリ直下に残し、**入口は `web/index.html`（Vite の `root` を `web/`）** に置きました。`server.open` は `/`、ビルドの出力は `dist/index.html` なので `publish.sh` の改名も要らなくなっています。狙い（アプリが本体、公開 URL は `/macbethUnity/app/` のまま、ルートは転送）はそのままです。
+
 ---
 
 ## 3. タスク 9: マルチ解像度 V4〜V6

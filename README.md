@@ -6,9 +6,9 @@ Maya のポリゴン編集精度、ZBrush のスカルプト、Substance Painter
 
 ## 現在の状態
 
-**土台の実装フェーズ。** ジオメトリコア（`src/core/`）、`.mbz` 形式、UI シェルの土台（`src/app/`）ができました。テスト 71 件に加えて、実際の Chromium で描画から選択・取り消し・自動保存まで通す確認（`npm run smoke`）が通ります。残りの機能はプロトタイプから順に移植中です（`docs/10-next-phase.md`）。
+**土台の実装フェーズ。** ジオメトリコア（`src/core/`）、`.mbz` 形式、アプリ本体（`src/app/`）ができました。テスト 71 件に加えて、実際の Chromium で描画から選択・取り消し・自動保存まで通す確認（`npm run smoke`）が通ります。残りの機能はプロトタイプから順に移植中です（`docs/12-roadmap-v2.md`）。
 
-新しいシェルは `/app.html`、ページのトップは移植が済むまで従来どおりプロトタイプです。
+アプリが入口になりました。`https://nekohachi.github.io/macbethUnity/` を開くとアプリに転送されます。プロトタイプは操作感を見比べるための参考として残してあります。
 
 **実装方針: v1.0 はモデリング特化で、Web（TypeScript + WebGL2 / WebGPU）で構築します。** スカルプト版に向けてジオメトリカーネルは C++ で書いて wasm に載せ、必要になればそのカーネルをネイティブに持ち出します。経緯と判断は `docs/09-direction-review.md`。ネイティブ C++ の設計（`docs/02-architecture.md`）はその段階の参照として残しています。
 
@@ -16,7 +16,7 @@ Maya のポリゴン編集精度、ZBrush のスカルプト、Substance Painter
 
 ```
 npm install
-npm run dev        # 開発サーバー。新しいシェルは /app.html
+npm run dev        # 開発サーバー。入口は web/index.html（ルート /）
 npm test           # core のテスト（71 件）
 npm run typecheck
 npm run build
@@ -41,6 +41,7 @@ npm run smoke      # ビルド後、実際のブラウザで通し確認（要 n
 
 | 場所 | 内容 |
 |---|---|
+| `web/index.html` | 入口の HTML（Vite の root）。`src/app/main.ts` を読み込む |
 | `src/app/state.ts` | モード、選択、修飾キー、ゲージの定義 |
 | `src/app/history.ts` | 元に戻す / やり直す（シーンのスナップショット） |
 | `src/app/render/` | Three.js への変換、ビューポート、ピッキング |
@@ -74,14 +75,19 @@ npm run smoke      # ビルド後、実際のブラウザで通し確認（要 n
 
 ## プロトタイプ
 
-[`prototype/modeling-ui-prototype.html`](prototype/modeling-ui-prototype.html) — 操作感の検証用。ブラウザで開くだけで動きます。
+[`prototype/modeling-ui-prototype.html`](prototype/modeling-ui-prototype.html) — 操作感の検証用。ブラウザで開くだけで動きます。アプリ本体はこれを土台に組み直したもので、以降の実装はすべてアプリ側に入ります。
 
 ## タブレットで開く
 
+**`https://nekohachi.github.io/macbethUnity/`** — これがアプリです。ホーム画面に追加すると全画面・オフラインで動きます。
+
 | URL | 中身 |
 |---|---|
-| `https://nekohachi.github.io/macbethUnity/` | プロトタイプ（これまでどおり） |
-| `https://nekohachi.github.io/macbethUnity/app/` | **新しいシェル。**ホーム画面に追加すると全画面・オフラインで動きます |
+| `https://nekohachi.github.io/macbethUnity/` | アプリへ転送するだけのページ |
+| `https://nekohachi.github.io/macbethUnity/app/` | **アプリ本体。** ホーム画面にはこちらを追加してください |
+| `https://nekohachi.github.io/macbethUnity/app/prototype/` | プロトタイプ（操作感の参考。更新はしません） |
+
+入口のファイルは `web/index.html`（Vite の root が `web/`）。リポジトリ直下の `index.html` は `app/` への転送だけを書いた 1 行ページで、ブランチ配信のルートが 404 にならないようにするためのものです。
 
 ### 最初の 1 回だけ必要な設定
 
@@ -95,7 +101,7 @@ npm run smoke      # ビルド後、実際のブラウザで通し確認（要 n
 - **Branch** … `claude/tablet-3d-modeling-app-f6b1x5` / `/ (root)`
 - **Save**
 
-これで上の 2 つの URL が開くようになります。以後の更新は自動です。
+これで上の URL が開くようになります。以後の更新は自動です。
 
 `app/` はビルド済みのものです。**push のたびに `.github/workflows/publish.yml` が
 自動でビルドし直して書き戻す**ので、設定はこの 1 回だけで、あとは触りません。
@@ -107,8 +113,6 @@ npm run smoke      # ビルド後、実際のブラウザで通し確認（要 n
 Pages の Source を「GitHub Actions」にしたい場合は、`pages.yml` の `on:` を
 `push:` に戻せば、ブランチに `app/` を置く必要はなくなります。ただしその場合は
 `github-pages` 環境の許可ブランチに、既定ブランチ以外もを足す必要があります。
-
-**タブレットで開く（プロトタイプ）:** GitHub の Settings → Pages で Branch をこのブランチ、Folder を `/ (root)` にすると、`https://nekohachi.github.io/macbethUnity/` で開けます（ログイン不要、ホーム画面に追加で全画面）。
 
 **方針: まず Maya のクローンとして作り、そこから UI をタブレットに寄せる。**
 

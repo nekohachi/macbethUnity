@@ -38,9 +38,9 @@ const launchOptions = {
   ...(existsSync(CHROME) ? { executablePath: CHROME } : {}),
 };
 
-// 入口の名前と配信のベースを、ビルドされたものから読み取る。
+// 配信のベースを、ビルドされたものから読み取る。
 // vite の base を変えても確認手順を書き換えずに済むようにするため。
-const ENTRY = existsSync(join(DIST, "app.html")) ? "app.html" : "index.html";
+const ENTRY = "index.html";
 const entryHtml = await readFile(join(DIST, ENTRY), "utf8");
 const BASE = entryHtml.match(/(?:src|href)="(\/.*?\/)assets\//)?.[1] ?? "/";
 
