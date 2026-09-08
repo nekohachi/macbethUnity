@@ -124,6 +124,14 @@ button{font-family:inherit; font-size:inherit; color:inherit; background:none; b
 .panel.floating[data-panel="tools"]{width:63px}
 .panel.floating:not([data-panel="tools"]){width:250px}
 
+/* ツール列から横に出てくる縦ゲージ（マニピュレータの大きさ）。
+   左レールのゲージと同じ見た目にして、置き場所だけ変えている。 */
+.cutin{position:fixed; z-index:21; width:60px; padding:8px 0; display:flex; flex-direction:column;
+  align-items:center; gap:5px; background:var(--panel); border:1px solid var(--line);
+  border-radius:var(--radius); box-shadow:0 12px 32px rgba(0,0,0,.5);
+  animation:cutin .12s ease-out}
+@keyframes cutin{from{opacity:0; transform:translateX(-8px)} to{opacity:1; transform:none}}
+
 /* ---------- icon tool column ---------- */
 .toolcol{display:flex; flex-direction:column; gap:3px; align-items:center}
 .ibtn{width:40px; height:36px; display:grid; place-items:center; position:relative;

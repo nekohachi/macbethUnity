@@ -63,8 +63,22 @@ function quadGrid(
   }
 }
 
-/** 円盤のキャップ。dir > 0 で +法線側。 */
-function cap(b: MeshBuilder, radius: number, y: number, sides: number, rings: number, dir: number): void {
+/**
+ * 円盤のキャップ。dir > 0 で +法線側。
+ *
+ * UV は Maya と同じで、円をそのまま円のまま置く。`uvCenter` と `uvRadius` で
+ * 置き場所を決める（円柱なら 0〜1 の上半分に 2 つ並べる。docs/19）。
+ */
+function cap(
+  b: MeshBuilder,
+  radius: number,
+  y: number,
+  sides: number,
+  rings: number,
+  dir: number,
+  uvCenter: [number, number] = [0.5, 0.5],
+  uvRadius = 0.5,
+): void {
   if (rings <= 0) return;
   for (let j = 0; j < rings; j++) {
     for (let i = 0; i < sides; i++) {
@@ -80,7 +94,8 @@ function cap(b: MeshBuilder, radius: number, y: number, sides: number, rings: nu
         const a = (ci / sides) * Math.PI * 2;
         const r = radius * (1 - cj / rings);
         verts.push(b.vertex(r * Math.cos(a), y, r * Math.sin(a)));
-        uvRows.push([0.5 + (Math.cos(a) * r) / (radius * 2), 0.5 + (Math.sin(a) * r) / (radius * 2)]);
+        const t = (r / radius) * uvRadius;
+        uvRows.push([uvCenter[0] + Math.cos(a) * t, uvCenter[1] + Math.sin(a) * t]);
       }
       if (dir > 0) {
         verts.reverse();
@@ -89,6 +104,76 @@ function cap(b: MeshBuilder, radius: number, y: number, sides: number, rings: nu
       b.face(verts, { uv: new Map([["map1", uvRows]]) });
     }
   }
+}
+
+/**
+ * 立方体の UV は Maya と同じ展開図（十字の net）にする。
+ *
+ *        [上]
+ *  [前][右][後][左]
+ *        [下]
+ *
+ * 横 4 マス × 縦 3 マス。隣り合う面は UV でも辺を共有するので、
+ * 切れ目は 12 本のうち 7 本だけになり、島は 1 つ（Maya と同じ見え方）。
+ */
+const CUBE_CELL = 1 / 4;
+const CUBE_V0 = (1 - CUBE_CELL * 3) / 2;
+
+/** 展開図の 1 マス（col 列 row 行）へ収める uvAt。 */
+function cubeCell(col: number, row: number): (u: number, v: number) => [number, number] {
+  const u0 = col * CUBE_CELL;
+  const v0 = CUBE_V0 + row * CUBE_CELL;
+  return (u, v) => [u0 + u * CUBE_CELL, v0 + v * CUBE_CELL];
+}
+
+/**
+ * 平らな面を、格子の 1 マスに収まるよう平面投影する。
+ * 面の法線を軸にした 2D の座標系を作り、境界箱でマスへ合わせる。
+ */
+function planarCell(
+  pts: Array<[number, number, number] | number[]>,
+  col: number,
+  row: number,
+  cols: number,
+  rows: number,
+  margin: number,
+): number[][] {
+  // 面の法線（最初の 3 点から）
+  const [a, b0, c] = pts;
+  const e1 = [b0[0] - a[0], b0[1] - a[1], b0[2] - a[2]];
+  const e2 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+  const n = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
+  const nl = Math.hypot(n[0], n[1], n[2]) || 1;
+  const nn = [n[0] / nl, n[1] / nl, n[2] / nl];
+  // 法線と重ならない軸から接線を作る
+  const up = Math.abs(nn[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0];
+  const t1 = [up[1] * nn[2] - up[2] * nn[1], up[2] * nn[0] - up[0] * nn[2], up[0] * nn[1] - up[1] * nn[0]];
+  const t1l = Math.hypot(t1[0], t1[1], t1[2]) || 1;
+  const tu = [t1[0] / t1l, t1[1] / t1l, t1[2] / t1l];
+  const tv = [nn[1] * tu[2] - nn[2] * tu[1], nn[2] * tu[0] - nn[0] * tu[2], nn[0] * tu[1] - nn[1] * tu[0]];
+
+  const flat = pts.map((p) => [
+    p[0] * tu[0] + p[1] * tu[1] + p[2] * tu[2],
+    p[0] * tv[0] + p[1] * tv[1] + p[2] * tv[2],
+  ]);
+  let minU = Infinity;
+  let minV = Infinity;
+  let maxU = -Infinity;
+  let maxV = -Infinity;
+  for (const [u, v] of flat) {
+    minU = Math.min(minU, u);
+    maxU = Math.max(maxU, u);
+    minV = Math.min(minV, v);
+    maxV = Math.max(maxV, v);
+  }
+  // 縦横の比を保ったままマスへ収める
+  const span = Math.max(maxU - minU, maxV - minV, 1e-9);
+  const cw = 1 / cols;
+  const ch = 1 / rows;
+  const scale = (Math.min(cw, ch) - margin * 2) / span;
+  const u0 = col * cw + (cw - (maxU - minU) * scale) / 2;
+  const v0 = row * ch + (ch - (maxV - minV) * scale) / 2;
+  return flat.map(([u, v]) => [u0 + (u - minU) * scale, v0 + (v - minV) * scale]);
 }
 
 export const PRIMITIVES: Record<string, PrimitiveDef> = {
@@ -115,18 +200,28 @@ export const PRIMITIVES: Record<string, PrimitiveDef> = {
         dv: [number, number, number],
         nu: number,
         nv: number,
+        uvAt: (u: number, v: number) => [number, number],
       ) =>
-        quadGrid(b, nu, nv, (u, v) => [
-          origin[0] + du[0] * u + dv[0] * v,
-          origin[1] + du[1] * u + dv[1] * v,
-          origin[2] + du[2] * u + dv[2] * v,
-        ]);
-      grid([-hw, -hh, hd], [p.width, 0, 0], [0, p.height, 0], p.sdW, p.sdH);
-      grid([hw, -hh, -hd], [-p.width, 0, 0], [0, p.height, 0], p.sdW, p.sdH);
-      grid([hw, -hh, hd], [0, 0, -p.depth], [0, p.height, 0], p.sdD, p.sdH);
-      grid([-hw, -hh, -hd], [0, 0, p.depth], [0, p.height, 0], p.sdD, p.sdH);
-      grid([-hw, hh, hd], [p.width, 0, 0], [0, 0, -p.depth], p.sdW, p.sdD);
-      grid([-hw, -hh, -hd], [p.width, 0, 0], [0, 0, p.depth], p.sdW, p.sdD);
+        quadGrid(
+          b,
+          nu,
+          nv,
+          (u, v) => [
+            origin[0] + du[0] * u + dv[0] * v,
+            origin[1] + du[1] * u + dv[1] * v,
+            origin[2] + du[2] * u + dv[2] * v,
+          ],
+          uvAt,
+        );
+      // 展開図の並びは 前 → 右 → 後 → 左（+Y のまわりを一周する順）。
+      // この順なら隣り合う面の UV がそのまま繋がる
+      grid([-hw, -hh, hd], [p.width, 0, 0], [0, p.height, 0], p.sdW, p.sdH, cubeCell(0, 1));
+      grid([hw, -hh, -hd], [-p.width, 0, 0], [0, p.height, 0], p.sdW, p.sdH, cubeCell(2, 1));
+      grid([hw, -hh, hd], [0, 0, -p.depth], [0, p.height, 0], p.sdD, p.sdH, cubeCell(1, 1));
+      grid([-hw, -hh, -hd], [0, 0, p.depth], [0, p.height, 0], p.sdD, p.sdH, cubeCell(3, 1));
+      // 上は前の上に、下は前の下に付く。どちらも共有する辺で UV が繋がる向き
+      grid([-hw, hh, hd], [p.width, 0, 0], [0, 0, -p.depth], p.sdW, p.sdD, cubeCell(0, 2));
+      grid([-hw, -hh, -hd], [p.width, 0, 0], [0, 0, p.depth], p.sdW, p.sdD, cubeCell(0, 0));
       return b.build();
     },
   },
@@ -172,6 +267,7 @@ export const PRIMITIVES: Record<string, PrimitiveDef> = {
       const b = new MeshBuilder();
       const h = p.height / 2;
       // 角度 × 高さのパラメータ化では既定の巻き方が内向きになるので反転する
+      // UV は Maya と同じ置き方: 側面は下半分いっぱい、フタは上半分に 2 つ並べる
       quadGrid(
         b,
         p.sdAxis,
@@ -180,11 +276,11 @@ export const PRIMITIVES: Record<string, PrimitiveDef> = {
           const a = u * Math.PI * 2;
           return [p.radius * Math.cos(a), -h + v * p.height, p.radius * Math.sin(a)];
         },
-        (u, v) => [u, v],
+        (u, v) => [u, v * 0.5],
         true,
       );
-      cap(b, p.radius, h, p.sdAxis, p.sdCaps, 1);
-      cap(b, p.radius, -h, p.sdAxis, p.sdCaps, -1);
+      cap(b, p.radius, h, p.sdAxis, p.sdCaps, 1, [0.75, 0.75], 0.25);
+      cap(b, p.radius, -h, p.sdAxis, p.sdCaps, -1, [0.25, 0.75], 0.25);
       return b.build();
     },
   },
@@ -211,10 +307,11 @@ export const PRIMITIVES: Record<string, PrimitiveDef> = {
           const a = u * Math.PI * 2;
           return [p.radius * (1 - v) * Math.cos(a), -h + v * p.height, p.radius * (1 - v) * Math.sin(a)];
         },
-        (u, v) => [u, v],
+        // 側面は下半分、フタは上半分の真ん中（Maya と同じ）
+        (u, v) => [u, v * 0.5],
         true,
       );
-      cap(b, p.radius, -h, p.sdAxis, p.sdCap, -1);
+      cap(b, p.radius, -h, p.sdAxis, p.sdCap, -1, [0.5, 0.75], 0.25);
       return b.build();
     },
   },
@@ -285,7 +382,8 @@ export const PRIMITIVES: Record<string, PrimitiveDef> = {
     ],
     build(p) {
       const b = new MeshBuilder();
-      cap(b, p.radius, 0, p.sides, p.sdCaps, 1);
+      // 円盤は 0〜1 いっぱいの円（Maya と同じ）
+      cap(b, p.radius, 0, p.sides, p.sdCaps, 1, [0.5, 0.5], 0.5);
       return b.build();
     },
   },
@@ -458,7 +556,16 @@ export const PRIMITIVES: Record<string, PrimitiveDef> = {
         const pt = mesh.getPosition(v);
         b2.vertex(pt[0], pt[1], pt[2]);
       }
-      for (const f of flipped) b2.face(f);
+      // UV は面ごとの平面投影を格子に並べる（Maya の正多面体も面ごとに分かれている）。
+      // 曲がった面が無いので、これで歪みはゼロになる
+      const cols = Math.ceil(Math.sqrt(flipped.length));
+      const rows = Math.ceil(flipped.length / cols);
+      const margin = 0.02;
+      flipped.forEach((face, index) => {
+        const pts = face.map((v) => mesh.getPosition(v));
+        const uvRows = planarCell(pts, index % cols, Math.floor(index / cols), cols, rows, margin);
+        b2.face(face, { uv: new Map([["map1", uvRows]]) });
+      });
       return b2.build();
     },
   },

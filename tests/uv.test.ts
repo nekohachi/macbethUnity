@@ -354,20 +354,26 @@ describe("保存と後始末", () => {
 });
 
 describe("U10. 今ある UV をそのまま取り込む", () => {
-  it("立方体の切れ目は 12 本、取り込んだ UV は元のまま", () => {
+  it("立方体は Maya と同じ展開図（切れ目 7 本・島 1 つ）", () => {
     const mesh = cube();
     const original = Float32Array.from(mesh.uvSets.get(UV_SET)!);
 
-    // 立方体は面ごとに 0〜1 が貼ってある。面の境目はすべて UV の切れ目
+    // 十字の展開図なので、12 本のうち繋がっている 5 本は切れ目にならない
     const seams = seamsFromUv(mesh);
-    expect(seams.size).toBe(12);
+    expect(seams.size).toBe(7);
 
     const recipe = recipeFromMesh(mesh);
     expect(recipe.method).toBe("none");
     expect(recipe.base).not.toBeNull();
 
     const r = recompute(mesh, recipe);
-    expect(r.charts.length).toBe(6);
+    expect(r.charts.length).toBe(1);
+
+    // 展開図は 0〜1 に収まっていて、重なりが無い（面ごとに 1/4 マス）
+    for (let i = 0; i < original.length; i++) {
+      expect(original[i]).toBeGreaterThanOrEqual(-1e-6);
+      expect(original[i]).toBeLessThanOrEqual(1 + 1e-6);
+    }
     const after = mesh.uvSets.get(UV_SET)!;
     for (let i = 0; i < original.length; i++) expect(after[i]).toBeCloseTo(original[i], 6);
   });
@@ -381,11 +387,32 @@ describe("U10. 今ある UV をそのまま取り込む", () => {
   });
 
   it("UV が無ければ投影で始める", () => {
-    const mesh = PRIMITIVES.platonic.build(defaultParams("platonic"));
+    // UV を持たないメッシュ（読み込んだ OBJ に UV が無い場合など）
+    const b = new MeshBuilder();
+    b.vertex(0, 0, 0);
+    b.vertex(1, 0, 0);
+    b.vertex(1, 1, 0);
+    b.vertex(0, 1, 0);
+    b.face([0, 1, 2, 3]);
+    const mesh = b.build();
     expect(mesh.uvSets.get(UV_SET)).toBeUndefined();
     const recipe = recipeFromMesh(mesh);
     expect(recipe.method).toBe("projection");
     expect(recipe.base).toBeNull();
+  });
+
+  it("正多面体は面ごとに UV を持つ（重ならない）", () => {
+    const mesh = PRIMITIVES.platonic.build(defaultParams("platonic"));
+    const uv = mesh.uvSets.get(UV_SET);
+    expect(uv).toBeDefined();
+    for (let i = 0; i < uv!.length; i++) {
+      expect(uv![i]).toBeGreaterThanOrEqual(-1e-6);
+      expect(uv![i]).toBeLessThanOrEqual(1 + 1e-6);
+    }
+    const recipe = recipeFromMesh(mesh);
+    const r = recompute(mesh, recipe);
+    // 面ごとに分かれているので、島の数は面の数
+    expect(r.charts.length).toBe(mesh.faceCount);
   });
 });
 

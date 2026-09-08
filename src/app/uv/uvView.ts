@@ -66,16 +66,18 @@ export interface UvTopology {
   chartOfFace: Map<number, number>;
 }
 
+// 島が背景に埋もれないよう、面は青みがかった塗りで、線は明るく。
+// 市松は「歪みを見るための下地」なので、目立たせるのは島のほう
 const MAT = {
-  face: new MeshBasicMaterial({ color: 0x8f9aa5, transparent: true, opacity: 0.34, side: DoubleSide, depthWrite: false }),
-  faceSel: new MeshBasicMaterial({ color: 0xf0913c, transparent: true, opacity: 0.45, side: DoubleSide, depthWrite: false }),
-  wire: new LineBasicMaterial({ color: 0xc8d2db, transparent: true, opacity: 0.75 }),
+  face: new MeshBasicMaterial({ color: 0x76a8dd, transparent: true, opacity: 0.3, side: DoubleSide, depthWrite: false }),
+  faceSel: new MeshBasicMaterial({ color: 0xf0913c, transparent: true, opacity: 0.5, side: DoubleSide, depthWrite: false }),
+  wire: new LineBasicMaterial({ color: 0xe6eef6 }),
   seam: new LineBasicMaterial({ color: 0xff6b4a }),
   wireSel: new LineBasicMaterial({ color: 0xf0913c }),
-  point: new PointsMaterial({ color: 0x9d7fd6, size: 6, sizeAttenuation: false }),
+  point: new PointsMaterial({ color: 0xb79bea, size: 6, sizeAttenuation: false }),
   pointSel: new PointsMaterial({ color: 0xf0913c, size: 9, sizeAttenuation: false }),
   pin: new PointsMaterial({ color: 0x6cf07a, size: 11, sizeAttenuation: false }),
-  border: new LineBasicMaterial({ color: 0x5f6b76 }),
+  border: new LineBasicMaterial({ color: 0x93a1ad }),
 };
 
 /** 市松模様のテクスチャ。歪みを目で見るための背景。 */
@@ -88,7 +90,7 @@ function checkerTexture(cells: number): CanvasTexture {
   const step = size / cells;
   for (let y = 0; y < cells; y++) {
     for (let x = 0; x < cells; x++) {
-      ctx.fillStyle = (x + y) % 2 === 0 ? "#3a4149" : "#2b3138";
+      ctx.fillStyle = (x + y) % 2 === 0 ? "#333a42" : "#282e35";
       ctx.fillRect(x * step, y * step, step, step);
     }
   }
@@ -170,12 +172,18 @@ export class UvView {
     this.applyCamera();
   }
 
+  /**
+   * `span` 四方が必ず収まるようにする。縦長のペインでは横が、
+   * 横長のペインでは縦が余る。縦だけを合わせると、縦持ちのときに
+   * 0〜1 の枠が左右にはみ出して「何も無い」ように見えてしまう。
+   */
   applyCamera(): void {
     const w = this.container.clientWidth || 1;
     const h = this.container.clientHeight || 1;
     const aspect = w / h;
-    const halfV = this.span / 2;
-    const halfU = halfV * aspect;
+    const half = this.span / 2;
+    const halfU = aspect >= 1 ? half * aspect : half;
+    const halfV = aspect >= 1 ? half : half / aspect;
     this.camera.left = this.center.u - halfU;
     this.camera.right = this.center.u + halfU;
     this.camera.top = this.center.v + halfV;
@@ -183,10 +191,10 @@ export class UvView {
     this.camera.updateProjectionMatrix();
   }
 
-  /** 画面の 1px が UV 空間でいくつか。 */
+  /** 画面の 1px が UV 空間でいくつか。縦横どちらで合わせていても同じ値になる。 */
   pixelToUv(): number {
     const h = this.container.clientHeight || 1;
-    return this.span / h;
+    return (this.camera.top - this.camera.bottom) / h;
   }
 
   pan(dx: number, dy: number): void {

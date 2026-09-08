@@ -186,6 +186,8 @@ export class App {
   private marqueeEl = byId("marquee");
   private marquee: { x0: number; y0: number; x1: number; y1: number } | null = null;
   private popup: HTMLElement | null = null;
+  /** ポップアップを出したボタン。外を押したときの判定から除く。 */
+  private popupAnchor: HTMLElement | null = null;
   private router: GestureRouter;
   private manipulator: Manipulator;
   private multicut: MultiCut;
@@ -958,6 +960,80 @@ export class App {
     this.hud.toast(`マニピュレータの大きさ ×${this.state.manipSize.toFixed(2)}`);
   }
 
+  /**
+   * マニピュレータの大きさを縦ゲージで。ツール列のボタンをタップすると
+   * 横から出てくる（ユーザー要望）。もう一度タップするか、他を触ると閉じる。
+   */
+  private openManipSizeGauge(anchor: HTMLElement): void {
+    // 出ているときにもう一度押したら閉じる
+    if (this.popup?.dataset.gauge === "manipSize") {
+      this.closePopup();
+      return;
+    }
+    this.closePopup();
+    const r = anchor.getBoundingClientRect();
+    const pop = el("div", "cutin");
+    pop.dataset.gauge = "manipSize";
+    pop.style.left = `${r.right + 8}px`;
+    // ボタンの高さを中心にして、画面からはみ出さない位置に置く
+    const height = 220;
+    const top = Math.max(8, Math.min(window.innerHeight - height - 8, r.top + r.height / 2 - height / 2));
+    pop.style.top = `${top}px`;
+    pop.style.height = `${height}px`;
+
+    pop.appendChild(el("div", "glabel", "サイズ"));
+    const gauge = el("div", "gauge");
+    const fill = el("div", "fill");
+    const knob = el("div", "knob");
+    gauge.append(fill, knob);
+    pop.appendChild(gauge);
+    const value = el("div", "gval");
+    pop.appendChild(value);
+
+    const paint = () => {
+      const t = (this.state.manipSize - MANIP_SIZE_MIN) / (MANIP_SIZE_MAX - MANIP_SIZE_MIN);
+      fill.style.height = `${t * 100}%`;
+      knob.style.bottom = `calc(${t * 100}% - 1px)`;
+      value.textContent = `×${this.state.manipSize.toFixed(2)}`;
+    };
+    const setFromY = (clientY: number) => {
+      const box = gauge.getBoundingClientRect();
+      const t = Math.max(0, Math.min(1, 1 - (clientY - box.top) / box.height));
+      // 0.05 刻み。スライダーの端は 0.5 と 2.0 ちょうどになる
+      const raw = MANIP_SIZE_MIN + t * (MANIP_SIZE_MAX - MANIP_SIZE_MIN);
+      this.state.manipSize = Math.round(raw / 0.05) * 0.05;
+      localStorage.setItem("macbeth.manipSize", String(this.state.manipSize));
+      paint();
+      this.refreshManipulator();
+    };
+    let active = false;
+    gauge.addEventListener("touchstart", (e) => e.preventDefault(), { passive: false });
+    gauge.addEventListener("pointerdown", (e) => {
+      e.preventDefault();
+      active = true;
+      try {
+        gauge.setPointerCapture(e.pointerId);
+      } catch {
+        /* 捕捉できないだけなので続ける（Safari と合成イベント） */
+      }
+      setFromY(e.clientY);
+    });
+    gauge.addEventListener("pointermove", (e) => {
+      if (active) setFromY(e.clientY);
+    });
+    for (const t of ["pointerup", "pointercancel"] as const) {
+      gauge.addEventListener(t, () => {
+        if (!active) return;
+        active = false;
+        this.refresh();
+      });
+    }
+    paint();
+    document.body.appendChild(pop);
+    this.popup = pop;
+    this.popupAnchor = anchor;
+  }
+
   /** マニピュレータのサークルメニュー（ツール列の長押し）。 */
   private manipulatorMenu(): RadialMenu {
     return {
@@ -968,18 +1044,6 @@ export class App {
         run: () => this.togglePivotEdit(),
       },
       NE: { label: "選択の中心へ戻す", sub: "Center", icon: ICONS.vObj, run: () => this.resetPivot() },
-      E: {
-        label: "大きく",
-        sub: "+",
-        icon: ICONS.scale,
-        run: () => this.setManipSize(this.state.manipSize * MANIP_SIZE_STEP),
-      },
-      W: {
-        label: "小さく",
-        sub: "-",
-        icon: ICONS.scale,
-        run: () => this.setManipSize(this.state.manipSize / MANIP_SIZE_STEP),
-      },
       S: {
         label: "初期設定に戻す",
         sub: "Reset",
@@ -2694,10 +2758,10 @@ export class App {
       {
         kind: "button",
         icon: ICONS.pivot,
-        title: "マニピュレータ（タップでピボット移動 D · 長押しで大きさと初期化）",
+        title: "マニピュレータ（タップで大きさのスライダー · 長押しでピボット）",
         pressed: () => this.state.pivotEdit,
         radial: () => this.manipulatorMenu(),
-        onTap: () => this.togglePivotEdit(),
+        onTap: (b) => this.openManipSizeGauge(b),
       },
       {
         kind: "button",
@@ -3193,13 +3257,18 @@ export class App {
     );
     byId("fileBtn").addEventListener("click", (e) => this.openFileMenu(e.currentTarget as HTMLElement));
     document.addEventListener("pointerdown", (e) => {
-      if (this.popup && !this.popup.contains(e.target as Node)) this.closePopup();
+      if (!this.popup) return;
+      const target = e.target as Node;
+      // 出したボタン自身は除く。そこを押したときは「もう一度押して閉じる」に任せる
+      if (this.popup.contains(target) || this.popupAnchor?.contains(target)) return;
+      this.closePopup();
     });
   }
 
   private closePopup(): void {
     this.popup?.remove();
     this.popup = null;
+    this.popupAnchor = null;
     closeRadial();
   }
 

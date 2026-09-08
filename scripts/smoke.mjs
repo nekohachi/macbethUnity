@@ -1555,8 +1555,8 @@ check(
   "UV モード: 2D が出て、切って開いて、動かした分が残る",
   uv.paneShown &&
     uv.split &&
-    // 立方体は面ごとに UV を持っているので、取り込んだ時点で 6 島（docs/17 の 1 章）
-    uv.started.charts === 6 &&
+    // 立方体の UV は Maya と同じ十字の展開図なので、取り込んだ時点では 1 島
+    uv.started.charts === 1 &&
     uv.opened.charts === 6 &&
     uv.opened.verts === 24 &&
     Math.abs(uv.shift) > 0.01 &&
@@ -1750,7 +1750,69 @@ const manip = await page.evaluate(async () => {
   const canvas = document.getElementById("gl");
   const rect = canvas.getBoundingClientRect();
 
+  // ツール列のボタンをタップすると、大きさの縦ゲージが横から出る
+  const sizeButton = [...document.querySelectorAll(".toolcol .ibtn")].find((b) =>
+    b.title.startsWith("マニピュレータ"),
+  );
+  const tapButton = () => {
+    const br = sizeButton.getBoundingClientRect();
+    for (const type of ["pointerdown", "pointerup"]) {
+      sizeButton.dispatchEvent(
+        new PointerEvent(type, {
+          pointerId: 22,
+          pointerType: "mouse",
+          isPrimary: true,
+          clientX: br.x + br.width / 2,
+          clientY: br.y + br.height / 2,
+          button: 0,
+          buttons: type === "pointerup" ? 0 : 1,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    }
+  };
+  tapButton();
+  const cutin = document.querySelector('.cutin[data-gauge="manipSize"]');
+  const gaugeShown = !!cutin;
+  // ゲージの上のほうを押すと大きくなる
+  let dragged = 0;
+  if (cutin) {
+    const g = cutin.querySelector(".gauge");
+    const gr = g.getBoundingClientRect();
+    g.dispatchEvent(
+      new PointerEvent("pointerdown", {
+        pointerId: 23,
+        pointerType: "mouse",
+        isPrimary: true,
+        clientX: gr.x + gr.width / 2,
+        clientY: gr.y + gr.height * 0.1,
+        button: 0,
+        buttons: 1,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    g.dispatchEvent(
+      new PointerEvent("pointerup", {
+        pointerId: 23,
+        pointerType: "mouse",
+        isPrimary: true,
+        clientX: gr.x + gr.width / 2,
+        clientY: gr.y + gr.height * 0.1,
+        buttons: 0,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    dragged = app.state.manipSize;
+  }
+  // もう一度タップで閉じる
+  tapButton();
+  const gaugeClosed = !document.querySelector('.cutin[data-gauge="manipSize"]');
+
   // 大きく 2 回 → ×1.5625、初期設定に戻すと ×1
+  app.setManipSize(1);
   app.setManipSize(app.state.manipSize * 1.25);
   app.setManipSize(app.state.manipSize * 1.25);
   const bigger = app.state.manipSize;
@@ -1832,19 +1894,35 @@ const manip = await page.evaluate(async () => {
   app.state.select(object);
   const clearedOnSelect = app.state.pivotOverride === null;
 
-  return { bigger, stored, movedPivot, meshStill, moved, rotated, clearedOnSelect, size: app.state.manipSize };
+  return {
+    bigger,
+    stored,
+    movedPivot,
+    meshStill,
+    moved,
+    rotated,
+    clearedOnSelect,
+    gaugeShown,
+    gaugeClosed,
+    dragged,
+    size: app.state.manipSize,
+  };
 });
 check(
-  "マニピュレータの大きさとピボットの移動",
-  Math.abs(manip.bigger - 1.5625) < 1e-6 &&
+  "マニピュレータ: タップで大きさのゲージ、ピボットの移動",
+  manip.gaugeShown &&
+    manip.dragged > 1.5 &&
+    manip.gaugeClosed &&
+    Math.abs(manip.bigger - 1.5625) < 1e-6 &&
     Math.abs(manip.stored - 1.5625) < 1e-6 &&
     manip.size === 1 &&
     manip.movedPivot &&
     manip.meshStill &&
     manip.rotated &&
     manip.clearedOnSelect,
-  `大きさ ×${manip.bigger?.toFixed(4)} → ×${manip.size} / ピボット ${manip.moved?.map((n) => n.toFixed(2)).join(",")} ` +
-    `（メッシュ据え置き ${manip.meshStill}）/ そのまわりで回る ${manip.rotated}`,
+  `ゲージ ${manip.gaugeShown ? "出る" : "出ない"} → ×${manip.dragged?.toFixed(2)} → ${manip.gaugeClosed ? "閉じる" : "閉じない"} / ` +
+    `ピボット ${manip.moved?.map((n) => n.toFixed(2)).join(",")}（メッシュ据え置き ${manip.meshStill}）/ ` +
+    `そのまわりで回る ${manip.rotated}`,
 );
 
 /* 33. スライド: SHF + CTL + 移動でエッジループが辺に沿って滑る（docs/17 の 5 章） */
@@ -1955,21 +2033,17 @@ const uvImport = await page.evaluate(() => {
   const charts = app.uv.stats().charts;
   const kept = original.every((v, i) => Math.abs(v - object.mesh.uvSets.get("map1")[i]) < 1e-6);
 
-  // 立方体の面ごとの UV は 6 枚とも 0〜1 の正方形のまま
-  let boxesOk = true;
-  for (const chart of app.uv.view.uvTopology.charts) {
-    let minU = Infinity, maxU = -Infinity, minV = Infinity, maxV = -Infinity;
-    const uv = object.mesh.uvSets.get("map1");
-    for (const key of chart.corners) {
-      const [f, at] = key.split(":").map(Number);
-      const c = object.mesh.faceOffsets[f] + at;
-      minU = Math.min(minU, uv[c * 2]);
-      maxU = Math.max(maxU, uv[c * 2]);
-      minV = Math.min(minV, uv[c * 2 + 1]);
-      maxV = Math.max(maxV, uv[c * 2 + 1]);
-    }
-    if (Math.abs(maxU - minU - 1) > 1e-4 || Math.abs(maxV - minV - 1) > 1e-4) boxesOk = false;
+  // 展開図は横 4 マス × 縦 3 マス（U いっぱい、V は 0.75 ぶん）で 0〜1 に収まる
+  const uv = object.mesh.uvSets.get("map1");
+  let minU = Infinity, maxU = -Infinity, minV = Infinity, maxV = -Infinity;
+  for (let i = 0; i < uv.length; i += 2) {
+    minU = Math.min(minU, uv[i]);
+    maxU = Math.max(maxU, uv[i]);
+    minV = Math.min(minV, uv[i + 1]);
+    maxV = Math.max(maxV, uv[i + 1]);
   }
+  const boxesOk =
+    Math.abs(minU) < 1e-4 && Math.abs(maxU - 1) < 1e-4 && Math.abs(maxV - minV - 0.75) < 1e-4;
 
   // 展開するとソルバーが LSCM に変わる
   app.uv.unfold();
@@ -1985,14 +2059,14 @@ const uvImport = await page.evaluate(() => {
 check(
   "UV モードに入っても今の UV は変わらない",
   uvImport.method === "none" &&
-    uvImport.seams === 12 &&
-    uvImport.charts === 6 &&
+    uvImport.seams === 7 &&
+    uvImport.charts === 1 &&
     uvImport.kept &&
     uvImport.boxesOk &&
     uvImport.afterMethod === "lscm" &&
     uvImport.changed,
   `取り込み ${uvImport.method} / 切れ目 ${uvImport.seams} 本 / 島 ${uvImport.charts} / ` +
-    `そのまま ${uvImport.kept} / 0〜1 の正方形 ${uvImport.boxesOk} / 展開後 ${uvImport.afterMethod}`,
+    `そのまま ${uvImport.kept} / 十字の展開図 ${uvImport.boxesOk} / 展開後 ${uvImport.afterMethod}`,
 );
 
 /* 34b. 単位ごとのカット / ソーと UV のグリッドスナップ（docs/17 の 2.3、7.4） */

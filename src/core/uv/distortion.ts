@@ -2,12 +2,16 @@
  * 歪みの評価。`15` の 3.1 の最後。
  *
  * 三角形ごとに「3D の形 → UV の形」の 2×2 行列を出し、その特異値を見る。
- * 完全に等長なら特異値が 2 つとも 1 になるので、伸びは 1.00 になる。
- * 引き伸ばしも押し潰しも同じ重さで数えたいので、max(σ1, 1/σ2) を取る。
+ *
+ * 見るのは **σ1 / σ2**（形の歪み）。1.00 なら形は保たれている。
+ * max(σ1, 1/σ2) にすると全体の縮尺まで数えてしまい、たとえば立方体の展開図
+ * （1 辺 1 の面を 1/4 のマスに置く）が「伸び ×4.00」と出て、
+ * 何も歪んでいないのに壊れているように見える。縮尺はテクセル密度の話なので
+ * パッキング側（C3）で見る。
  */
 
 export interface Distortion {
-  /** いちばん歪んだ三角形の伸び。1.0 が完全。 */
+  /** いちばん歪んだ三角形の形の歪み（σ1 / σ2）。1.0 が完全。 */
   maxStretch: number;
   /** 角度の差の平均（度）。 */
   meanAngleError: number;
@@ -72,7 +76,8 @@ export function measure(positions: Float64Array, tri: Uint32Array, uv: Float64Ar
     const r = Math.hypot(f, g);
     const s1 = q + r;
     const s2 = Math.abs(q - r);
-    const stretch = Math.max(s1, s2 > 1e-12 ? 1 / s2 : 1e12);
+    // 形の歪みだけを見る（縮尺には依らない）
+    const stretch = s2 > 1e-12 ? s1 / s2 : 1e12;
     perTriangle[t] = stretch;
     if (stretch > maxStretch) maxStretch = stretch;
 
