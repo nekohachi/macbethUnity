@@ -277,7 +277,8 @@ export class Viewport {
 
   applyDisplay(view: ObjectView): void {
     const d = this.state.display;
-    const selected = view.object === this.state.selected;
+    // Shift で足したオブジェクトも同じ色で光らせる（結合の相手が見えるように）
+    const selected = view.object === this.state.selected || this.state.also.has(view.object);
     view.surface.visible = d !== "wire";
     view.wire.visible = d === "wire" || d === "shadedWire" || selected;
     view.wire.material = !selected

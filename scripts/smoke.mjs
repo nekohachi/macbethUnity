@@ -1299,7 +1299,87 @@ check(
   `着地 ${vertexSnap.landed.map((n) => n.toFixed(2)).join(",")}`,
 );
 
-/* 28. 例外が出ていない */
+/* 28. まとまりの操作（複製 / 抽出 / 結合 / 分離 / ミラー） */
+const groupOps = await page.evaluate(() => {
+  const app = window.macbeth;
+  const objectsBefore = app.state.doc.objects.length;
+  const object = app.state.doc.addObject("cube");
+  app.viewport.syncAll();
+  app.state.select(object);
+
+  // 面の複製: 写しが選ばれた状態で残る
+  app.setCompMode("face");
+  app.state.comp.clear();
+  app.state.comp.add(0);
+  app.doDuplicateFaces();
+  const dup = { faces: object.mesh.faceCount, comp: app.state.comp.size };
+  app.doUndo();
+
+  // 面の抽出: 別オブジェクトになる
+  app.setCompMode("face");
+  app.state.comp.clear();
+  app.state.comp.add(0);
+  app.state.comp.add(1);
+  const countBefore = app.state.doc.objects.length;
+  app.doExtractFaces();
+  const extract = {
+    objects: app.state.doc.objects.length - countBefore,
+    left: object.mesh.faceCount,
+    taken: app.state.selected.mesh.faceCount,
+  };
+  app.doUndo();
+
+  // ミラー: X で折り返す
+  app.state.select(object);
+  app.setCompMode("object");
+  app.state.mirrorAxis = 0;
+  const beforeMirror = object.mesh.faceCount;
+  app.doMirror();
+  const mirror = object.mesh.faceCount;
+  app.doUndo();
+
+  // 結合 → 分離: 2 つを 1 つにして、また 2 つに戻す
+  const other = app.state.doc.addObject("cube");
+  other.transform = { ...other.transform, position: [3, 0, 0] };
+  app.viewport.syncAll();
+  app.state.select(object);
+  app.state.addObject(other);
+  const picked = app.state.selectedObjects().length;
+  app.doCombine();
+  const combined = {
+    objects: app.state.doc.objects.length,
+    faces: app.state.selected.mesh.faceCount,
+  };
+  app.doSeparate();
+  const separated = app.state.doc.objects.length;
+
+  // 数値入力
+  const target = app.state.selected;
+  app.panelHost().onTransformInput(target, "position", 1, 1.25);
+  const typed = target.transform.position[1];
+
+  app.state.select(null);
+  app.state.doc.objects.length = objectsBefore;
+  app.viewport.syncAll();
+  return { dup, extract, beforeMirror, mirror, picked, combined, separated, typed, objectsBefore };
+});
+check(
+  "複製 / 抽出 / ミラー / 結合 / 分離 / 数値入力",
+  groupOps.dup.faces === 7 &&
+    groupOps.dup.comp === 1 &&
+    groupOps.extract.objects === 1 &&
+    groupOps.extract.left === 4 &&
+    groupOps.extract.taken === 2 &&
+    groupOps.mirror === groupOps.beforeMirror * 2 &&
+    groupOps.picked === 2 &&
+    groupOps.combined.faces === 12 &&
+    groupOps.separated === groupOps.combined.objects + 1 &&
+    Math.abs(groupOps.typed - 1.25) < 1e-6,
+  `複製 ${groupOps.dup.faces}面 / 抽出 ${groupOps.extract.left}+${groupOps.extract.taken} / ` +
+    `ミラー ${groupOps.beforeMirror}→${groupOps.mirror}面 / 結合 ${groupOps.combined.faces}面 → 分離 / Y=${groupOps.typed}`,
+);
+
+/* 29. 例外が出ていない */
 check("例外なし", errors.length === 0, errors.join(" / "));
 
 await page.screenshot({ path: SHOT });

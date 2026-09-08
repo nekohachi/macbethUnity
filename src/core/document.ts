@@ -140,6 +140,10 @@ export interface CameraBookmark {
   theta: number;
   phi: number;
   distance: number;
+  /** 焦点距離（mm）。無ければ今の設定のまま。 */
+  focal?: number;
+  /** 平行投影かどうか。無ければ今の設定のまま。 */
+  ortho?: boolean;
 }
 
 export class Document {

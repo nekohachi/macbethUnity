@@ -81,7 +81,13 @@ export class Selector {
     if (this.state.compMode === "object") {
       const hit = this.picker.pickSurface(p);
       const next = hit?.object ?? null;
-      const changed = next !== this.state.selected;
+      // Shift を足すと選択に加える（外すときはもう一度）。結合のように複数要る操作のため
+      if (next && this.add(e)) {
+        this.state.addObject(next);
+        this.lastClick = null;
+        return { changed: true, objectChanged: true };
+      }
+      const changed = next !== this.state.selected || this.state.also.size > 0;
       this.state.select(next);
       this.lastClick = null;
       return { changed, objectChanged: changed };

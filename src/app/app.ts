@@ -4,14 +4,20 @@
  * プロトタイプ（prototype/modeling-ui-prototype.html）からの移植途中。
  * 移植が済んだ順に、ここへ機能が増えていく。docs/10 の土台フェーズ。
  */
-import { Matrix4, Raycaster, Vector3 } from "three";
+import { Euler, Matrix4, Quaternion, Raycaster, Vector3 } from "three";
 import {
   PRIMITIVES,
   PRIMITIVE_ORDER,
   bridgeEdges,
   cloneTransform,
+  combineMeshes,
+  type CameraBookmark,
   connectEdges,
   connectVertices,
+  duplicateFaces,
+  extractFaces,
+  mirrorMesh,
+  separateShells,
   dissolveVertices,
   extrudeVertices,
   mergeByDistance,
@@ -43,7 +49,6 @@ import {
   type Display,
   type Manip,
   type Mode,
-  type SavedCamera,
   type SnapKind,
 } from "./state.js";
 import { History } from "./history.js";
@@ -333,6 +338,13 @@ export class App {
   }
 
   /* ---- 3 本指の変形 ------------------------------------------------------ */
+
+  /** クォータニオンを XYZ のオイラー角（度）にする。数値入力の往復に使う。 */
+  private eulerOf(q: [number, number, number, number]): [number, number, number] {
+    const e = new Euler().setFromQuaternion(new Quaternion(q[0], q[1], q[2], q[3]), "XYZ");
+    const deg = 180 / Math.PI;
+    return [e.x * deg, e.y * deg, e.z * deg];
+  }
 
   /** 画面 1px が、その点で何ワールド単位にあたるか。 */
   private pixelToWorldAt(pivot: Vector3): number {
@@ -1176,7 +1188,7 @@ export class App {
   /** 今の視点に名前を付けて控える（Maya の camera1、camera2 …）。 */
   private addCamera(): void {
     const cam = this.viewport.cam;
-    const saved: SavedCamera = {
+    const saved: CameraBookmark = {
       name: `camera${this.state.cameras.length + 1}`,
       theta: cam.theta,
       phi: cam.phi,
@@ -1191,14 +1203,14 @@ export class App {
     this.hud.toast(`${saved.name} を控えました`);
   }
 
-  private recallCamera(c: SavedCamera): void {
+  private recallCamera(c: CameraBookmark): void {
     const cam = this.viewport.cam;
     cam.theta = c.theta;
     cam.phi = c.phi;
     cam.distance = c.distance;
     cam.target.set(c.target[0], c.target[1], c.target[2]);
-    this.state.camOpts.focal = c.focal;
-    this.state.camOpts.ortho = c.ortho;
+    if (c.focal !== undefined) this.state.camOpts.focal = c.focal;
+    if (c.ortho !== undefined) this.state.camOpts.ortho = c.ortho;
     this.viewport.applyCamera();
     this.state.viewName = c.name;
     this.refresh();
@@ -1290,11 +1302,11 @@ export class App {
         N: { label: "押し出し", sub: "Extrude", icon: ICONS.extrude, run: () => this.doExtrudeFaces() },
         NE: { label: "ベベル", sub: "Bevel", icon: ICONS.scale, run: todo("ベベル") },
         E: { label: "ブリッジ", sub: "Bridge", icon: ICONS.vEdge, run: todo("ブリッジ") },
-        SE: { label: "複製", sub: "Duplicate", icon: ICONS.dup, run: todo("フェースの複製") },
+        SE: { label: "複製", sub: "Duplicate", icon: ICONS.dup, run: () => this.doDuplicateFaces() },
         S: { label: "削除", sub: "Delete", icon: ICONS.del, run: () => this.doDeleteFaces() },
         SW: { label: "コラプス", sub: "Collapse", icon: ICONS.vVert, run: () => this.doCollapseFaces() },
         W: { label: "スムース", sub: "Smooth", icon: ICONS.smooth, run: () => this.doSmooth() },
-        NW: { label: "抽出", sub: "Extract", icon: ICONS.vFace, run: todo("抽出") },
+        NW: { label: "抽出", sub: "Extract", icon: ICONS.vFace, run: () => this.doExtractFaces() },
       };
     }
     if (this.state.compMode === "edge") {
@@ -1329,11 +1341,12 @@ export class App {
     return {
       N: { label: "スムース", sub: "Smooth", icon: ICONS.smooth, run: () => this.doSmooth() },
       NE: { label: "中心にピボット", sub: "Center Pivot", icon: ICONS.vObj, run: () => this.doCenterPivot() },
-      E: { label: "分離", sub: "Separate", icon: ICONS.vVertFace, run: todo("分離") },
+      E: { label: "分離", sub: "Separate", icon: ICONS.vVertFace, run: () => this.doSeparate() },
       SE: { label: "複製", sub: "Duplicate", icon: ICONS.dup, run: () => this.doDuplicate() },
       S: { label: "削除", sub: "Delete", icon: ICONS.del, run: () => this.doDelete() },
-      SW: { label: "ミラー", sub: "Mirror", icon: ICONS.sym, run: todo("ミラー") },
-      W: { label: "ブーリアン", sub: "Boolean", icon: ICONS.pCube, run: todo("ブーリアン") },
+      SW: { label: "ミラー", sub: "Mirror", icon: ICONS.sym, run: () => this.doMirror() },
+      // ブーリアンはまだ計画に無いので、Maya で隣り合う「結合」を置く
+      W: { label: "結合", sub: "Combine", icon: ICONS.prim, run: () => this.doCombine() },
       NW: { label: "フリーズ", sub: "Freeze", icon: ICONS.vObj, run: () => this.doFreeze() },
     };
   }
@@ -1652,6 +1665,120 @@ export class App {
     );
   }
 
+  /* ---- まとまりの操作（B7） -------------------------------------------- */
+
+  /** 選んだ面を、その場に切り離した写しとして足す。 */
+  private doDuplicateFaces(): void {
+    const o = this.requireComponents("face");
+    if (!o) return;
+    const r = duplicateFaces(o.mesh, this.state.comp);
+    if (!r) return;
+    let made = 0;
+    this.applyTopologyChange(
+      o,
+      "フェースの複製",
+      () => {
+        o.mesh = r.mesh;
+        made = r.faces.length;
+        return true;
+      },
+      () => `${made} 面を複製`,
+    );
+    // 写しを選び直す。そのまま動かせるように
+    this.state.comp.clear();
+    for (const f of r.faces) this.state.comp.add(f);
+    this.viewport.rebuildOverlay();
+    this.refresh();
+  }
+
+  /** 選んだ面を抜き出して、別のオブジェクトにする。 */
+  private doExtractFaces(): void {
+    const o = this.requireComponents("face");
+    if (!o) return;
+    const r = extractFaces(o.mesh, this.state.comp);
+    if (!r) {
+      this.hud.toast("抽出できません（全部を選ぶと残りが無くなります）");
+      return;
+    }
+    const snapshot = this.history.snapshot();
+    o.mesh = r.mesh;
+    o.markTopologyChanged();
+    const made = this.state.doc.addMesh(r.extracted, `${o.name}_extract`);
+    made.transform = cloneTransform(o.transform);
+    this.history.commit("フェースの抽出", snapshot);
+    this.state.comp.clear();
+    this.viewport.syncAll();
+    this.state.select(made);
+    this.setCompMode("object");
+    this.refresh();
+    this.hud.toast(`${r.count} 面を ${made.name} へ抽出`);
+  }
+
+  /** 繋がっていない塊ごとに、別のオブジェクトへ分ける。 */
+  private doSeparate(): void {
+    const o = this.state.selected;
+    if (!o) return void this.hud.toast("オブジェクトを選択してください");
+    const parts = separateShells(o.mesh);
+    if (!parts) {
+      this.hud.toast("分けられません（繋がった 1 つの塊です）");
+      return;
+    }
+    const snapshot = this.history.snapshot();
+    const at = this.state.doc.objects.indexOf(o);
+    this.state.doc.objects.splice(at, 1);
+    let first: SceneObject | null = null;
+    parts.forEach((mesh, i) => {
+      const made = this.state.doc.addMesh(mesh, `${o.name}_${i + 1}`);
+      made.transform = cloneTransform(o.transform);
+      if (!first) first = made;
+    });
+    this.history.commit("分離", snapshot);
+    this.viewport.syncAll();
+    this.state.select(first);
+    this.refresh();
+    this.hud.toast(`${parts.length} 個に分離`);
+  }
+
+  /** 選んでいるオブジェクトを 1 つにまとめる。座標は焼き込む。 */
+  private doCombine(): void {
+    const list = this.state.selectedObjects();
+    if (list.length < 2) {
+      this.hud.toast("オブジェクトモードで SHF を足して 2 つ以上選んでください");
+      return;
+    }
+    const mesh = combineMeshes(list.map((o) => ({ mesh: o.mesh, transform: o.transform })));
+    if (!mesh) return;
+    const snapshot = this.history.snapshot();
+    for (const o of list) {
+      const at = this.state.doc.objects.indexOf(o);
+      if (at >= 0) this.state.doc.objects.splice(at, 1);
+    }
+    const made = this.state.doc.addMesh(mesh, list[0].name);
+    this.history.commit("結合", snapshot);
+    this.viewport.syncAll();
+    this.state.select(made);
+    this.refresh();
+    this.hud.toast(`${list.length} 個を結合`);
+  }
+
+  /** 軸で鏡映して繋ぐ。軸はオプションパネルで選ぶ。 */
+  private doMirror(): void {
+    const o = this.state.selected;
+    if (!o) return void this.hud.toast("オブジェクトを選択してください");
+    const axis = this.state.mirrorAxis;
+    const r = mirrorMesh(o.mesh, axis, this.state.vertexOpts.mergeDist);
+    if (!r) return;
+    this.applyTopologyChange(
+      o,
+      "ミラー",
+      () => {
+        o.mesh = r.mesh;
+        return true;
+      },
+      () => `ミラー ${"XYZ"[axis]} — ${r.welded} 頂点を溶接`,
+    );
+  }
+
   /** ピボットをメッシュの中心へ。座標はそのままで、原点だけ動かす。 */
   private doCenterPivot(): void {
     const o = this.state.selected;
@@ -1927,6 +2054,34 @@ export class App {
       onVertexOptChange: (key, value) => {
         this.state.vertexOpts[key] = value;
       },
+      onMirrorAxisChange: (axis) => {
+        this.state.mirrorAxis = axis;
+        this.refresh();
+      },
+      onTransformInput: (object, field, axis, value) => {
+        this.history.push("数値入力");
+        const t = cloneTransform(object.transform);
+        if (field === "rotation") {
+          // 度で受け取り、変えた成分だけ差し替えてクォータニオンへ戻す
+          const deg = this.eulerOf(t.rotation);
+          deg[axis] = value;
+          const rad = deg.map((d) => (d * Math.PI) / 180);
+          const q = new Quaternion().setFromEuler(new Euler(rad[0], rad[1], rad[2], "XYZ"));
+          t.rotation = [q.x, q.y, q.z, q.w];
+        } else {
+          const v = [...t[field]] as [number, number, number];
+          v[axis] = value;
+          t[field] = v;
+        }
+        object.transform = t;
+        const view = this.viewport.viewOf(object);
+        if (view) {
+          applyTransform(view.group, object.transform);
+          view.group.updateMatrixWorld();
+        }
+        this.viewport.rebuildOverlay();
+        this.refresh();
+      },
       onSnapChange: (key, value) => {
         if (key === "kind") this.state.snap.kind = value as SnapKind;
         else this.state.snap.step = value as number;
@@ -2011,6 +2166,10 @@ export class App {
           extrudeDist: this.state.toolOpts.extrudeDist,
           vertex: this.state.vertexOpts,
           snap: { ...this.state.snap, active: this.state.snapping },
+          mirrorAxis: this.state.mirrorAxis,
+          rotationEuler: this.state.selected
+            ? this.eulerOf(this.state.selected.transform.rotation as [number, number, number, number])
+            : [0, 0, 0],
           smoothAngle: this.state.smoothAngle,
           compMode: this.state.compMode,
         },

@@ -17,6 +17,9 @@ export interface PanelHost {
   onExtrudeDistChange(value: number): void;
   onVertexOptChange(key: "mergeDist" | "extrudeWidth", value: number): void;
   onSnapChange(key: "kind" | "step", value: string | number): void;
+  onMirrorAxisChange(axis: 0 | 1 | 2): void;
+  /** 数値入力。トランスフォームの 1 成分を直に書き換える。 */
+  onTransformInput(object: SceneObject, field: "position" | "rotation" | "scale", axis: number, value: number): void;
   onBevelChange(key: "width" | "segments", value: number): void;
   onCutChange(key: "snapStep" | "edgeFlow", value: number | boolean): void;
   onSmoothAngleChange(value: number): void;
@@ -111,14 +114,56 @@ export interface OptionsState {
   extrudeDist: number;
   vertex: { mergeDist: number; extrudeWidth: number };
   snap: { kind: string; step: number; active: boolean };
+  mirrorAxis: 0 | 1 | 2;
+  /** 選択オブジェクトの回転を度で表したもの。three と同じ順序で app が出す。 */
+  rotationEuler: [number, number, number];
   smoothAngle: number;
   compMode: string;
 }
 
 /** オプションパネルを描き直す。 */
+/** 数値をそのまま打ち込む 3 つ組。Maya のチャンネルボックスにあたる。 */
+function tripleRow(
+  parent: HTMLElement,
+  label: string,
+  values: [number, number, number],
+  digits: number,
+  onSet: (axis: number, value: number) => void,
+): void {
+  const row = el("div", "row triple");
+  row.appendChild(el("label", undefined, label));
+  for (let axis = 0; axis < 3; axis++) {
+    const num = el("input", "num") as HTMLInputElement;
+    num.type = "text";
+    num.inputMode = "decimal";
+    num.value = values[axis].toFixed(digits);
+    num.addEventListener("change", () => {
+      const v = Number(num.value);
+      if (Number.isFinite(v)) onSet(axis, v);
+      else num.value = values[axis].toFixed(digits);
+    });
+    row.appendChild(num);
+  }
+  parent.appendChild(row);
+}
+
 export function renderOptions(body: HTMLElement, state: OptionsState, host: PanelHost): void {
   body.textContent = "";
   const o = state.selected;
+
+  // 数値入力（トランスフォーム）。選択があるときだけ
+  if (o) {
+    const s = section("トランスフォーム", "TRANSFORM");
+    tripleRow(s, "移動", o.transform.position as [number, number, number], 3, (axis, v) =>
+      host.onTransformInput(o, "position", axis, v),
+    );
+    tripleRow(s, "回転", state.rotationEuler, 1, (axis, v) => host.onTransformInput(o, "rotation", axis, v));
+    tripleRow(s, "スケール", o.transform.scale as [number, number, number], 3, (axis, v) =>
+      host.onTransformInput(o, "scale", axis, v),
+    );
+    s.appendChild(el("div", "hint", "回転は度で入れます。数値を打って Enter で確定します。"));
+    body.appendChild(s);
+  }
 
   if (state.tool === "multicut") {
     const s = section("マルチカット", "MULTI CUT");
@@ -221,6 +266,29 @@ export function renderOptions(body: HTMLElement, state: OptionsState, host: Pane
         "hint",
         "CTL ラッチ中、または X / V / C を押している間だけ効きます。\n移動のときだけ働き、寄せ先は緑で光ります。",
       ),
+    );
+    body.appendChild(s);
+  }
+
+  if (state.compMode === "object") {
+    const s = section("ミラー", "MIRROR");
+    const row = el("div", "row");
+    const group = el("div", "segmented");
+    for (const [axis, label] of [
+      [0, "X"],
+      [1, "Y"],
+      [2, "Z"],
+    ] as const) {
+      const b = el("button", "seg") as HTMLButtonElement;
+      b.textContent = label;
+      b.setAttribute("aria-pressed", String(state.mirrorAxis === axis));
+      b.addEventListener("click", () => host.onMirrorAxisChange(axis));
+      group.appendChild(b);
+    }
+    row.appendChild(group);
+    s.appendChild(row);
+    s.appendChild(
+      el("div", "hint", "編集メニュー（オブジェクト）の「ミラー」で使う軸です。\n境目の頂点は「マージ距離」で溶接します。"),
     );
     body.appendChild(s);
   }
