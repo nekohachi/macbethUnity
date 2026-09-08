@@ -6,7 +6,7 @@ Maya のポリゴン編集精度、ZBrush のスカルプト、Substance Painter
 
 ## 現在の状態
 
-**土台の実装フェーズ。** ジオメトリコア（`src/core/`）、`.mbz` 形式、アプリ本体（`src/app/`）ができました。テスト 162 件に加えて、実際の Chromium で描画から選択・取り消し・自動保存まで通す確認（`npm run smoke`）が通ります。残りの機能はプロトタイプから順に移植中です（`docs/12-roadmap-v2.md`）。
+**土台の実装フェーズ。** ジオメトリコア（`src/core/`）、`.mbz` 形式、アプリ本体（`src/app/`）ができました。テスト 170 件に加えて、実際の Chromium で描画から選択・取り消し・自動保存まで通す確認（`npm run smoke`）が通ります。残りの機能はプロトタイプから順に移植中です（`docs/12-roadmap-v2.md`）。
 
 アプリが入口になりました。`https://nekohachi.github.io/macbethUnity/` を開くとアプリに転送されます。プロトタイプは操作感を見比べるための参考として残してあります。
 
@@ -17,7 +17,7 @@ Maya のポリゴン編集精度、ZBrush のスカルプト、Substance Painter
 ```
 npm install
 npm run dev        # 開発サーバー。入口は web/index.html（ルート /）
-npm test           # core のテスト（162 件）
+npm test           # core のテスト（170 件）
 npm run typecheck
 npm run build
 npm run smoke      # ビルド後、実際のブラウザで通し確認（要 npm run build）
@@ -40,7 +40,7 @@ npm run smoke      # ビルド後、実際のブラウザで通し確認（要 n
 | `src/core/uv/` | UV。切れ目から島を作り、LSCM で開き、経験則で切れ目を引き（自動 UV）、棚に詰める。**レシピから再計算する非破壊の層**（`docs/15`） |
 | `src/core/multires.ts` | マルチ解像度スタック。接空間デルタ（docs/03）。ベースの編集は差分更新 |
 | `src/core/document.ts` | シーンの層構造（`docs/11`） |
-| `src/core/io/` | OBJ、メッシュのバイナリ、`.mbz`、トポロジハッシュ |
+| `src/core/io/` | OBJ、glTF（.glb 書き出し）、メッシュのバイナリ、`.mbz`、トポロジハッシュ |
 
 `src/app/` はブラウザ側。ここだけが DOM と Three.js を触ります。
 

@@ -1,6 +1,7 @@
 /** 起動。web/index.html から読み込まれる。 */
 import "./styles/shell.css";
 import { App } from "./app.js";
+import * as core from "../core/index.js";
 
 // iOS / Android の長押しメニューとテキスト選択を止める。canvas 側は
 // GestureRouter が touchstart を抑止しているので、ここは画面全体の分。
@@ -23,4 +24,5 @@ const app = new App();
 void app.boot();
 
 // デバッグ用。コンソールから状態を覗けるようにしておく。
-Object.assign(window, { macbeth: app });
+// core も出しておく（通し確認から書き出しを直に叩くため）
+Object.assign(window, { macbeth: app, macbethCore: core });

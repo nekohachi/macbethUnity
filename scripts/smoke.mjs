@@ -2628,7 +2628,63 @@ check(
   `つまむ ×${uvThree.ratio.toFixed(2)} / 左右スワイプ U ${uvThree.movedU.toFixed(3)}（V ${uvThree.movedV.toFixed(3)}）`,
 );
 
-/* 42. 例外が出ていない */
+/* 42. glTF（.glb）と PNG の書き出し（Phase E2 / E5） */
+const exported = await page.evaluate(async () => {
+  const app = window.macbeth;
+  // 保存の口を差し替えて、書き出したバイト列を受け取る
+  const saved = [];
+  const original = window.showSaveFilePicker;
+  window.showSaveFilePicker = undefined;
+  const link = document.createElement("a");
+  const realClick = HTMLAnchorElement.prototype.click;
+  HTMLAnchorElement.prototype.click = function () {
+    saved.push(this.download);
+  };
+  void link;
+
+  const menu = document.getElementById("fileBtn");
+  menu.click();
+  const items = [...document.querySelectorAll(".panel.floating .act")].map((b) => b.textContent);
+  const glb = [...document.querySelectorAll(".panel.floating .act")].find((b) => b.textContent.includes("glTF"));
+  glb?.click();
+  await new Promise((r) => setTimeout(r, 300));
+
+  HTMLAnchorElement.prototype.click = realClick;
+  window.showSaveFilePicker = original;
+  return { items, saved };
+});
+check(
+  "ファイルメニューに glTF と PNG がある",
+  exported.items.some((t) => t.includes("glTF")) && exported.items.some((t) => t.includes("png")),
+  exported.items.join(" / "),
+);
+
+/* 42b. 書き出した .glb が読み戻せる */
+const glb = await page.evaluate(() => {
+  const app = window.macbeth;
+  const core = window.macbethCore;
+  const nodes = core.nodesFromObjects(app.state.doc.objects);
+  const bytes = core.writeGlb(nodes, { smoothAngle: app.state.smoothAngle });
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const magic = dv.getUint32(0, true);
+  const version = dv.getUint32(4, true);
+  const total = dv.getUint32(8, true);
+  const jsonLength = dv.getUint32(12, true);
+  const json = JSON.parse(new TextDecoder().decode(bytes.subarray(20, 20 + jsonLength)));
+  return {
+    ok: magic === 0x46546c67 && version === 2 && total === bytes.byteLength,
+    nodes: json.nodes.length,
+    hasUv: !!json.meshes[0]?.primitives[0]?.attributes?.TEXCOORD_0,
+    bytes: bytes.byteLength,
+  };
+});
+check(
+  "glTF を書き出して読み戻せる",
+  glb.ok && glb.nodes >= 1 && glb.hasUv,
+  `${glb.bytes} バイト / ノード ${glb.nodes} / UV ${glb.hasUv}`,
+);
+
+/* 43. 例外が出ていない */
 check("例外なし", errors.length === 0, errors.join(" / "));
 
 await page.screenshot({ path: SHOT });

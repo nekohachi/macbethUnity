@@ -34,6 +34,8 @@ import {
   weldVertices,
   parseObj,
   subdivide,
+  nodesFromObjects,
+  writeGlb,
   writeObj,
   type SceneObject,
 } from "../core/index.js";
@@ -3392,6 +3394,8 @@ export class App {
     item("プロジェクトを保存 (.mbz)", () => this.saveProject());
     item("OBJ を読み込む", () => this.importObj());
     item("OBJ を書き出す", () => this.exportObj());
+    item("glTF を書き出す (.glb)", () => this.exportGlb());
+    item("画面を画像で保存 (.png)", () => this.exportPng());
     pop.appendChild(body);
     document.body.appendChild(pop);
     this.popup = pop;
@@ -3462,6 +3466,35 @@ export class App {
     const name = `${targets[0].name}.obj`;
     const r = await saveAs(text, name);
     this.hud.toast(r.saved ? `${name} を書き出しました` : "書き出しを取り消しました");
+  }
+
+  /**
+   * glTF（.glb）で書き出す。Substance Painter への渡しはこれ（`12` の E2）。
+   * 出すのはシーン全部（選択があってもシーンごと出す。テクスチャ作業では
+   * まわりのオブジェクトも要るため）。
+   */
+  private async exportGlb(): Promise<void> {
+    const nodes = nodesFromObjects(this.state.doc.objects);
+    if (!nodes.length) return void this.hud.toast("書き出すものがありません");
+    const bytes = writeGlb(nodes, { smoothAngle: this.state.smoothAngle, generator: "macbeth" });
+    const name = `${this.state.doc.objects[0]?.name ?? "scene"}.glb`;
+    const r = await saveAs(bytes, name);
+    this.hud.toast(
+      r.saved ? `${name} を書き出しました — ${nodes.length} オブジェクト` : "書き出しを取り消しました",
+    );
+  }
+
+  /** 今の 3D ビューを PNG で保存する（`12` の E5）。 */
+  private async exportPng(): Promise<void> {
+    // 保存の直前に 1 枚描く。requestAnimationFrame の谷間だと空になるため
+    this.viewport.renderer.render(this.viewport.scene, this.viewport.camera);
+    const canvas = byId<HTMLCanvasElement>("gl");
+    const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob((b) => resolve(b), "image/png"));
+    if (!blob) return void this.hud.toast("画像を作れませんでした");
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    const name = `${this.state.doc.objects[0]?.name ?? "macbeth"}.png`;
+    const r = await saveAs(bytes, name);
+    this.hud.toast(r.saved ? `${name} を保存しました` : "保存を取り消しました");
   }
 
   /* ---- 更新 ------------------------------------------------------------ */

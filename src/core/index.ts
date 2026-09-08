@@ -19,6 +19,7 @@ export * from "./subdivide.js";
 export * from "./multires.js";
 export * from "./document.js";
 export * from "./io/obj.js";
+export * from "./io/gltf.js";
 export * from "./io/binary.js";
 export * from "./io/mbz.js";
 export * from "./io/hash.js";
