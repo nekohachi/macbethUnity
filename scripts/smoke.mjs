@@ -546,6 +546,140 @@ check(
   `選択 ${facePinch.comp} 面 / 動いた成分 ${facePinch.moved}`,
 );
 
+/* 21c. 3 本指をそのまま滑らせても動かない（スケール専用。移動と回転はしない） */
+await page.keyboard.press("F8");
+await page.waitForTimeout(500);
+await page.mouse.click(ON_MESH.x, ON_MESH.y);
+const slide = await page.evaluate(async (center) => {
+  const canvas = document.getElementById("gl");
+  const app = window.macbeth;
+  const before = app.state.selected.transform.position.slice();
+  const beforeScale = app.state.selected.transform.scale.slice();
+  const beforeLabel = app.history.undoLabel;
+  const fire = (type, id, x, y) =>
+    canvas.dispatchEvent(
+      new PointerEvent(type, {
+        pointerId: id,
+        pointerType: "touch",
+        isPrimary: id === 51,
+        clientX: x,
+        clientY: y,
+        buttons: type === "pointerup" ? 0 : 1,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+  const at = (k, r) => ({
+    x: center.x + Math.cos((k / 3) * Math.PI * 2) * r,
+    y: center.y + Math.sin((k / 3) * Math.PI * 2) * r,
+  });
+  // 3 本の間隔は変えずに、まとめて右下へ 120px 運ぶ（つまんでいない）
+  for (let k = 0; k < 3; k++) {
+    const p = at(k, 60);
+    fire("pointerdown", k + 51, p.x, p.y);
+  }
+  for (let step = 1; step <= 12; step++) {
+    for (let k = 0; k < 3; k++) {
+      const p = at(k, 60);
+      fire("pointermove", k + 51, p.x + step * 10, p.y + step * 6);
+    }
+  }
+  for (let k = 0; k < 3; k++) {
+    const p = at(k, 60);
+    fire("pointerup", k + 51, p.x + 120, p.y + 72);
+  }
+  await new Promise((r) => setTimeout(r, 60));
+  return {
+    before,
+    beforeScale,
+    beforeLabel,
+    after: app.state.selected.transform.position.slice(),
+    afterScale: app.state.selected.transform.scale.slice(),
+    afterLabel: app.history.undoLabel,
+  };
+}, ON_MESH);
+check(
+  "3 本指を滑らせても選択は動かない",
+  slide.before.every((v, i) => Math.abs(v - slide.after[i]) < 1e-6) &&
+    slide.beforeScale.every((v, i) => Math.abs(v - slide.afterScale[i]) < 1e-6) &&
+    slide.beforeLabel === slide.afterLabel,
+  `位置 ${slide.after.map((n) => n.toFixed(2)).join(",")} / 履歴 ${slide.beforeLabel ?? "なし"} → ${slide.afterLabel ?? "なし"} / 拡大 ${slide.beforeScale[0].toFixed(3)} → ${slide.afterScale[0].toFixed(3)}`,
+);
+
+/* 21d. つまんでも選択の中心は動かない（基点は選択の中心） */
+await page.keyboard.press("F11");
+await page.waitForTimeout(500);
+await page.mouse.click(ON_MESH.x, ON_MESH.y);
+const pivotHeld = await page.evaluate(async (center) => {
+  const canvas = document.getElementById("gl");
+  const app = window.macbeth;
+  const mesh = app.state.selected.mesh;
+  /** 選んだ面の頂点の境界箱の中心（＝ピボット）と、その広がり。 */
+  const measure = () => {
+    const mn = [Infinity, Infinity, Infinity];
+    const mx = [-Infinity, -Infinity, -Infinity];
+    for (const f of app.state.comp) {
+      for (const v of mesh.faceVerts(f)) {
+        for (let k = 0; k < 3; k++) {
+          const x = mesh.positions[v * 3 + k];
+          if (x < mn[k]) mn[k] = x;
+          if (x > mx[k]) mx[k] = x;
+        }
+      }
+    }
+    return {
+      center: mn.map((v, k) => (v + mx[k]) / 2),
+      size: Math.hypot(mx[0] - mn[0], mx[1] - mn[1], mx[2] - mn[2]),
+    };
+  };
+  const before = measure();
+  const fire = (type, id, x, y) =>
+    canvas.dispatchEvent(
+      new PointerEvent(type, {
+        pointerId: id,
+        pointerType: "touch",
+        isPrimary: id === 61,
+        clientX: x,
+        clientY: y,
+        buttons: type === "pointerup" ? 0 : 1,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+  // 中心をずらした所でつまむ。基点が指ではなく選択の中心であることを見る
+  const at = (k, r) => ({
+    x: center.x + 70 + Math.cos((k / 3) * Math.PI * 2) * r,
+    y: center.y - 40 + Math.sin((k / 3) * Math.PI * 2) * r,
+  });
+  for (let k = 0; k < 3; k++) {
+    const p = at(k, 50);
+    fire("pointerdown", k + 61, p.x, p.y);
+  }
+  for (let step = 1; step <= 10; step++) {
+    for (let k = 0; k < 3; k++) {
+      const p = at(k, 50 + step * 7);
+      fire("pointermove", k + 61, p.x, p.y);
+    }
+  }
+  for (let k = 0; k < 3; k++) {
+    const p = at(k, 120);
+    fire("pointerup", k + 61, p.x, p.y);
+  }
+  await new Promise((r) => setTimeout(r, 60));
+  const after = measure();
+  return { before, after, comp: app.state.comp.size };
+}, ON_MESH);
+await page.keyboard.press("Control+z");
+check(
+  "つまんでも選択の中心は動かない",
+  pivotHeld.comp === 1 &&
+    pivotHeld.after.size > pivotHeld.before.size * 1.1 &&
+    pivotHeld.before.center.every((v, i) => Math.abs(v - pivotHeld.after.center[i]) < 1e-4),
+  `中心 ${pivotHeld.before.center.map((n) => n.toFixed(3)).join(",")} → ` +
+    `${pivotHeld.after.center.map((n) => n.toFixed(3)).join(",")} / 広がり ` +
+    `${pivotHeld.before.size.toFixed(3)} → ${pivotHeld.after.size.toFixed(3)}`,
+);
+
 /* 22. 3 本指ダブルタップ（やり直す）は変形と排他 */
 await page.keyboard.press("F8");
 await page.waitForTimeout(500);

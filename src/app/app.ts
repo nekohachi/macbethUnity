@@ -47,7 +47,6 @@ import {
   updateDrag,
   type DragState,
   type DragTarget,
-  type ViewBasis,
 } from "./tools/transform.js";
 import { applyTransform } from "./render/meshView.js";
 import { Docking, type Zone } from "./ui/docking.js";
@@ -131,7 +130,6 @@ export class App {
   private weldTarget: number | null = null;
   /** 3 本指の変形。ジェスチャ中だけ生きている。 */
   private gestureDrag: DragState | null = null;
-  private gestureView: ViewBasis | null = null;
   private gestureMoved = false;
   /** ベベル確定後、オプションで作り直すための控え。 */
   private bevelSnapshot: ReturnType<History["snapshot"]> | null = null;
@@ -256,7 +254,6 @@ export class App {
         this.preselect.clear();
         this.weldTarget = null;
         this.gestureDrag = null;
-        this.gestureView = null;
         this.gestureMoved = false;
         if (this.bevel.active) {
           this.bevel.cancel();
@@ -275,7 +272,6 @@ export class App {
         this.preselect.clear();
         this.weldTarget = null;
         this.gestureDrag = null;
-        this.gestureView = null;
         this.gestureMoved = false;
         if (this.bevel.active) {
           this.bevel.cancel();
@@ -298,26 +294,17 @@ export class App {
       dolly: (f) => this.viewport.dolly(f),
       dollyAbout: (pivot, f) => this.viewport.dollyAbout(pivot, f),
       transformBegin: () => this.beginGestureTransform(),
-      transformUpdate: (t) => this.updateGestureTransform(t),
+      transformUpdate: (scale) => this.updateGestureTransform(scale),
       transformEnd: () => this.endGestureTransform(),
       shiftOn: (e) => this.state.modOn("shift") || e.shiftKey,
       altOn: (e) => this.state.modOn("alt") || e.altKey,
     };
   }
 
-  /* ---- 3 本指の変形 ----------------------------------------------------- */
-
-  /** 画面 1px が、その点で何ワールド単位にあたるか。 */
-  private pixelToWorldAt(pivot: Vector3): number {
-    const right = new Vector3().setFromMatrixColumn(this.viewport.camera.matrix, 0);
-    const a = this.manipulator.toScreen(pivot);
-    const b = this.manipulator.toScreen(pivot.clone().add(right));
-    const d = Math.hypot(b.x - a.x, b.y - a.y);
-    return d > 1e-6 ? 1 / d : 0.01;
-  }
+  /* ---- 3 本指の拡大縮小 ------------------------------------------------ */
 
   /**
-   * 3 本指で選択を変形し始める。選ぶものが無ければ false。
+   * 3 本指で選択を拡大縮小し始める。選ぶものが無ければ false。
    * カメラには化けさせないので、呼び出し側はそのまま何もしない。
    */
   private beginGestureTransform(): boolean {
@@ -329,7 +316,6 @@ export class App {
     if (!target) return false;
 
     const pivotScreen = this.manipulator.toScreen(pivot);
-    const camera = this.cameraPosition();
     this.dragSnapshot = this.history.snapshot();
     this.gestureDrag = beginDrag({
       handle: HANDLE_GESTURE,
@@ -338,26 +324,18 @@ export class App {
       point: pivotScreen,
       pivotScreen,
       ray: this.ray(pivotScreen),
-      cameraPosition: camera,
-      label: "変形",
+      cameraPosition: this.cameraPosition(),
+      label: "スケール",
     });
-    // カメラの向きはジェスチャ中固定。回転軸は視線の向き
-    this.gestureView = {
-      axis: new Vector3().subVectors(camera, pivot).normalize(),
-      right: new Vector3().setFromMatrixColumn(this.viewport.camera.matrix, 0),
-      up: new Vector3().setFromMatrixColumn(this.viewport.camera.matrix, 1),
-      pixelToWorld: this.pixelToWorldAt(pivot),
-    };
     this.gestureMoved = false;
     return true;
   }
 
-  private updateGestureTransform(t: { scale: number; angle: number; dx: number; dy: number }): void {
+  private updateGestureTransform(scale: number): void {
     const drag = this.gestureDrag;
-    const view = this.gestureView;
     const o = this.state.selected;
-    if (!drag || !view || !o) return;
-    applyGestureTransform(drag, o, t, view);
+    if (!drag || !o) return;
+    applyGestureTransform(drag, o, scale);
     this.gestureMoved = true;
 
     if (drag.target.kind === "object") {
@@ -372,17 +350,14 @@ export class App {
     this.viewport.rebuildOverlay();
     this.refreshManipulator();
     this.hud.refreshStats();
-    byId("hudHint").innerHTML =
-      `変形 <kbd>×${t.scale.toFixed(2)}</kbd> · ` +
-      `<kbd>${Math.round((t.angle * 180) / Math.PI)}°</kbd> · 指 3 本`;
+    byId("hudHint").innerHTML = `スケール <kbd>×${scale.toFixed(2)}</kbd> · 指 3 本`;
   }
 
   private endGestureTransform(): void {
     const moved = this.gestureMoved;
     this.gestureDrag = null;
-    this.gestureView = null;
     this.gestureMoved = false;
-    if (moved && this.dragSnapshot) this.history.commit("変形", this.dragSnapshot);
+    if (moved && this.dragSnapshot) this.history.commit("スケール", this.dragSnapshot);
     this.dragSnapshot = null;
     this.refresh();
     this.hud.defaultHint();

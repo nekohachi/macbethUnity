@@ -4,12 +4,13 @@
  * 指の本数で役割が分かれる:
  *   1 本 … ツール（メッシュの上）/ タンブル（外）
  *   2 本 … カメラ（パン / ズーム）
- *   3 本 … 選択そのものの変形（拡大縮小・回転・移動）
+ *   3 本 … 選択そのものの拡大縮小（**スケールだけ**。回転と移動はしない）
  *
  * しきい値は実機（iPad mini + Apple Pencil、Wacom MovinkPad 14）で
  * 確かめた値なので、変えるときは必ず実機で確かめ直すこと。
  *   - 指を置いた直後 5px はタンブルしない（置いたときのブレ）
- *   - 2 本指と 3 本指は、重心の移動と広がりの変化の合計が 10px を越えるまで何もしない
+ *   - 2 本指は、重心の移動と広がりの変化の合計が 10px を越えるまで何もしない
+ *   - 3 本指は、広がりの変化だけを同じ 10px の物差しで見る（つまむまで何も起きない）
  *   - 複数指タップ = 120ms 以内に全部着地、どれも 12px 以内、300ms 以内に全部離れる
  *   - 長押しは 400ms
  * カメラ操作は「動いた時点」で確定し、タップは「動いていないこと」が条件なので
@@ -34,15 +35,14 @@ export interface GestureHandlers {
   abort(): void;
 
   /**
-   * 3 本指の変形を始める。選んでいるものが無ければ false を返す。
+   * 3 本指の拡大縮小を始める。選んでいるものが無ければ false を返す。
    * false のときは何もしない（カメラには化けさせない）。
    */
   transformBegin(): boolean;
   /**
-   * 3 本指の変形。値は開始時点からの累積で渡す（差分の積み上げではない）。
-   * scale は倍率、angle はビュー軸まわりのラジアン、dx / dy は画面のピクセル。
+   * 3 本指の拡大縮小。倍率は開始時点からの累積で渡す（差分の積み上げではない）。
    */
-  transformUpdate(t: { scale: number; angle: number; dx: number; dy: number }): void;
+  transformUpdate(scale: number): void;
   transformEnd(): void;
 
   /**
@@ -124,16 +124,23 @@ function rotationSince(basis: Cluster, now: Cluster): number {
 }
 
 /**
- * デッドゾーンの積算。重心の移動 + 広がりの変化 + 回転を弧長に直したもの。
- * 2 本指と 3 本指で同じ物差しを使うため、ここに一本化してある。
+ * 広がりの変化。つまむ量そのもの。
  *
- * 広がりは 2 倍して数える。2 本指のときに「指の間の距離の変化」と同じ物差しになり、
- * 実機で確かめた 10px という値がそのまま通じる。
+ * 2 倍して数えるのは、2 本指のときに「指の間の距離の変化」と同じ物差しになり、
+ * 実機で確かめた 10px という値がそのまま通じるため。
+ * 3 本指はスケールしかしないので、デッドゾーンにはこれだけを使う。
+ */
+function spreadMotion(from: Cluster, to: Cluster): number {
+  return Math.abs(to.spread - from.spread) * 2;
+}
+
+/**
+ * デッドゾーンの積算。重心の移動 + 広がりの変化 + 回転を弧長に直したもの。
+ * 2 本指のカメラ操作（パンもズームも起こりうる）で使う。
  */
 function clusterMotion(from: Cluster, to: Cluster): number {
-  const spread = Math.abs(to.spread - from.spread) * 2;
   const turn = Math.abs(rotationSince(from, to)) * to.spread;
-  return Math.hypot(to.cx - from.cx, to.cy - from.cy) + spread + turn;
+  return Math.hypot(to.cx - from.cx, to.cy - from.cy) + spreadMotion(from, to) + turn;
 }
 
 interface Gesture {
@@ -143,6 +150,8 @@ interface Gesture {
   /** 3 本指の開始基準と、直前のフレーム（2 本指は last だけ使う）。 */
   basis?: Cluster;
   last?: Cluster;
+  /** そのフレームで動いた指。全員そろってから測るために使う（3 本指）。 */
+  fresh?: Set<number>;
   zoomOnly?: boolean;
   pivot?: Vector3;
   moved?: boolean;
@@ -356,28 +365,29 @@ export class GestureRouter {
       if (this.pointers.size !== 3) return;
       const now = clusterOf(this.pointers);
       if (!g.live) {
-        g.acc = (g.acc ?? 0) + clusterMotion(g.last ?? now, now);
+        // 指ごとに別々の pointermove が来るので、全員が動いてから測る。
+        // 1 本だけ動いた途中の姿で測ると、まっすぐ滑らせただけでも広がりが揺れて拾ってしまう
+        const fresh = (g.fresh ??= new Set());
+        fresh.add(e.pointerId);
+        if (fresh.size < this.pointers.size) return;
+        fresh.clear();
+        // 開始時からのつまみ量。積み上げないので、揺れが溜まって暴発することもない
         g.last = now;
-        if (g.acc < CLUSTER_DEADZONE) return;
+        if (spreadMotion(g.basis ?? now, now) < CLUSTER_DEADZONE) return;
         // 選ぶものが無ければ変形しない。カメラにも化けさせない
         if (!this.h.transformBegin()) {
           this.gesture = { mode: "idle" };
           return;
         }
         g.live = true;
-        // 変形として確定したので、タップ（やり直す）にはしない
+        // 拡大縮小として確定したので、タップ（やり直す）にはしない
         this.tap.moved = true;
         // 確定した時点を基準にし直して飛びを防ぐ
         g.basis = now;
         return;
       }
       const basis = g.basis ?? now;
-      this.h.transformUpdate({
-        scale: basis.spread > 1e-6 ? now.spread / basis.spread : 1,
-        angle: rotationSince(basis, now),
-        dx: now.cx - basis.cx,
-        dy: now.cy - basis.cy,
-      });
+      this.h.transformUpdate(basis.spread > 1e-6 ? now.spread / basis.spread : 1);
       return;
     }
 

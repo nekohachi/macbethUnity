@@ -160,52 +160,32 @@ export function updateDrag(
   );
 }
 
-/** 3 本指の変形で使う、そのときのカメラの向き。ジェスチャ中は固定する。 */
-export interface ViewBasis {
-  /** 回転軸（カメラ → ピボット の逆向き）。 */
-  axis: Vector3;
-  right: Vector3;
-  up: Vector3;
-  /** 画面 1px が、ピボットの位置で何ワールド単位にあたるか。 */
-  pixelToWorld: number;
-}
-
 /**
- * 3 本指の変形。マニピュレータを触らずに、選択そのものを動かす。
+ * 3 本指のスケール。マニピュレータを触らずに、選択そのものを拡大縮小する。
  *
- * ピボットのまわりで 均等スケール → ビュー軸まわりの回転 → ビュー平面の移動 を
- * この順に合成する。開始時点の控えに毎回当て直すので、行ったり来たりしてもずれない。
+ * **拡大縮小だけ**を行う。基点は選択の中心（ピボット）で、そこは動かさない。
+ * 指がずれても形が流れないよう、平行移動と回転は意図的に扱わない
+ * （それはマニピュレータの仕事）。
+ *
+ * 開始時点の控えに毎回当て直すので、行ったり来たりしてもずれない。
  * ソフト選択の重みと対称編集は、コンポーネントの控えにそのまま入っている。
  */
-export function applyGestureTransform(
-  drag: DragState,
-  object: SceneObject,
-  t: { scale: number; angle: number; dx: number; dy: number },
-  view: ViewBasis,
-): void {
+export function applyGestureTransform(drag: DragState, object: SceneObject, scale: number): void {
   // 裏返らないように下限を置く
-  const s = Math.max(0.02, t.scale);
-  const q = new Quaternion().setFromAxisAngle(view.axis, t.angle);
-  const move = view.right
-    .clone()
-    .multiplyScalar(t.dx * view.pixelToWorld)
-    .addScaledVector(view.up, -t.dy * view.pixelToWorld);
+  const s = Math.max(0.02, scale);
   const pivot = drag.pivot;
   const target = drag.target;
 
-  /** ピボットのまわりで拡大 → 回転 → 平行移動。 */
-  const place = (p: Vector3): Vector3 =>
-    p.clone().sub(pivot).multiplyScalar(s).applyQuaternion(q).add(pivot).add(move);
+  /** ピボットからの距離を s 倍する。ピボットそのものは動かない。 */
+  const place = (p: Vector3): Vector3 => p.clone().sub(pivot).multiplyScalar(s).add(pivot);
 
   if (target.kind === "object") {
     const t0 = target.transform;
+    // 原点もピボットの周りで伸び縮みする（マニピュレータのスケールと同じ扱い）
     const moved = place(new Vector3(t0.position[0], t0.position[1], t0.position[2]));
-    const rot = q
-      .clone()
-      .multiply(new Quaternion(t0.rotation[0], t0.rotation[1], t0.rotation[2], t0.rotation[3]));
     object.transform = {
       position: [moved.x, moved.y, moved.z],
-      rotation: [rot.x, rot.y, rot.z, rot.w],
+      rotation: [...t0.rotation],
       scale: [t0.scale[0] * s, t0.scale[1] * s, t0.scale[2] * s],
     };
     return;
