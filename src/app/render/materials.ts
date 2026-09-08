@@ -3,45 +3,44 @@
  *   オブジェクト選択 = グリーン、コンポーネント選択 = オレンジ、未選択の頂点 = パープル
  */
 import {
-  CanvasTexture,
+  type CanvasTexture,
   DoubleSide,
   LineBasicMaterial,
   MeshBasicMaterial,
   MeshPhongMaterial,
   PointsMaterial,
-  RepeatWrapping,
 } from "three";
+import { checkerTexture, type CheckerPattern } from "./checker.js";
 
 export const AXIS_COLORS = [0xd8524f, 0x6cc94a, 0x4f8fe0];
 
 /**
- * UV の確認用チェッカー。UV セットをそのまま貼るので、歪みと継ぎ目が目で分かる。
- * テクスチャは初めて要るときに作る（UV を見ない人には作らない）。
+ * 歪みのヒートマップ（`23` の T2）。面ごとの色を頂点色で持つので、
+ * ライティングは通さない（色をそのまま見せたいため）。
  */
-let checker: CanvasTexture | null = null;
-export function checkerMaterial(): MeshPhongMaterial {
-  if (!checker) {
-    const size = 512;
-    const cells = 16;
-    const canvas = document.createElement("canvas");
-    canvas.width = size;
-    canvas.height = size;
-    const ctx = canvas.getContext("2d")!;
-    const step = size / cells;
-    for (let y = 0; y < cells; y++) {
-      for (let x = 0; x < cells; x++) {
-        ctx.fillStyle = (x + y) % 2 === 0 ? "#d7dde3" : "#7d8891";
-        ctx.fillRect(x * step, y * step, step, step);
-      }
-    }
-    // 向きが分かるように、左下の升だけ色を変える
-    ctx.fillStyle = "#e0723c";
-    ctx.fillRect(0, size - step, step, step);
-    checker = new CanvasTexture(canvas);
-    checker.wrapS = RepeatWrapping;
-    checker.wrapT = RepeatWrapping;
+export function heatMaterial(): MeshBasicMaterial {
+  return new MeshBasicMaterial({ vertexColors: true, side: DoubleSide });
+}
+
+/**
+ * UV の確認用チェッカー。UV セットをそのまま貼るので、歪みと継ぎ目が目で分かる。
+ * 模様は 2D の下地と同じ 1 つの関数から作る（`23` の T3）。
+ * テクスチャは設定ごとに 1 枚だけ持ち、変わったら捨てる。
+ */
+let checker: { key: string; texture: CanvasTexture } | null = null;
+export function checkerMaterial(cells: number, pattern: CheckerPattern): MeshPhongMaterial {
+  const key = `${cells}/${pattern}`;
+  if (checker && checker.key !== key) {
+    checker.texture.dispose();
+    checker = null;
   }
-  return new MeshPhongMaterial({ map: checker, specular: 0x1a2026, shininess: 14, side: DoubleSide });
+  if (!checker) checker = { key, texture: checkerTexture({ cells, pattern, tone: "light", mark: true }) };
+  return new MeshPhongMaterial({
+    map: checker.texture,
+    specular: 0x1a2026,
+    shininess: 14,
+    side: DoubleSide,
+  });
 }
 
 export const MAT = {

@@ -32,6 +32,10 @@ export interface PanelHost {
   onUvPackingChange(key: "marginTexels" | "textureSize" | "allowRotate", value: number | boolean): void;
   /** カメラベース選択（`21` の 2.1）。 */
   onCameraBasedChange(on: boolean): void;
+  /** 歪みを色で見る（`23` の T2）。 */
+  onUvHeatChange(on: boolean): void;
+  /** チェッカーの細かさと模様（`23` の T3）。 */
+  onCheckerChange(key: "cells" | "pattern", value: number | string): void;
   /** 回転の刻み（度。0 でなし）。 */
   onRotateStepChange(deg: number): void;
   onPreventNegativeScaleChange(on: boolean): void;
@@ -172,6 +176,12 @@ export interface OptionsState {
   rotateStep: number;
   preventNegativeScale: boolean;
   cameraBased: boolean;
+  /** 歪みを色で見ているか（`23` の T2）。 */
+  uvHeat: boolean;
+  /** チェッカーの細かさと模様（`23` の T3）。 */
+  checker: { cells: number; pattern: string };
+  /** 今の 3D の表示。チェッカーのときだけ「表示」に模様の区画を出す。 */
+  display: string;
   cam: { focal: number; near: number; far: number; ortho: boolean };
   /** 次に追加するプリミティブの種類と、その既定値（`21` の 2.7）。 */
   nextPrimitive: string;
@@ -604,6 +614,57 @@ export function primitiveSection(state: OptionsState, host: PanelHost): HTMLElem
   return s;
 }
 
+/** 段違いのボタン列。押されているものに `aria-pressed`。 */
+function segmented(
+  parent: HTMLElement,
+  label: string,
+  items: Array<{ label: string; on: boolean; run: () => void }>,
+): void {
+  const row = el("div", "row");
+  if (label) row.appendChild(el("label", undefined, label));
+  const group = el("div", "segmented");
+  for (const item of items) {
+    const b = el("button", "seg") as HTMLButtonElement;
+    b.textContent = item.label;
+    b.setAttribute("aria-pressed", String(item.on));
+    b.addEventListener("click", item.run);
+    group.appendChild(b);
+  }
+  row.appendChild(group);
+  parent.appendChild(row);
+}
+
+/**
+ * チェッカーの細かさと模様（`23` の T3）。2D の下地と 3D の表示で同じものを使うので、
+ * UV の「展開」と 3D の「表示」の両方に同じ区画を置く。
+ */
+export function checkerSection(state: OptionsState, host: PanelHost): HTMLElement {
+  const s = section("チェッカー", "CHECKER");
+  segmented(
+    s,
+    "細かさ",
+    [4, 8, 16, 32, 64].map((n) => ({
+      label: String(n),
+      on: state.checker.cells === n,
+      run: () => host.onCheckerChange("cells", n),
+    })),
+  );
+  segmented(
+    s,
+    "模様",
+    [
+      { key: "checker", label: "市松" },
+      { key: "colorGrid", label: "カラーグリッド" },
+    ].map((p) => ({
+      label: p.label,
+      on: state.checker.pattern === p.key,
+      run: () => host.onCheckerChange("pattern", p.key),
+    })),
+  );
+  s.appendChild(el("div", "hint", "2D の下地と 3D のチェッカー表示で同じ模様を使います。"));
+  return s;
+}
+
 export function displaySection(state: OptionsState, host: PanelHost): HTMLElement {
   const s = section("表示", "DISPLAY");
   paramRow(s, {
@@ -615,8 +676,22 @@ export function displaySection(state: OptionsState, host: PanelHost): HTMLElemen
     format: (v) => `${Math.round(v)}°`,
     onInput: (v) => host.onSmoothAngleChange(v),
   });
-  s.appendChild(el("div", "hint", "長押しで ワイヤ / シェード / シェード + ワイヤ / スムース を選べます（4〜7）。"));
+  checkbox(s, "歪みを色で（ヒートマップ）", state.uvHeat, (v) => host.onUvHeatChange(v));
+  s.appendChild(
+    el(
+      "div",
+      "hint",
+      "長押しで ワイヤ / シェード / シェード + ワイヤ / スムース を選べます（4〜7）。\nヒートマップは 9。1.0 は歪みなし、緑 → 黄 → 赤 の順に歪んでいます。",
+    ),
+  );
   return s;
+}
+
+/** 「表示」のカットインの中身。チェッカー表示のときだけ模様の区画が付く。 */
+export function displaySections(state: OptionsState, host: PanelHost): HTMLElement[] {
+  const out = [displaySection(state, host)];
+  if (state.display === "checker") out.push(checkerSection(state, host));
+  return out;
 }
 
 /** カメラ。`openCameraPopup` の中身をここへ移した。 */
@@ -656,8 +731,20 @@ export function cameraSection(state: OptionsState, host: PanelHost): HTMLElement
 }
 
 /** UV の展開まわり（方式 / 自動 UV / パッキング）。`20` の T7 で「展開」の長押しへ。 */
-export function uvUnfoldSection(uv: NonNullable<OptionsState["uv"]>, host: PanelHost): HTMLElement[] {
-  const out: HTMLElement[] = [packingSection(uv, host)];
+export function uvUnfoldSection(
+  uv: NonNullable<OptionsState["uv"]>,
+  host: PanelHost,
+  state?: OptionsState,
+): HTMLElement[] {
+  const heatOn = state?.uvHeat ?? false;
+  const heat = section("歪み", "DISTORTION");
+  checkbox(heat, "歪みを色で", heatOn, (v) => host.onUvHeatChange(v));
+  heat.appendChild(
+    el("div", "hint", "面ごとの伸び（σ1 / σ2）を色にします。\n1.0 は歪みなし。緑 → 黄 → 赤 の順に歪んでいます。3D も一緒に変わります。"),
+  );
+  const out: HTMLElement[] = [heat];
+  if (state) out.push(checkerSection(state, host));
+  out.push(packingSection(uv, host));
 
   // 方式と自動 UV は既定の入口ではないので、折りたたんで奥に置く（`20` の T7）
   const folded = foldedSection("詳細（自動 UV・方式）", "ADVANCED");

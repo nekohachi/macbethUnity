@@ -5,10 +5,11 @@
  * 選ばれていて、どのモードで、どのツールなのかは全部ここに集める。
  */
 import { Document, type CameraBookmark, type SceneObject } from "../core/index.js";
+import type { CheckerPattern } from "./render/checker.js";
 
 export type Mode = "model" | "uv" | "sculpt" | "material";
 export type CompMode = "object" | "vertex" | "edge" | "face";
-export type Display = "wire" | "shaded" | "shadedWire" | "smooth" | "checker";
+export type Display = "wire" | "shaded" | "shadedWire" | "smooth" | "checker" | "heat";
 export type Manip = "all" | "move" | "rotate" | "scale";
 /** 「編集」グループの中身（`21` の 2.3）。ツールとコマンドが混ざっている。 */
 export type EditKind = "multicut" | "bevel" | "bridge" | "extrude" | "connect" | "weld";
@@ -161,6 +162,18 @@ export class AppState {
    * 「追加」のカットインで触るのはこちら（`21` の 2.7）。
    */
   primitiveDefaults: Record<string, Record<string, number>> = {};
+  /**
+   * 歪みを色で見る（`23` の T2）。2D の島に色が乗り、3D の表示が `heat` になる。
+   * `localStorage` に残す。
+   */
+  uvHeat = false;
+  /** ヒートマップに入る前の 3D の表示。オフにしたときここへ戻す。 */
+  displayBeforeHeat: Display | null = null;
+  /**
+   * チェッカーの細かさと模様（`23` の T3）。2D の下地と 3D の表示で共通。
+   * `localStorage` に残す。
+   */
+  checker: { cells: number; pattern: CheckerPattern } = { cells: 8, pattern: "checker" };
   /** Maya の既定と同じ 30°。 */
   smoothAngle = 30;
   camOpts = { focal: 35, near: 0.05, far: 500, ortho: false };

@@ -160,6 +160,45 @@ const scenes = {
     }
   },
 
+  /** `23` の T2: 歪みのヒートマップ。球を切れ目なしで開いて色を出す。 */
+  "23-t2-heat": async () => {
+    const app = window.macbeth;
+    app.state.doc.objects.length = 0;
+    const object = app.state.doc.addObject("sphere");
+    app.viewport.syncAll();
+    app.state.select(object);
+    app.setMode("uv");
+    await new Promise((r) => setTimeout(r, 60));
+    app.uv.unfold();
+    app.panelHostForTest().onUvHeatChange(true);
+    app.uv.chosen.clear();
+    app.uv.refreshHighlight();
+    app.uv.view.frameUnit();
+    app.viewport.frameSelected();
+    await new Promise((r) => setTimeout(r, 120));
+  },
+
+  /** `23` の T3: カラーグリッドのチェッカー。2D の下地と 3D の表示の両方。 */
+  "23-t3-checker": async () => {
+    const app = window.macbeth;
+    app.state.doc.objects.length = 0;
+    const object = app.state.doc.addObject("cylinder");
+    app.viewport.syncAll();
+    app.state.select(object);
+    app.setMode("uv");
+    await new Promise((r) => setTimeout(r, 60));
+    app.uv.autoUnwrap();
+    const host = app.panelHostForTest();
+    host.onCheckerChange("cells", 16);
+    host.onCheckerChange("pattern", "colorGrid");
+    app.setDisplay("checker");
+    app.uv.chosen.clear();
+    app.uv.refreshHighlight();
+    app.uv.view.frameUnit();
+    app.viewport.frameSelected();
+    await new Promise((r) => setTimeout(r, 120));
+  },
+
   /** T3: 球の自動 UV。島どうしが離れている。 */
   "20-t3-margin": async () => {
     const app = window.macbeth;

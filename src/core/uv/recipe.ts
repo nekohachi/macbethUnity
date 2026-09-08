@@ -22,7 +22,7 @@ import {
 } from "./charts.js";
 import { autoPins, lscm, normalizeScale } from "./lscm.js";
 import { projectChart } from "./projection.js";
-import { measure, type Distortion } from "./distortion.js";
+import { distortionPerFace, measure, type Distortion } from "./distortion.js";
 import { uprightChart } from "./orient.js";
 import { equalizeTexelDensity, marginUv, shelfPack, surfaceArea, type PackBox, type PackSettings } from "./pack.js";
 
@@ -95,6 +95,8 @@ export interface RecomputeResult {
   /** いちばん歪んだ島の伸び。 */
   maxStretch: number;
   meanAngleError: number;
+  /** 面ごとの歪み（σ1 / σ2）。ヒートマップに使う（`23` の T2）。長さは faceCount。 */
+  perFace: Float32Array;
 }
 
 /**
@@ -200,6 +202,7 @@ export function recompute(mesh: Mesh, recipe: UvRecipe, options: { skipPack?: bo
     distortion,
     maxStretch,
     meanAngleError: distortion.length ? angleSum / distortion.length : 0,
+    perFace: distortionPerFace(mesh.faceCount, (f) => mesh.faceSize(f), charts, distortion),
   };
 }
 

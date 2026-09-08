@@ -27,11 +27,12 @@ import {
 } from "three";
 import type { SceneObject } from "../../core/index.js";
 import type { AppState } from "../state.js";
-import { MAT, checkerMaterial } from "./materials.js";
+import { MAT, checkerMaterial, heatMaterial } from "./materials.js";
 import {
   applyTransform,
   buildObjectView,
   disposeObject3D,
+  heatColors,
   positionGeometry,
   surfaceGeometry,
   wireGeometry,
@@ -336,6 +337,13 @@ export class Viewport {
     view.wire.geometry = wireGeometry(o.mesh, view.edges);
     view.points.geometry.dispose();
     view.points.geometry = positionGeometry(o.mesh.positions);
+    if (this.state.display === "heat") this.applyHeat(view);
+  }
+
+  /** 面ごとの歪みを頂点色にして積む（`23` の T2）。 */
+  private applyHeat(view: ObjectView): void {
+    const colors = heatColors(view.tri, view.object.uvHeat);
+    view.surface.geometry.setAttribute("color", new Float32BufferAttribute(colors, 3));
   }
 
   applyDisplay(view: ObjectView): void {
@@ -344,7 +352,13 @@ export class Viewport {
     const selected = view.object === this.state.selected || this.state.also.has(view.object);
     view.surface.visible = d !== "wire";
     // チェッカーは UV をそのまま貼る。歪みと継ぎ目が目で分かる
-    view.surface.material = d === "checker" ? (view.checker ??= checkerMaterial()) : MAT.surf;
+    if (d === "heat") this.applyHeat(view);
+    view.surface.material =
+      d === "checker"
+        ? (view.checker ??= checkerMaterial(this.state.checker.cells, this.state.checker.pattern))
+        : d === "heat"
+          ? (view.heat ??= heatMaterial())
+          : MAT.surf;
     view.wire.visible = d === "wire" || d === "shadedWire" || selected;
     view.wire.material = !selected
       ? MAT.wire
@@ -357,6 +371,24 @@ export class Viewport {
 
   applyDisplayAll(): void {
     for (const view of this.views.values()) this.applyDisplay(view);
+  }
+
+  /** チェッカーの細かさや模様を変えた（`23` の T3）。材質を作り直す。 */
+  refreshChecker(): void {
+    for (const view of this.views.values()) {
+      view.checker?.dispose();
+      view.checker = undefined;
+    }
+    this.applyDisplayAll();
+  }
+
+  /** 床のグリッドの表示（`23` の T6）。 */
+  setGridVisible(on: boolean): void {
+    this.grid.visible = on;
+  }
+
+  gridVisible(): boolean {
+    return this.grid.visible;
   }
 
   /* ---- 選択のオーバーレイ --------------------------------------------- */

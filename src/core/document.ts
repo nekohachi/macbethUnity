@@ -102,6 +102,11 @@ export class SceneObject {
    * ここから `mesh.uvSets` を作り直す。null なら UV は素のまま（プリミティブの UV）。
    */
   uv: UvRecipe | null = null;
+  /**
+   * 面ごとの歪み（`recompute` の `perFace`）。ヒートマップの表示にだけ使う
+   * 見た目の控えなので `.mbz` には入れない（開き直せば作り直せる）。
+   */
+  uvHeat: Float32Array | null = null;
 
   constructor(kind: string, id: string, name?: string) {
     this.id = id;

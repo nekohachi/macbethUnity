@@ -20,6 +20,7 @@ import {
   uvLoopVertices,
   uvVertexPath,
   uvGridRows,
+  distortionPerFace,
   uvStraightRun,
   gridding,
   straightenBorder,
@@ -1289,5 +1290,43 @@ describe("U26. 2 点の対応から相似変換", () => {
     const p = applySimilarity([0.5, 0.5], [0.2, 0.3], t);
     expect(p[0]).toBeCloseTo(0.5, 9);
     expect(p[1]).toBeCloseTo(0.5, 9);
+  });
+});
+
+/**
+ * U27. 面ごとの歪み（`23` の T2 のヒートマップ）。
+ */
+describe("U27. 面ごとの歪み", () => {
+  it("平らに開ける立方体はどの面も 1.0", () => {
+    const mesh = cube();
+    const recipe = emptyRecipe();
+    recipe.seams = allSeams(mesh);
+    const r = recompute(mesh, recipe);
+    expect(r.perFace.length).toBe(mesh.faceCount);
+    for (const v of r.perFace) expect(v).toBeCloseTo(1, 3);
+  });
+
+  it("閉じた筒は歪む面が出る", () => {
+    const mesh = tube(12, 2);
+    const recipe = emptyRecipe();
+    const r = recompute(mesh, recipe);
+    expect(r.perFace.length).toBe(mesh.faceCount);
+    expect(Math.max(...r.perFace)).toBeGreaterThan(1.05);
+    // 歪みは 1 を下回らない（σ1 / σ2 なので）
+    for (const v of r.perFace) expect(v).toBeGreaterThanOrEqual(1 - 1e-6);
+  });
+
+  it("島に入らない面は 1 のまま", () => {
+    const mesh = cube();
+    const recipe = emptyRecipe();
+    recipe.seams = allSeams(mesh);
+    const charts = buildCharts(mesh, recipe.seams);
+    // 島を 1 つだけ渡す。残りの 5 面は触られない
+    const r = recompute(mesh, recipe);
+    const one = distortionPerFace(mesh.faceCount, (f) => mesh.faceSize(f), [charts[0]], [r.distortion[0]]);
+    expect(one.length).toBe(mesh.faceCount);
+    let touched = 0;
+    for (const v of one) if (Math.abs(v - 1) > 1e-9) touched++;
+    expect(touched).toBeLessThanOrEqual(1);
   });
 });

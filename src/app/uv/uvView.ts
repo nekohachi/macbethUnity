@@ -10,19 +10,16 @@
  */
 import {
   BufferGeometry,
-  CanvasTexture,
   DoubleSide,
   Float32BufferAttribute,
   LineBasicMaterial,
   LineSegments,
   Mesh as ThreeMesh,
   MeshBasicMaterial,
-  NearestFilter,
   OrthographicCamera,
   PlaneGeometry,
   Points,
   PointsMaterial,
-  RepeatWrapping,
   Scene,
   WebGLRenderer,
 } from "three";
@@ -35,7 +32,9 @@ import {
   type UvTopology,
 } from "../../core/index.js";
 import type { SceneObject } from "../../core/index.js";
+import { checkerTexture, type CheckerPattern } from "../render/checker.js";
 import type { ScreenPoint } from "../render/picking.js";
+import { heatColor } from "./heat.js";
 
 /** UV 空間の 1 点。 */
 export interface UvPoint {
@@ -51,6 +50,15 @@ export type { UvTopology };
 const MAT = {
   face: new MeshBasicMaterial({ color: 0x76a8dd, transparent: true, opacity: 0.3, side: DoubleSide, depthWrite: false }),
   faceSel: new MeshBasicMaterial({ color: 0xf0913c, transparent: true, opacity: 0.5, side: DoubleSide, depthWrite: false }),
+  // 歪みのヒートマップ（`23` の T2）。頂点色をそのまま出したいので色は白
+  faceHeat: new MeshBasicMaterial({
+    color: 0xffffff,
+    vertexColors: true,
+    transparent: true,
+    opacity: 0.55,
+    side: DoubleSide,
+    depthWrite: false,
+  }),
   wire: new LineBasicMaterial({ color: 0xe6eef6 }),
   seam: new LineBasicMaterial({ color: 0xff6b4a }),
   wireSel: new LineBasicMaterial({ color: 0xf0913c }),
@@ -66,27 +74,6 @@ const MAT = {
   manipPivotPoint: new PointsMaterial({ color: 0x9ade4a, size: 12, sizeAttenuation: false }),
 };
 
-/** 市松模様のテクスチャ。歪みを目で見るための背景。 */
-function checkerTexture(cells: number): CanvasTexture {
-  const size = 256;
-  const canvas = document.createElement("canvas");
-  canvas.width = size;
-  canvas.height = size;
-  const ctx = canvas.getContext("2d")!;
-  const step = size / cells;
-  for (let y = 0; y < cells; y++) {
-    for (let x = 0; x < cells; x++) {
-      ctx.fillStyle = (x + y) % 2 === 0 ? "#333a42" : "#282e35";
-      ctx.fillRect(x * step, y * step, step, step);
-    }
-  }
-  const texture = new CanvasTexture(canvas);
-  texture.wrapS = RepeatWrapping;
-  texture.wrapT = RepeatWrapping;
-  texture.magFilter = NearestFilter;
-  return texture;
-}
-
 export class UvView {
   readonly renderer: WebGLRenderer;
   readonly scene = new Scene();
@@ -95,9 +82,12 @@ export class UvView {
   private center = { u: 0.5, v: 0.5 };
   private span = 1.4;
   private checkerCells = 8;
+  private checkerPattern: CheckerPattern = "checker";
 
   private group = new Scene();
   private topology: UvTopology | null = null;
+  /** 面ごとの歪み。null ならヒートマップは出さない（`23` の T2）。 */
+  private heat: Float32Array | null = null;
   private frame = 0;
 
   constructor(
@@ -122,7 +112,9 @@ export class UvView {
     }
     const geometry = new PlaneGeometry(1, 1);
     geometry.translate(0.5, 0.5, 0);
-    const material = new MeshBasicMaterial({ map: checkerTexture(this.checkerCells) });
+    const material = new MeshBasicMaterial({
+      map: checkerTexture({ cells: this.checkerCells, pattern: this.checkerPattern, tone: "dark" }),
+    });
     const plane = new ThreeMesh(geometry, material);
     plane.position.z = -1;
     this.scene.add(plane);
@@ -139,13 +131,32 @@ export class UvView {
     this.scene.add(border);
   }
 
-  setCheckerCells(cells: number): void {
+  /** 下地の細かさと模様を変える（`23` の T3）。3D 側と同じ関数から作る。 */
+  setChecker(cells: number, pattern: CheckerPattern): void {
+    if (this.checkerCells === cells && this.checkerPattern === pattern) return;
     this.checkerCells = cells;
+    this.checkerPattern = pattern;
     this.buildBackground();
   }
 
   get cells(): number {
     return this.checkerCells;
+  }
+
+  /** 通し確認から下地を見るための入口。作り直すたびに値が変わる。 */
+  checkerCellsForTest(): { cells: number; pattern: CheckerPattern; textureId: number } {
+    const map = (this.background?.material as MeshBasicMaterial | undefined)?.map;
+    return { cells: this.checkerCells, pattern: this.checkerPattern, textureId: map ? map.id : -1 };
+  }
+
+  /** 島の塗りに乗っている頂点色。通し確認から歪みの色を見るため。 */
+  faceColorsForTest(): Float32Array | null {
+    for (const child of this.group.children) {
+      if (!(child instanceof ThreeMesh)) continue;
+      const attr = child.geometry.getAttribute("color");
+      if (attr) return Float32Array.from(attr.array);
+    }
+    return null;
   }
 
   /* ---- カメラ ---------------------------------------------------------- */
@@ -246,8 +257,12 @@ export class UvView {
     return this.topology;
   }
 
-  /** 島・UV 頂点・UV エッジを作り直す。選択の当たり判定もここが元になる。 */
-  build(object: SceneObject | null, recipe: UvRecipe | null): void {
+  /**
+   * 島・UV 頂点・UV エッジを作り直す。選択の当たり判定もここが元になる。
+   * `heat` は面ごとの歪み（`23` の T2）。null なら今までどおりの塗り。
+   */
+  build(object: SceneObject | null, recipe: UvRecipe | null, heat: Float32Array | null = null): void {
+    this.heat = heat;
     for (const child of this.group.children.slice()) {
       this.group.remove(child);
       if (child instanceof ThreeMesh || child instanceof LineSegments || child instanceof Points) {
@@ -275,7 +290,10 @@ export class UvView {
     // 面
     const flat: number[] = [];
     const index: number[] = [];
-    for (let i = 0; i < t.vertexUv.length / 2; i++) flat.push(t.vertexUv[i * 2], t.vertexUv[i * 2 + 1], 0);
+    const vertexCount = t.vertexUv.length / 2;
+    for (let i = 0; i < vertexCount; i++) flat.push(t.vertexUv[i * 2], t.vertexUv[i * 2 + 1], 0);
+    // 歪みは面ごとの値なので、UV 頂点にはまわりの面のいちばん悪いものを取る
+    const worst = this.heat ? new Float32Array(vertexCount).fill(1) : null;
     for (let f = 0; f < mesh.faceCount; f++) {
       const n = mesh.faceSize(f);
       const local: number[] = [];
@@ -283,13 +301,27 @@ export class UvView {
         const at = this.vertexOfCorner(cornerKey(f, i));
         if (at >= 0) local.push(at);
       }
+      if (worst) {
+        const h = this.heat?.[f] ?? 1;
+        for (const at of local) worst[at] = Math.max(worst[at], h);
+      }
       if (local.length < 3) continue;
       for (let i = 1; i < local.length - 1; i++) index.push(local[0], local[i], local[i + 1]);
     }
     const faceGeometry = new BufferGeometry();
     faceGeometry.setAttribute("position", new Float32BufferAttribute(flat, 3));
+    if (worst) {
+      const colors = new Float32Array(vertexCount * 3);
+      for (let i = 0; i < vertexCount; i++) {
+        const c = heatColor(worst[i]);
+        colors[i * 3] = c[0];
+        colors[i * 3 + 1] = c[1];
+        colors[i * 3 + 2] = c[2];
+      }
+      faceGeometry.setAttribute("color", new Float32BufferAttribute(colors, 3));
+    }
     faceGeometry.setIndex(index);
-    const faces = new ThreeMesh(faceGeometry, MAT.face);
+    const faces = new ThreeMesh(faceGeometry, worst ? MAT.faceHeat : MAT.face);
     faces.renderOrder = 0;
     this.group.add(faces);
 

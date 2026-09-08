@@ -211,3 +211,57 @@ export function preserveUvs(
 ## 報告
 
 T3 のあとと T6 のあとの 2 回。各回: 変えたファイル、core と通し確認の件数、PNG、設計と変えたところ、判断が要った点。
+
+---
+
+## 実装の報告 その 1（Opus、2026-09-09。T1〜T3）
+
+### 変えたファイル
+
+**core**
+
+- `core/uv/distortion.ts`: `distortionPerFace(faceCount, faceSizes, charts, distortion)` を追加。`chartMesh` の三角形の並び（島の面の順に、面ごとの扇）を読み直して、面ごとの最大を取る。どの島にも入らない面は 1
+- `core/uv/recipe.ts`: `RecomputeResult` に `perFace: Float32Array`。`recompute` の最後で作る
+- `core/document.ts`: `SceneObject.uvHeat: Float32Array | null`（見た目の控え。`.mbz` には入れない）
+
+**app**
+
+- `app/uv/heat.ts`（新）: `heatColor(stretch)` と `measureFaceHeat(object)`
+- `app/render/checker.ts`（新）: `checkerTexture({ cells, pattern, tone, mark })`。2D の下地と 3D のチェッカー表示がここだけを使う
+- `app/render/materials.ts`: `heatMaterial()` を追加。`checkerMaterial(cells, pattern)` は新しい共通関数から作るようにして、設定が変わったら前のテクスチャを捨てる
+- `app/render/meshView.ts`: `heatColors(tri, heat)`（面ごとの歪みを三角形の頂点色へ）、`ObjectView.heat`
+- `app/render/viewport.ts`: `applyDisplay` の `heat`、`applyHeat`、`refreshChecker()`、`setGridVisible` / `gridVisible`（T6 で使う）
+- `app/uv/uvView.ts`: `build(object, recipe, heat)`、島の塗りの頂点色（`MAT.faceHeat`）、`setChecker(cells, pattern)`、`checkerCellsForTest()` / `faceColorsForTest()`
+- `app/uv/uvMode.ts`: `recompute` を呼ぶ 6 か所を `solve()` に通して `perFace` を控える。`UvHost.heatOn()`
+- `app/state.ts`: `Display` に `"heat"`、`uvHeat`、`displayBeforeHeat`、`checker = { cells, pattern }`
+- `app/ui/panels.ts`: `checkerSection`、`displaySections`、`uvUnfoldSection` に「歪み」と「チェッカー」の区画
+- `app/ui/icons.ts`: `heat`（炎）
+- `app/app.ts`: モードのドロップダウン（T1）、`setDisplay` の `heat`、`toggleUvHeat`、`setChecker`、キー 9、シェーディングの輪の北東、「展開」の長押しの南西
+
+### 数
+
+| | 前 | 後 |
+|---|---|---|
+| core の単体（vitest） | 196 | 199（U27 の 3 件） |
+| 通し確認（smoke） | 73 | 76 |
+
+PNG: `docs/img/23-t2-heat.png`（球を切れ目なしで展開してヒートマップ）、`docs/img/23-t3-checker.png`（円柱の自動 UV をカラーグリッド 16 マスで、2D と 3D の両方）。
+
+### 設計と変えたところ
+
+- **`distortionPerFace` の引数を `(mesh, charts, distortion)` から `(faceCount, faceSizes, charts, distortion)` に変えた。** core の `distortion.ts` は今まで `Mesh` を知らずに済んでいた（座標と三角形と UV の配列だけを見る）。`Mesh` を引数に取ると `distortion.ts` → `mesh.ts` の依存が増えるので、面の数と面のサイズだけを受けるようにした
+- **`checkerTexture` の引数をオブジェクトにして、`tone` と `mark` を足した。** 2D の下地は暗く（島を目立たせるため）、3D は明るく、向きを示す橙のマスは 3D だけ、という今までの違いをそのまま残すため。模様を描くところは 1 つ
+- **ヒートマップの 1.0 の色は灰ではなく「島の今の色」（青灰 `#76a8dd`）にした。** 指示書の「1.0 のところは今の見た目と同じにして」を優先した。灰にすると、歪んでいない島まで見た目が変わってしまう
+- **`heatColor` を app に置いた（指示書どおり）。** 3D の頂点色は `meshView.ts` の `heatColors` が同じ関数から作るので、2D と 3D で色がずれない
+- **「歪みを色で」と 3D の `heat` 表示は同じ 1 つの状態にした。** キー 9 やシェーディングの輪から `heat` を選んでも `state.uvHeat` が立つ。オフにすると `displayBeforeHeat` に控えた表示へ戻る
+- **`heat` がオンなのに一度も展開していないとき**は `measureFaceHeat` が今の UV から測る（開き直さない）。プリミティブの UV をそのまま見ているときでも色が出る
+
+### 判断が要った点（確認してほしいところ）
+
+1. **2D の島の色は「まわりの面のいちばん悪い値」を UV 頂点に乗せている。** 2D の面ジオメトリは UV 頂点で索引されているので、面ごとに別の色を持たせるには頂点を複製する必要がある（当たり判定と選択の索引もそれに合わせて作り直しになる）。今は最大値を頂点に乗せて補間しているので、歪んだ面の隣が少し色づく。3D は面ごとにきっちり分かれている
+2. **カラーグリッドに数字は入れていない**（指示書どおり）。色相は大きなマス（`cells / 8`）ごとに `(bx + by * 3) % 8` で回している。同じ色が斜めに並ばないようにするため
+3. **チェッカーの区画は「表示」のカットインにはチェッカー表示のときだけ出す**（指示書どおり）。UV の「展開」のカットインには常に出る
+
+### 次
+
+T4（ブリッジの分割数）→ T5（Preserve UVs）→ T6（表示オプション）。終わったらまとめて報告。

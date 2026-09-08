@@ -317,3 +317,10 @@ button{font-family:inherit; font-size:inherit; color:inherit; background:none; b
 .lyprops .sect{margin:0}
 .olinput{width:100%; font-family:"IBM Plex Mono",monospace; font-size:11px; background:var(--panel);
   border:1px solid var(--accent); border-radius:2px; color:var(--text); padding:1px 3px}
+
+/* モードのドロップダウン（23 の T1）。アイコン + 名前 + 英語名の 1 行 */
+.act[aria-pressed="true"]{background:var(--accent-dim); border-color:var(--accent); color:#eaf4fb}
+.act.mode{display:flex; align-items:center; gap:8px; text-align:left}
+.act.mode svg{width:16px; height:16px; flex:0 0 auto}
+.act.mode .en{margin-left:auto; font-size:9px; letter-spacing:.06em; text-transform:uppercase; color:var(--text-faint)}
+.act.mode[aria-pressed="true"] .en{color:#a9cde6}

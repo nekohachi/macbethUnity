@@ -95,7 +95,7 @@ import {
   bridgeSection,
   cameraSection,
   connectSection,
-  displaySection,
+  displaySections,
   extrudeSection,
   manipulatorSection,
   mirrorSection,
@@ -114,6 +114,8 @@ import {
   type PanelHost,
 } from "./ui/panels.js";
 import { STUBS, buildStub } from "./ui/stubs.js";
+import type { CheckerPattern } from "./render/checker.js";
+import { measureFaceHeat } from "./uv/heat.js";
 import { UvMode, type UvSplit, type UvUnit } from "./uv/uvMode.js";
 import { ICONS, iconSvg } from "./ui/icons.js";
 import {
@@ -157,6 +159,7 @@ const DISPLAY_KEYS: Record<string, Display> = {
   "6": "shadedWire",
   "7": "smooth",
   "8": "checker",
+  "9": "heat",
 };
 
 const MODE_LABELS: Record<Mode, string> = {
@@ -165,6 +168,14 @@ const MODE_LABELS: Record<Mode, string> = {
   sculpt: "スカルプト",
   material: "マテリアル",
 };
+
+/** モードの並びと英語名。ドロップダウンに出す（`23` の T1）。 */
+const MODE_ORDER: Array<{ id: Mode; en: string; icon: string }> = [
+  { id: "model", en: "Modeling", icon: ICONS.mModel },
+  { id: "uv", en: "UV Editor", icon: ICONS.mUV },
+  { id: "sculpt", en: "Sculpt", icon: ICONS.mSculpt },
+  { id: "material", en: "Material", icon: ICONS.mMaterial },
+];
 
 const COMP_ICONS: Record<CompMode, string> = {
   object: ICONS.vObj,
@@ -247,6 +258,7 @@ const DISPLAY_ICONS: Record<Display, string> = {
   shadedWire: ICONS.shadedWire,
   smooth: ICONS.smooth,
   checker: ICONS.mUV,
+  heat: ICONS.heat,
 };
 
 const PRIMITIVE_ICONS: Record<string, string> = {
@@ -1559,6 +1571,15 @@ export class App {
   }
 
   setDisplay(display: Display): void {
+    // ヒートマップは「歪みを色で」と同じもの。どちらから入れても状態は 1 つ（`23` の T2）
+    if (display === "heat" && this.state.display !== "heat") this.state.displayBeforeHeat = this.state.display;
+    this.state.uvHeat = display === "heat";
+    this.remember("uvHeat", this.state.uvHeat);
+    if (display === "heat") {
+      for (const o of this.state.doc.objects) {
+        if (!o.uvHeat || o.uvHeat.length !== o.mesh.faceCount) o.uvHeat = measureFaceHeat(o);
+      }
+    }
     this.state.display = display;
     this.renderToolColumn();
     // 「シェード」はすべてハードエッジなので、法線を作り直す必要がある
@@ -1571,8 +1592,46 @@ export class App {
         shadedWire: "シェード + ワイヤー",
         smooth: "スムースシェード",
         checker: "チェッカー（UV の確認）",
+        heat: "ヒートマップ（UV の歪み）",
       }[display],
     );
+    this.uv?.rebuild();
+  }
+
+  /**
+   * チェッカーの細かさと模様（`23` の T3）。2D の下地と 3D のチェッカー表示は
+   * 同じ設定から作るので、どちらから触っても両方が変わる。
+   */
+  private setChecker(key: "cells" | "pattern", value: number | string): void {
+    if (key === "cells") this.state.checker.cells = Number(value);
+    else this.state.checker.pattern = value as CheckerPattern;
+    this.remember(`checker.${key}`, String(value));
+    this.uv?.view.setChecker(this.state.checker.cells, this.state.checker.pattern);
+    this.viewport.refreshChecker();
+    this.hud.toast(
+      key === "cells"
+        ? `チェッカー ${this.state.checker.cells} マス`
+        : this.state.checker.pattern === "colorGrid"
+          ? "カラーグリッド"
+          : "市松",
+    );
+    // 開いているカットインのボタンの押され方を合わせる
+    if (this.popup?.dataset.gauge === "unfold") this.openGroupOptions("unfold", () => this.uvUnfoldOptions());
+    else this.reopenToolOptions("display");
+  }
+
+  /** 「歪みを色で」のトグル。3D の表示も一緒に切り替える（`23` の T2）。 */
+  private toggleUvHeat(on: boolean): void {
+    if (on) this.setDisplay("heat");
+    else if (this.state.display === "heat") this.setDisplay(this.state.displayBeforeHeat ?? "shadedWire");
+    else {
+      this.state.uvHeat = false;
+      this.remember("uvHeat", false);
+      this.uv?.rebuild();
+    }
+    // 開いているカットインのチェックを合わせる（「展開」と「表示」の両方に置いてある）
+    if (this.popup?.dataset.gauge === "unfold") this.openGroupOptions("unfold", () => this.uvUnfoldOptions());
+    else this.reopenToolOptions("display");
   }
 
   setManip(manip: Manip): void {
@@ -1763,14 +1822,41 @@ export class App {
   }
 
   /** マニピュレータの種類。長押しで出す。 */
-  private modeMenu(): RadialMenu {
-    const go = (m: Mode) => () => this.setMode(m);
-    return {
-      N: { label: MODE_LABELS.model, sub: "Modeling", icon: ICONS.mModel, run: go("model") },
-      E: { label: MODE_LABELS.uv, sub: "UV Editor", icon: ICONS.mUV, run: go("uv") },
-      S: { label: MODE_LABELS.sculpt, sub: "Sculpt", icon: ICONS.mSculpt, run: go("sculpt") },
-      W: { label: MODE_LABELS.material, sub: "Material", icon: ICONS.mMaterial, run: go("material") },
-    };
+  /**
+   * モードの切替（`23` の T1）。
+   *
+   * 画面の上にあるボタンなので、サークルメニューではなく下に開く一覧にする。
+   * 指を出す向きを覚えるより、並んだものから選ぶほうが速い場所。
+   */
+  private openModeMenu(anchor: HTMLElement): void {
+    // 出ているときにもう一度押したら閉じる
+    if (this.popup?.dataset.menu === "mode") {
+      this.closePopup();
+      return;
+    }
+    this.closePopup();
+    const r = anchor.getBoundingClientRect();
+    const pop = el("div", "panel floating");
+    pop.dataset.menu = "mode";
+    pop.style.left = `${r.left}px`;
+    pop.style.top = `${r.bottom + 2}px`;
+    const body = el("div", "pbody");
+    for (const m of MODE_ORDER) {
+      const b = el("button", "act mode");
+      b.setAttribute("aria-pressed", String(this.state.mode === m.id));
+      b.innerHTML = iconSvg(m.icon);
+      b.appendChild(el("span", undefined, MODE_LABELS[m.id]));
+      b.appendChild(el("span", "en", m.en));
+      b.addEventListener("click", () => {
+        this.closePopup();
+        this.setMode(m.id);
+      });
+      body.appendChild(b);
+    }
+    pop.appendChild(body);
+    document.body.appendChild(pop);
+    this.popup = pop;
+    this.popupAnchor = anchor;
   }
 
   /**
@@ -1876,6 +1962,12 @@ export class App {
             icon: ICONS.mUV,
             run: () => this.openGroupOptions("unfold", () => this.uvUnfoldOptions()),
           },
+          SW: {
+            label: "歪みを色で",
+            sub: "Heat  9",
+            icon: ICONS.heat,
+            run: () => this.toggleUvHeat(!this.state.uvHeat),
+          },
         }),
         onTap: () => uv.unfold(),
       },
@@ -1920,7 +2012,7 @@ export class App {
     const state = this.optionsState();
     if (!state.uv) return [];
     const host = this.panelHost();
-    return [...uvUnfoldSection(state.uv, host), uvSnapSection(state.uv, state, host)];
+    return [...uvUnfoldSection(state.uv, host, state), uvSnapSection(state.uv, state, host)];
   }
 
   /* ---- UV モード -------------------------------------------------------- */
@@ -2011,7 +2103,9 @@ export class App {
         manipSize: () => this.state.manipSize,
         pivotEdit: () => this.state.pivotEdit,
         smoothAngle: () => this.state.smoothAngle,
+        heatOn: () => this.state.uvHeat,
       });
+      this.uv.view.setChecker(this.state.checker.cells, this.state.checker.pattern);
       this.buildUvSwitch();
     }
     // レシピが無ければ、今ある UV をそのまま取り込む（`17` の 1 章）。
@@ -2253,6 +2347,7 @@ export class App {
       S: { label: "シェード + ワイヤー", sub: "6", icon: ICONS.shadedWire, run: () => this.setDisplay("shadedWire") },
       W: { label: "スムースシェード", sub: "7", icon: ICONS.smooth, run: () => this.setDisplay("smooth") },
       NW: { label: "チェッカー", sub: "8", icon: ICONS.mUV, run: () => this.setDisplay("checker") },
+      NE: { label: "ヒートマップ", sub: "9", icon: ICONS.heat, run: () => this.setDisplay("heat") },
     };
   }
 
@@ -2931,7 +3026,7 @@ export class App {
         icon: () => DISPLAY_ICONS[this.state.display],
         title: "シェーディング（長押しで切り替え。4–8）",
         radial: () => this.shadingMenu(),
-        options: () => [displaySection(this.optionsState(), this.panelHost())],
+        options: () => displaySections(this.optionsState(), this.panelHost()),
         onTap: () => {},
       },
       {
@@ -3210,6 +3305,9 @@ export class App {
       rotateStep: this.state.rotateStep,
       preventNegativeScale: this.state.preventNegativeScale,
       cameraBased: this.state.cameraBased,
+      uvHeat: this.state.uvHeat,
+      checker: this.state.checker,
+      display: this.state.display,
       cam: this.state.camOpts,
       nextPrimitive: kind,
       nextPrimitiveParams: this.state.primitiveDefaults[kind] ?? defaultParams(kind),
@@ -3417,6 +3515,8 @@ export class App {
         this.syncToggleButtons();
         this.refresh();
       },
+      onUvHeatChange: (on) => this.toggleUvHeat(on),
+      onCheckerChange: (key, value) => this.setChecker(key, value),
       onCameraBasedChange: (on) => {
         this.state.cameraBased = on;
         this.remember("cameraBased", on);
@@ -3582,6 +3682,12 @@ export class App {
     this.state.preventNegativeScale = read("preventNegativeScale") !== "false";
     const step = Number(read("rotateStep"));
     if (Number.isFinite(step) && step >= 0) this.state.rotateStep = step;
+    const cells = Number(read("checker.cells"));
+    if ([4, 8, 16, 32, 64].includes(cells)) this.state.checker.cells = cells;
+    const pattern = read("checker.pattern");
+    if (pattern === "checker" || pattern === "colorGrid") this.state.checker.pattern = pattern;
+    this.state.uvHeat = read("uvHeat") === "true";
+    if (this.state.uvHeat) this.state.display = "heat";
     const kind = read("lastPrimitive");
     if (kind && PRIMITIVES[kind]) this.state.lastPrimitive = kind;
   }
@@ -3793,12 +3899,8 @@ export class App {
     byId("btnUndo").addEventListener("click", () => this.doUndo());
     byId("btnRedo").addEventListener("click", () => this.doRedo());
     byId("btnPanels").addEventListener("click", () => this.toggleLayers());
-    // モード切替。長押し（PC は右クリック）で 4 モードのサークルメニュー
-    attachRadialButton(
-      byId("modeBtn"),
-      () => this.modeMenu(),
-      () => this.hud.toast("長押しでモードを選べます"),
-    );
+    // モード切替。タップで下に一覧が開く（`23` の T1）
+    byId("modeBtn").addEventListener("click", (e) => this.openModeMenu(e.currentTarget as HTMLElement));
     byId("fileBtn").addEventListener("click", (e) => this.openFileMenu(e.currentTarget as HTMLElement));
     document.addEventListener("pointerdown", (e) => {
       if (!this.popup) return;

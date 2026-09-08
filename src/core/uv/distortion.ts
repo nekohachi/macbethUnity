@@ -104,6 +104,34 @@ export function triangleFrame(
   };
 }
 
+/**
+ * 島ごとの三角形の歪みを、**面ごと**の値にならす（`23` の T2）。長さは `faceCount`。
+ *
+ * `chartMesh` の三角形は「島の面の順に、面ごとの扇」で並んでいる
+ * （面 f は `faceSize(f) − 2` 枚）。同じ順に読み直して、面の中の最大を取る。
+ * どの島にも入らない面（切れ目の外）は 1（歪みなし）。
+ */
+export function distortionPerFace(
+  faceCount: number,
+  faceSizes: (f: number) => number,
+  charts: Array<{ faces: number[] }>,
+  distortion: Distortion[],
+): Float32Array {
+  const out = new Float32Array(faceCount).fill(1);
+  charts.forEach((chart, ci) => {
+    const per = distortion[ci]?.perTriangle;
+    if (!per) return;
+    let at = 0;
+    for (const f of chart.faces) {
+      const count = Math.max(1, faceSizes(f) - 2);
+      let worst = 1;
+      for (let i = 0; i < count && at < per.length; i++, at++) worst = Math.max(worst, per[at]);
+      if (f >= 0 && f < faceCount) out[f] = worst;
+    }
+  });
+  return out;
+}
+
 export function measure(positions: Float64Array, tri: Uint32Array, uv: Float64Array): Distortion {
   const triangles = tri.length / 3;
   const perTriangle = new Float32Array(triangles);

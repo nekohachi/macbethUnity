@@ -44,6 +44,7 @@ import {
   type GestureHandlers,
 } from "../input/gestures.js";
 import type { ScreenPoint } from "../render/picking.js";
+import { measureFaceHeat } from "./heat.js";
 import { UvView, type UvTopology } from "./uvView.js";
 
 export type UvUnit = "vertex" | "edge" | "shell";
@@ -90,6 +91,8 @@ export interface UvHost {
   pivotEdit(): boolean;
   /** スムージング角度。自動の切れ目でハードエッジを見るのに使う。 */
   smoothAngle(): number;
+  /** 歪みを色で見るか（`23` の T2）。 */
+  heatOn(): boolean;
 }
 
 export class UvMode {
@@ -205,10 +208,30 @@ export class UvMode {
     return { charts: t?.charts.length ?? 0, maxStretch, unit: label };
   }
 
+  /**
+   * 開き直して、面ごとの歪みをオブジェクトに控える（`23` の T2）。
+   * `recompute` を呼ぶところは全部ここを通す。
+   */
+  private solve(object: SceneObject, recipe: UvRecipe): ReturnType<typeof recompute> {
+    const r = recompute(object.mesh, recipe);
+    object.uvHeat = r.perFace;
+    return r;
+  }
+
+  /**
+   * 2D に渡す面ごとの歪み。オフなら null（塗りは今までどおり）。
+   * まだ開き直していない（`solve` を通っていない）ときは、今の UV から測る。
+   */
+  private heatFor(object: SceneObject | null): Float32Array | null {
+    if (!object || !this.host.heatOn()) return null;
+    if (!object.uvHeat || object.uvHeat.length !== object.mesh.faceCount) object.uvHeat = measureFaceHeat(object);
+    return object.uvHeat;
+  }
+
   /** 2D の中身を作り直して、選択の色も塗り直す。 */
   rebuild(): void {
     const object = this.host.object();
-    this.view.build(object, this.host.recipe());
+    this.view.build(object, this.host.recipe(), this.heatFor(object));
     this.syncPins();
     this.refreshHighlight();
   }
@@ -581,7 +604,8 @@ export class UvMode {
 
   /** 位置だけ描き直す。島の分け方は変わっていない。 */
   private rebuildGeometryOnly(): void {
-    this.view.build(this.host.object(), this.host.recipe());
+    const object = this.host.object();
+    this.view.build(object, this.host.recipe(), this.heatFor(object));
     this.refreshHighlight();
   }
 
@@ -599,7 +623,7 @@ export class UvMode {
     const snapshot = this.host.snapshot();
     const wasImported = recipe.method === "none";
     if (wasImported) recipe.method = "lscm";
-    const r = recompute(object.mesh, recipe);
+    const r = this.solve(object, recipe);
     this.host.commit("展開", snapshot);
     this.rebuild();
     this.host.changed(
@@ -622,7 +646,7 @@ export class UvMode {
     recipe.manual.clear();
     recipe.pins.clear();
     recipe.method = "lscm";
-    const r = recompute(object.mesh, recipe);
+    const r = this.solve(object, recipe);
     this.host.commit("自動 UV", snapshot);
     this.chosen.clear();
     this.rebuild();
@@ -645,7 +669,7 @@ export class UvMode {
     }
     const snapshot = this.host.snapshot();
     recipe.manual.clear();
-    const r = recompute(object.mesh, recipe);
+    const r = this.solve(object, recipe);
     this.host.commit("整列", snapshot);
     this.rebuild();
     this.host.changed(`整列 — 島 ${r.charts.length} を 0〜1 に詰めた`);
@@ -666,7 +690,7 @@ export class UvMode {
         recipe.manual.clear();
       }
     }
-    recompute(object.mesh, recipe);
+    this.solve(object, recipe);
     this.host.commit("ソルバーの変更", snapshot);
     this.rebuild();
     this.host.changed({ lscm: "LSCM", projection: "投影", none: "なし" }[method]);
@@ -707,7 +731,7 @@ export class UvMode {
     if (!cut && recipe.method === "none" && recipe.base) {
       sewInBase(object.mesh, recipe.base, touched);
     }
-    recompute(object.mesh, recipe);
+    this.solve(object, recipe);
     this.host.commit(cut ? "カット" : "ソー", snapshot);
     this.chosen.clear();
     this.rebuild();
@@ -886,7 +910,7 @@ export class UvMode {
     // 動かしたところで縫う
     for (const key of targets) recipe.seams.delete(key);
     if (recipe.method === "none" && recipe.base) sewInBase(object.mesh, recipe.base, targets);
-    recompute(object.mesh, recipe);
+    this.solve(object, recipe);
     this.host.commit("Move and Sew", snapshot);
     this.chosen.clear();
     this.rebuild();

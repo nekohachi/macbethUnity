@@ -2958,6 +2958,130 @@ check(
     `3本指 ${uvHistory.redoneU.toFixed(3)} / 切れ目 ${uvHistory.seamsBefore} → ${uvHistory.seamsAfterCut} → ${uvHistory.seamsUndone}`,
 );
 
+/* 43z. モードはドロップダウンで切り替える（`23` の T1） */
+const modeMenu = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const before = app.state.mode;
+  document.getElementById("modeBtn").click();
+  await new Promise((r) => setTimeout(r, 60));
+  const items = [...document.querySelectorAll('.panel.floating[data-menu="mode"] .act')];
+  const labels = items.map((b) => b.textContent);
+  const pressed = items.filter((b) => b.getAttribute("aria-pressed") === "true").map((b) => b.textContent);
+  const uv = items.find((b) => b.textContent.startsWith("UV"));
+  uv?.click();
+  await new Promise((r) => setTimeout(r, 120));
+  const after = {
+    mode: app.state.mode,
+    label: document.getElementById("modeLabel").textContent,
+    closed: !document.querySelector('.panel.floating[data-menu="mode"]'),
+  };
+  app.setMode(before);
+  return { labels, pressed, after };
+});
+check(
+  "モードはドロップダウンで切り替える",
+  modeMenu.labels.length === 4 &&
+    modeMenu.pressed.length === 1 &&
+    modeMenu.pressed[0].startsWith("モデリング") &&
+    modeMenu.after.mode === "uv" &&
+    modeMenu.after.label === "UV" &&
+    modeMenu.after.closed,
+  `${modeMenu.labels.join(" / ")} / 今は「${modeMenu.pressed.join("")}」→ 選ぶと ${modeMenu.after.mode}・閉じる ${modeMenu.after.closed}`,
+);
+
+/* 43z-2. 歪みが色で見える（`23` の T2） */
+const heat = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const objectsBefore = app.state.doc.objects.length;
+  const sphere = app.state.doc.addObject("sphere");
+  app.viewport.syncAll();
+  app.state.select(sphere);
+  const displayBefore = app.state.display;
+  app.setMode("uv");
+  await new Promise((r) => setTimeout(r, 60));
+  // 切れ目なしで展開すると、球はどうしても歪む（U2 と同じ根拠）
+  app.uv.unfold();
+  const host = app.panelHostForTest();
+
+  host.onUvHeatChange(true);
+  await new Promise((r) => setTimeout(r, 60));
+  const colors = app.uv.view.faceColorsForTest();
+  let reddest = 0;
+  let hot = 0;
+  if (colors) {
+    for (let i = 0; i < colors.length; i += 3) {
+      reddest = Math.max(reddest, colors[i]);
+      if (colors[i] > 0.6) hot++;
+    }
+  }
+  const on = { display: app.state.display, hasColors: !!colors, hot, reddest };
+
+  host.onUvHeatChange(false);
+  await new Promise((r) => setTimeout(r, 60));
+  const off = { display: app.state.display, hasColors: !!app.uv.view.faceColorsForTest() };
+
+  app.setMode("model");
+  app.setDisplay(displayBefore);
+  app.state.select(null);
+  app.state.doc.objects.length = objectsBefore;
+  app.viewport.syncAll();
+  return { on, off, displayBefore };
+});
+check(
+  "歪みが色で見える",
+  heat.on.display === "heat" && heat.on.hasColors && heat.on.hot > 0 && !heat.off.hasColors && heat.off.display === heat.displayBefore,
+  `オン: ${heat.on.display}・赤寄り ${heat.on.hot} 点（最大 r=${heat.on.reddest.toFixed(2)}）→ オフ: ${heat.off.display}・色 ${heat.off.hasColors}`,
+);
+
+/* 43z-3. チェッカーの細かさと模様（`23` の T3） */
+const checker = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const objectsBefore = app.state.doc.objects.length;
+  const object = app.state.doc.addObject("cube");
+  app.viewport.syncAll();
+  app.state.select(object);
+  const displayBefore = app.state.display;
+  app.setMode("uv");
+  await new Promise((r) => setTimeout(r, 60));
+  const host = app.panelHostForTest();
+  const before = app.uv.view.checkerCellsForTest();
+
+  host.onCheckerChange("cells", 32);
+  await new Promise((r) => setTimeout(r, 40));
+  const coarse = app.uv.view.checkerCellsForTest();
+
+  host.onCheckerChange("pattern", "colorGrid");
+  await new Promise((r) => setTimeout(r, 40));
+  const grid = app.uv.view.checkerCellsForTest();
+
+  // 3D をチェッカー表示にすると、同じ設定のテクスチャが貼られる
+  app.setDisplay("checker");
+  await new Promise((r) => setTimeout(r, 60));
+  const view = app.viewport.viewOf(object);
+  const map = view.surface.material.map;
+  const three = { hasMap: !!map, size: map ? map.image.width : 0 };
+
+  host.onCheckerChange("cells", 8);
+  host.onCheckerChange("pattern", "checker");
+  app.setMode("model");
+  app.setDisplay(displayBefore);
+  app.state.select(null);
+  app.state.doc.objects.length = objectsBefore;
+  app.viewport.syncAll();
+  return { before, coarse, grid, three };
+});
+check(
+  "チェッカーの細かさと模様を変えられる",
+  checker.before.cells === 8 &&
+    checker.coarse.cells === 32 &&
+    checker.coarse.textureId !== checker.before.textureId &&
+    checker.grid.pattern === "colorGrid" &&
+    checker.grid.textureId !== checker.coarse.textureId &&
+    checker.three.hasMap,
+  `2D ${checker.before.cells} → ${checker.coarse.cells} マス（作り直し ${checker.coarse.textureId !== checker.before.textureId}）→ ` +
+    `${checker.grid.pattern} / 3D の下地 ${checker.three.size}px`,
+);
+
 /* 43a. T8 のフィードバック 4 点（`21` のフィードバック） */
 const feedback = await page.evaluate(async () => {
   const app = window.macbeth;

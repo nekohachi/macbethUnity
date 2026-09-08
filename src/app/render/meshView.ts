@@ -11,12 +11,14 @@ import {
   LineSegments,
   Mesh as ThreeMesh,
   Object3D,
+  type MeshBasicMaterial,
   type MeshPhongMaterial,
   Points,
   Quaternion,
   Vector3,
 } from "three";
 import type { Mesh, SceneObject, Transform } from "../../core/index.js";
+import { heatColor } from "../uv/heat.js";
 import { MAT } from "./materials.js";
 
 /**
@@ -96,6 +98,30 @@ export function surfaceGeometry(
   return g;
 }
 
+/**
+ * 面ごとの歪みを、三角形の頂点色に広げる（`23` の T2）。
+ * `surfaceGeometry` は三角形ごとに頂点を複製した非インデックス形式なので、
+ * 面の中はすべて同じ色になる。歪みが無ければ島と同じ色。
+ */
+export function heatColors(
+  tri: { tri: Uint32Array; triToFace: Uint32Array },
+  heat: Float32Array | null,
+): Float32Array {
+  const count = tri.tri.length;
+  const col = new Float32Array(count * 3);
+  for (let k = 0; k < count; k += 3) {
+    const f = tri.triToFace[k / 3];
+    const c = heatColor(heat?.[f] ?? 1);
+    for (let j = 0; j < 3; j++) {
+      const o = (k + j) * 3;
+      col[o] = c[0];
+      col[o + 1] = c[1];
+      col[o + 2] = c[2];
+    }
+  }
+  return col;
+}
+
 /** ワイヤフレーム用の線分。edges の順番は選択インデックスと一致させる。 */
 export function wireGeometry(mesh: Mesh, edges: Array<[number, number]>): BufferGeometry {
   const p = new Float32Array(edges.length * 6);
@@ -142,6 +168,8 @@ export interface ObjectView {
   surface: ThreeMesh;
   /** チェッカー表示の材質。初めて使うときに作る。 */
   checker?: MeshPhongMaterial;
+  /** ヒートマップ表示の材質。初めて使うときに作る。 */
+  heat?: MeshBasicMaterial;
   wire: LineSegments;
   points: Points;
   tri: { tri: Uint32Array; triToFace: Uint32Array };
