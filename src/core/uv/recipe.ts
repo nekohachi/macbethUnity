@@ -23,6 +23,7 @@ import {
 import { autoPins, lscm, normalizeScale } from "./lscm.js";
 import { projectChart } from "./projection.js";
 import { measure, type Distortion } from "./distortion.js";
+import { uprightChart } from "./orient.js";
 import { equalizeTexelDensity, shelfPack, surfaceArea, type PackBox } from "./pack.js";
 
 export type UvMethod = "lscm" | "projection" | "none";
@@ -117,6 +118,8 @@ export function recompute(mesh: Mesh, recipe: UvRecipe, options: { skipPack?: bo
   for (const chart of charts) {
     const local = chartMesh(mesh, chart, recipe.seams);
     let flat: Float64Array;
+    // 解いたあとで島を立てるか（`19` の 1.1）。人がピンで向きを決めている島は動かさない
+    let upright = recipe.method !== "none";
 
     if (recipe.method === "none") {
       flat = new Float64Array(local.count * 2);
@@ -139,6 +142,8 @@ export function recompute(mesh: Mesh, recipe: UvRecipe, options: { skipPack?: bo
       // 2 点足りないと平行移動・回転・拡大が決まらない
       if (pins.size < 2) {
         for (const [v, p] of autoPins(local.positions, local.tri)) if (!pins.has(v)) pins.set(v, p);
+      } else {
+        upright = false;
       }
       flat = lscm(local.positions, local.tri, pins);
       // 解けなかった島（畳まれた・数値が壊れた）は投影に落とす。
@@ -147,6 +152,9 @@ export function recompute(mesh: Mesh, recipe: UvRecipe, options: { skipPack?: bo
       // 固定した 2 点は向きと位置を決めるだけ。大きさは 3D の面積に合わせる
       if (recipe.pins.size < 2) normalizeScale(local.positions, local.tri, flat);
     }
+
+    // 島を立てる。ここでやれば歪みの評価もパッキングも回したあとの形を見る
+    if (upright) uprightChart(local.positions, local.tri, flat);
 
     distortion.push(measure(local.positions, local.tri, flat));
     flats.push(flat);

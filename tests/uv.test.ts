@@ -777,3 +777,128 @@ describe("U16. レシピの複製", () => {
     expect(recipe.autoSeamParams.angle).toBe(42);
   });
 });
+
+/**
+ * U17〜U19. 島を立てる（`19` の 1.1、`20` の T2）。
+ *
+ * LSCM は形しか決めないので、向きは解いたあとに決める。基準はワールド Y。
+ * それが面に乗らない島（天面・底面）はワールド X を +U に向ける。
+ */
+describe("U17. 立方体の島は軸に平行", () => {
+  /** 面の 4 辺が UV でも U 軸か V 軸に平行か。 */
+  const facesAxisAligned = (mesh: Mesh): boolean => {
+    const uv = mesh.uvSets.get(UV_SET)!;
+    for (let f = 0; f < mesh.faceCount; f++) {
+      const n = mesh.faceSize(f);
+      const at = (i: number): [number, number] => {
+        const corner = cornerIndex(mesh, cornerKey(f, i));
+        return [uv[corner * 2], uv[corner * 2 + 1]];
+      };
+      for (let i = 0; i < n; i++) {
+        const p = at(i);
+        const q = at((i + 1) % n);
+        const du = Math.abs(q[0] - p[0]);
+        const dv = Math.abs(q[1] - p[1]);
+        const length = Math.hypot(du, dv);
+        if (length < 1e-9) continue;
+        if (du / length > 1e-4 && dv / length > 1e-4) return false;
+      }
+    }
+    return true;
+  };
+
+  it("全部の辺を切って展開すると、6 島とも辺が軸に平行になる", () => {
+    const mesh = cube();
+    const recipe = emptyRecipe();
+    recipe.seams = allSeams(mesh);
+    const r = recompute(mesh, recipe, { skipPack: true });
+    expect(r.charts.length).toBe(6);
+    expect(facesAxisAligned(mesh)).toBe(true);
+  });
+
+  it("立てても歪みは増えない（回すだけ）", () => {
+    const mesh = cube();
+    const recipe = emptyRecipe();
+    recipe.seams = allSeams(mesh);
+    const r = recompute(mesh, recipe, { skipPack: true });
+    expect(r.maxStretch).toBeCloseTo(1, 3);
+  });
+});
+
+describe("U18. 筒の側面は縦になる", () => {
+  it("縦の辺が V に平行で、上のリングが上に来る", () => {
+    const mesh = tube(12, 3);
+    const recipe = emptyRecipe();
+    recipe.seams.add(edgeKey(0, 1));
+    recompute(mesh, recipe, { skipPack: true });
+
+    const uv = mesh.uvSets.get(UV_SET)!;
+    // 3D で Y が 0 の頂点（下）と 3 の頂点（上）に対応するコーナーを集める
+    let lowV = 0;
+    let lowCount = 0;
+    let highV = 0;
+    let highCount = 0;
+    let maxTilt = 0;
+    for (let f = 0; f < mesh.faceCount; f++) {
+      const verts = mesh.faceVerts(f);
+      const at = (i: number): [number, number] => {
+        const corner = cornerIndex(mesh, cornerKey(f, i));
+        return [uv[corner * 2], uv[corner * 2 + 1]];
+      };
+      for (let i = 0; i < verts.length; i++) {
+        const y = mesh.positions[verts[i] * 3 + 1];
+        const p = at(i);
+        if (y < 1e-6) {
+          lowV += p[1];
+          lowCount++;
+        } else {
+          highV += p[1];
+          highCount++;
+        }
+        // 縦の辺（3D で Y だけが違う辺）は UV でも V に平行
+        const j = (i + 1) % verts.length;
+        const dy = Math.abs(mesh.positions[verts[j] * 3 + 1] - y);
+        const dxz = Math.hypot(
+          mesh.positions[verts[j] * 3] - mesh.positions[verts[i] * 3],
+          mesh.positions[verts[j] * 3 + 2] - mesh.positions[verts[i] * 3 + 2],
+        );
+        if (dy > 1e-6 && dxz < 1e-9) {
+          const q = at(j);
+          const du = Math.abs(q[0] - p[0]);
+          const dv = Math.abs(q[1] - p[1]);
+          maxTilt = Math.max(maxTilt, du / Math.max(1e-12, dv));
+        }
+      }
+    }
+    expect(maxTilt).toBeLessThan(1e-3);
+    expect(highV / highCount).toBeGreaterThan(lowV / lowCount);
+  });
+});
+
+describe("U19. 天面は X が +U を向く", () => {
+  it("法線が +Y の 1 枚だけの島は、3D の X の辺が +U に沿う", () => {
+    const b = new MeshBuilder({ weld: false });
+    // 上を向いた四角。斜めに置いて、向きが自動で決まらないようにする
+    b.vertex(0, 1, 0);
+    b.vertex(2, 1, 0);
+    b.vertex(2, 1, 1);
+    b.vertex(0, 1, 1);
+    b.face([0, 1, 2, 3]);
+    const mesh = b.build();
+
+    const recipe = emptyRecipe();
+    recompute(mesh, recipe, { skipPack: true });
+    const uv = mesh.uvSets.get(UV_SET)!;
+    const at = (i: number): [number, number] => {
+      const corner = cornerIndex(mesh, cornerKey(0, i));
+      return [uv[corner * 2], uv[corner * 2 + 1]];
+    };
+    // 頂点 0 → 1 は 3D の +X。UV でも +U を向く
+    const p = at(0);
+    const q = at(1);
+    const du = q[0] - p[0];
+    const dv = q[1] - p[1];
+    expect(du).toBeGreaterThan(0);
+    expect(Math.abs(dv) / Math.hypot(du, dv)).toBeLessThan(1e-4);
+  });
+});

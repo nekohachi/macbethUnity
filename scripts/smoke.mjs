@@ -2684,6 +2684,58 @@ check(
   `${glb.bytes} バイト / ノード ${glb.nodes} / UV ${glb.hasUv}`,
 );
 
+/* 42d. 展開した島がまっすぐ（`20` の T2） */
+const upright = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const objectsBefore = app.state.doc.objects.length;
+  const object = app.state.doc.addObject("cube");
+  app.viewport.syncAll();
+  app.state.select(object);
+  app.setMode("uv");
+
+  // すべてのシェルを選んでカット → 展開（Maya と同じ「切って開く」）
+  app.setCompMode("face");
+  app.state.comp.clear();
+  for (let f = 0; f < object.mesh.faceCount; f += 2) app.state.comp.add(f);
+  app.pushSelectionToUvForTest();
+  app.uv.cutOrSew(true);
+  app.uv.unfold();
+
+  // 面の辺が UV でも U 軸 / V 軸に平行か
+  const uv = object.mesh.uvSets.get("map1");
+  const corner = (f, i) => {
+    let at = 0;
+    for (let k = 0; k < f; k++) at += object.mesh.faceSize(k);
+    return at + i;
+  };
+  let worst = 0;
+  for (let f = 0; f < object.mesh.faceCount; f++) {
+    const n = object.mesh.faceSize(f);
+    for (let i = 0; i < n; i++) {
+      const a = corner(f, i);
+      const b = corner(f, (i + 1) % n);
+      const du = Math.abs(uv[b * 2] - uv[a * 2]);
+      const dv = Math.abs(uv[b * 2 + 1] - uv[a * 2 + 1]);
+      const length = Math.hypot(du, dv);
+      if (length < 1e-9) continue;
+      // 軸に平行なら、短いほうの成分はほぼ 0
+      worst = Math.max(worst, Math.min(du, dv) / length);
+    }
+  }
+  const charts = app.uv.stats().charts;
+
+  app.setMode("model");
+  app.state.select(null);
+  app.state.doc.objects.length = objectsBefore;
+  app.viewport.syncAll();
+  return { worst, charts };
+});
+check(
+  "展開した島がまっすぐ（軸に平行）",
+  upright.charts >= 2 && upright.worst < 1e-3,
+  `島 ${upright.charts} / いちばん傾いた辺 ${(upright.worst * 100).toFixed(3)}%`,
+);
+
 /* 42c. 2D で戻す / 進むが効く（`20` の T1。履歴にレシピが入っている） */
 const uvHistory = await page.evaluate(async () => {
   const app = window.macbeth;
