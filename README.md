@@ -75,7 +75,9 @@ npm run smoke      # ビルド後、実際のブラウザで通し確認（要 n
 | [11-data-architecture.md](docs/11-data-architecture.md) | **データ設計。** 作業形式 `.mbz`、PC とタブレットの受け渡し、Maya / ZBrush / Substance との経路、非破壊の層構造、UV の置き場所 |
 | [12-roadmap-v2.md](docs/12-roadmap-v2.md) | **ロードマップ v2。** 土台完成後の現在地、パリティ表、Phase A〜F（入口の切り替え、モデリング機能、UV モードの画面構成、マルチ解像度検証、外部形式、配布） |
 | [13-opus-task-02.md](docs/13-opus-task-02.md) | 作業指示書 #02（済）。選択の穴、モード切替、縦持ち、ベベル、ターゲットウェルド、マルチ解像度 V1〜V3 |
-| [14-opus-task-03.md](docs/14-opus-task-03.md) | **作業指示書 #03。** 3 本指の直接変形（ユーザー要望）、入口の切り替え（承認）、マルチ解像度 V4〜V6、ブリッジ・接続・スナップ |
+| [14-opus-task-03.md](docs/14-opus-task-03.md) | 作業指示書 #03（済）。3 本指の直接変形、入口の切り替え、マルチ解像度 V4〜V6、Phase B の残り |
+| [15-uv-design.md](docs/15-uv-design.md) | **UV モードの設計。** 非破壊の自動展開（レシピから再計算、手の編集は島単位の差分）、LSCM、経験則の切れ目、Maya と AriUV 系 MEL を参考にした操作 |
+| [16-opus-task-04.md](docs/16-opus-task-04.md) | **作業指示書 #04。** UV モード C1（切れ目を引いて開く）→ C2（自動の切れ目）→ C3（パッキングと便利機能） |
 
 ## プロトタイプ
 
