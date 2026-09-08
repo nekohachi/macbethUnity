@@ -42,6 +42,8 @@ export const HANDLE_FREE_MOVE = 3;
 export const HANDLE_VIEW_ROTATE = 13;
 export const HANDLE_UNIFORM_SCALE = 23;
 export const HANDLE_TWEAK = 30;
+/** マニピュレータではなく 3 本指のジェスチャによる変形。 */
+export const HANDLE_GESTURE = 40;
 
 export type HandleKind = "move" | "rotate" | "scale" | null;
 

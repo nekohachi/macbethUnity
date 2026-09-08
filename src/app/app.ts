@@ -24,7 +24,13 @@ import {
 import { GestureRouter, type GestureHandlers } from "./input/gestures.js";
 import { Picker, type ScreenPoint } from "./render/picking.js";
 import { Viewport } from "./render/viewport.js";
-import { HANDLE_TWEAK, Manipulator, TOUCH_TOLERANCE, handleKind } from "./render/manipulator.js";
+import {
+  HANDLE_GESTURE,
+  HANDLE_TWEAK,
+  Manipulator,
+  TOUCH_TOLERANCE,
+  handleKind,
+} from "./render/manipulator.js";
 import { AppState, type CompMode, type Display, type Manip, type Mode } from "./state.js";
 import { History } from "./history.js";
 import { Autosave } from "./storage/autosave.js";
@@ -34,7 +40,14 @@ import { MultiCut } from "./tools/multicut.js";
 import { Preselect } from "./tools/preselect.js";
 import { Selector } from "./tools/select.js";
 import { mirrorPairs, softWeights } from "./tools/softSelect.js";
-import { beginDrag, updateDrag, type DragState, type DragTarget } from "./tools/transform.js";
+import {
+  applyGestureTransform,
+  beginDrag,
+  updateDrag,
+  type DragState,
+  type DragTarget,
+  type ViewBasis,
+} from "./tools/transform.js";
 import { applyTransform } from "./render/meshView.js";
 import { Docking, type Zone } from "./ui/docking.js";
 import { Layout } from "./ui/layout.js";
@@ -115,6 +128,10 @@ export class App {
   private bevel = new BevelTool();
   /** ターゲットウェルドの相手。ドラッグ中に近づいた頂点。 */
   private weldTarget: number | null = null;
+  /** 3 本指の変形。ジェスチャ中だけ生きている。 */
+  private gestureDrag: DragState | null = null;
+  private gestureView: ViewBasis | null = null;
+  private gestureMoved = false;
   /** ベベル確定後、オプションで作り直すための控え。 */
   private bevelSnapshot: ReturnType<History["snapshot"]> | null = null;
   private docking: Docking;
@@ -237,6 +254,9 @@ export class App {
         this.multicut.clear();
         this.preselect.clear();
         this.weldTarget = null;
+        this.gestureDrag = null;
+        this.gestureView = null;
+        this.gestureMoved = false;
         if (this.bevel.active) {
           this.bevel.cancel();
           this.bevelSnapshot = null;
@@ -253,6 +273,9 @@ export class App {
         this.multicut.clear();
         this.preselect.clear();
         this.weldTarget = null;
+        this.gestureDrag = null;
+        this.gestureView = null;
+        this.gestureMoved = false;
         if (this.bevel.active) {
           this.bevel.cancel();
           this.bevelSnapshot = null;
@@ -273,9 +296,95 @@ export class App {
       pan: (dx, dy) => this.viewport.pan(dx, dy),
       dolly: (f) => this.viewport.dolly(f),
       dollyAbout: (pivot, f) => this.viewport.dollyAbout(pivot, f),
+      transformBegin: () => this.beginGestureTransform(),
+      transformUpdate: (t) => this.updateGestureTransform(t),
+      transformEnd: () => this.endGestureTransform(),
       shiftOn: (e) => this.state.modOn("shift") || e.shiftKey,
       altOn: (e) => this.state.modOn("alt") || e.altKey,
     };
+  }
+
+  /* ---- 3 本指の変形 ----------------------------------------------------- */
+
+  /** 画面 1px が、その点で何ワールド単位にあたるか。 */
+  private pixelToWorldAt(pivot: Vector3): number {
+    const right = new Vector3().setFromMatrixColumn(this.viewport.camera.matrix, 0);
+    const a = this.manipulator.toScreen(pivot);
+    const b = this.manipulator.toScreen(pivot.clone().add(right));
+    const d = Math.hypot(b.x - a.x, b.y - a.y);
+    return d > 1e-6 ? 1 / d : 0.01;
+  }
+
+  /**
+   * 3 本指で選択を変形し始める。選ぶものが無ければ false。
+   * カメラには化けさせないので、呼び出し側はそのまま何もしない。
+   */
+  private beginGestureTransform(): boolean {
+    if (this.state.tool !== "select") return false;
+    const o = this.state.selected;
+    const pivot = this.pivotWorld();
+    if (!o || !pivot) return false;
+    const target = this.captureTarget();
+    if (!target) return false;
+
+    const pivotScreen = this.manipulator.toScreen(pivot);
+    const camera = this.cameraPosition();
+    this.dragSnapshot = this.history.snapshot();
+    this.gestureDrag = beginDrag({
+      handle: HANDLE_GESTURE,
+      pivot,
+      target,
+      point: pivotScreen,
+      pivotScreen,
+      ray: this.ray(pivotScreen),
+      cameraPosition: camera,
+      label: "変形",
+    });
+    // カメラの向きはジェスチャ中固定。回転軸は視線の向き
+    this.gestureView = {
+      axis: new Vector3().subVectors(camera, pivot).normalize(),
+      right: new Vector3().setFromMatrixColumn(this.viewport.camera.matrix, 0),
+      up: new Vector3().setFromMatrixColumn(this.viewport.camera.matrix, 1),
+      pixelToWorld: this.pixelToWorldAt(pivot),
+    };
+    this.gestureMoved = false;
+    return true;
+  }
+
+  private updateGestureTransform(t: { scale: number; angle: number; dx: number; dy: number }): void {
+    const drag = this.gestureDrag;
+    const view = this.gestureView;
+    const o = this.state.selected;
+    if (!drag || !view || !o) return;
+    applyGestureTransform(drag, o, t, view);
+    this.gestureMoved = true;
+
+    if (drag.target.kind === "object") {
+      const objectView = this.viewport.viewOf(o);
+      if (objectView) {
+        applyTransform(objectView.group, o.transform);
+        objectView.group.updateMatrixWorld();
+      }
+    } else {
+      this.viewport.refreshPositions(o);
+    }
+    this.viewport.rebuildOverlay();
+    this.refreshManipulator();
+    this.hud.refreshStats();
+    byId("hudHint").innerHTML =
+      `変形 <kbd>×${t.scale.toFixed(2)}</kbd> · ` +
+      `<kbd>${Math.round((t.angle * 180) / Math.PI)}°</kbd> · 指 3 本`;
+  }
+
+  private endGestureTransform(): void {
+    const moved = this.gestureMoved;
+    this.gestureDrag = null;
+    this.gestureView = null;
+    this.gestureMoved = false;
+    if (moved && this.dragSnapshot) this.history.commit("変形", this.dragSnapshot);
+    this.dragSnapshot = null;
+    this.refresh();
+    this.hud.defaultHint();
   }
 
   /* ---- ツールの押下・移動・解放 ---------------------------------------- */

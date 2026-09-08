@@ -1,10 +1,15 @@
 /**
- * ポインタの割り振り。プロトタイプの入力部をそのまま移した。
+ * ポインタの割り振り。
+ *
+ * 指の本数で役割が分かれる:
+ *   1 本 … ツール（メッシュの上）/ タンブル（外）
+ *   2 本 … カメラ（パン / ズーム）
+ *   3 本 … 選択そのものの変形（拡大縮小・回転・移動）
  *
  * しきい値は実機（iPad mini + Apple Pencil、Wacom MovinkPad 14）で
  * 確かめた値なので、変えるときは必ず実機で確かめ直すこと。
  *   - 指を置いた直後 5px はタンブルしない（置いたときのブレ）
- *   - 2 本指は中心移動と指間距離の変化の合計が 10px を越えるまでカメラを動かさない
+ *   - 2 本指と 3 本指は、重心の移動と広がりの変化の合計が 10px を越えるまで何もしない
  *   - 複数指タップ = 120ms 以内に全部着地、どれも 12px 以内、300ms 以内に全部離れる
  *   - 長押しは 400ms
  * カメラ操作は「動いた時点」で確定し、タップは「動いていないこと」が条件なので
@@ -27,6 +32,18 @@ export interface GestureHandlers {
   redo(): void;
   /** 進行中の操作（矩形選択、ドラッグ、予測線）を確定させずに片付ける。 */
   abort(): void;
+
+  /**
+   * 3 本指の変形を始める。選んでいるものが無ければ false を返す。
+   * false のときは何もしない（カメラには化けさせない）。
+   */
+  transformBegin(): boolean;
+  /**
+   * 3 本指の変形。値は開始時点からの累積で渡す（差分の積み上げではない）。
+   * scale は倍率、angle はビュー軸まわりのラジアン、dx / dy は画面のピクセル。
+   */
+  transformUpdate(t: { scale: number; angle: number; dx: number; dy: number }): void;
+  transformEnd(): void;
 
   /**
    * 指を置いた場所がツールの対象か。true = ツール、false = タンブル（Nomad 方式）。
@@ -56,16 +73,76 @@ interface PointerRecord {
   type: string;
 }
 
-type GestureMode = "idle" | "tumble" | "pan" | "dolly" | "twofinger" | "tool" | "marking";
+type GestureMode = "idle" | "tumble" | "pan" | "dolly" | "twofinger" | "threefinger" | "tool" | "marking";
+
+/**
+ * 指の群れの重心・広がり・角度。2 本でも 3 本でも同じ式で出す。
+ * 2 本のときの広がりは指間距離の半分なので、倍率で使うぶんには同じ意味になる。
+ */
+interface Cluster {
+  cx: number;
+  cy: number;
+  /** 重心からの平均距離。 */
+  spread: number;
+  /** ポインタ ID → 重心まわりの角度（ラジアン）。回転量はこれとの差の平均で出す。 */
+  angles: Map<number, number>;
+}
+
+function clusterOf(pointers: Map<number, PointerRecord>): Cluster {
+  let cx = 0;
+  let cy = 0;
+  for (const p of pointers.values()) {
+    cx += p.x;
+    cy += p.y;
+  }
+  const n = pointers.size || 1;
+  cx /= n;
+  cy /= n;
+  let spread = 0;
+  const angles = new Map<number, number>();
+  for (const [id, p] of pointers) {
+    spread += Math.hypot(p.x - cx, p.y - cy);
+    angles.set(id, Math.atan2(p.y - cy, p.x - cx));
+  }
+  return { cx, cy, spread: spread / n, angles };
+}
+
+/** 開始時点からの回転量。指ごとの角度差を [-π, π] に畳んで平均する。 */
+function rotationSince(basis: Cluster, now: Cluster): number {
+  let sum = 0;
+  let count = 0;
+  for (const [id, a] of now.angles) {
+    const b = basis.angles.get(id);
+    if (b === undefined) continue;
+    let d = a - b;
+    while (d > Math.PI) d -= Math.PI * 2;
+    while (d < -Math.PI) d += Math.PI * 2;
+    sum += d;
+    count++;
+  }
+  return count ? sum / count : 0;
+}
+
+/**
+ * デッドゾーンの積算。重心の移動 + 広がりの変化 + 回転を弧長に直したもの。
+ * 2 本指と 3 本指で同じ物差しを使うため、ここに一本化してある。
+ *
+ * 広がりは 2 倍して数える。2 本指のときに「指の間の距離の変化」と同じ物差しになり、
+ * 実機で確かめた 10px という値がそのまま通じる。
+ */
+function clusterMotion(from: Cluster, to: Cluster): number {
+  const spread = Math.abs(to.spread - from.spread) * 2;
+  const turn = Math.abs(rotationSince(from, to)) * to.spread;
+  return Math.hypot(to.cx - from.cx, to.cy - from.cy) + spread + turn;
+}
 
 interface Gesture {
   mode: GestureMode;
   live?: boolean;
   acc?: number;
-  /** 2 本指の指間距離と中心。 */
-  d?: number;
-  cx?: number;
-  cy?: number;
+  /** 3 本指の開始基準と、直前のフレーム（2 本指は last だけ使う）。 */
+  basis?: Cluster;
+  last?: Cluster;
   zoomOnly?: boolean;
   pivot?: Vector3;
   moved?: boolean;
@@ -74,7 +151,8 @@ interface Gesture {
 }
 
 const TUMBLE_DEADZONE = 5;
-const TWOFINGER_DEADZONE = 10;
+/** 複数指のカメラ操作 / 変形が確定する動き（px）。2 本指でも 3 本指でも同じ。 */
+const CLUSTER_DEADZONE = 10;
 const TAP_MOVE = 12;
 const TAP_LAND_WINDOW = 120;
 const TAP_DURATION = 300;
@@ -153,18 +231,20 @@ export class GestureRouter {
     this.tapDown(e);
 
     if (this.pointers.size >= 2) {
+      // 3 本指の変形中に指が増えたら、そこで確定させる
+      if (this.gesture?.mode === "threefinger" && this.gesture.live) this.h.transformEnd();
       this.h.abort();
       this.cancelHold();
+      if (this.pointers.size === 3 && this.touchCount() === 3) {
+        // 3 本指は選択の変形。デッドゾーンを越えるまでは何も起こさないので、
+        // 3 本指ダブルタップ（やり直す）と両立する
+        const c = clusterOf(this.pointers);
+        this.gesture = { mode: "threefinger", live: false, acc: 0, basis: c, last: c };
+        return;
+      }
       if (this.pointers.size === 2) {
-        const a = [...this.pointers.values()];
-        this.gesture = {
-          mode: "twofinger",
-          live: false,
-          acc: 0,
-          d: Math.hypot(a[0].x - a[1].x, a[0].y - a[1].y),
-          cx: (a[0].x + a[1].x) / 2,
-          cy: (a[0].y + a[1].y) / 2,
-        };
+        const c = clusterOf(this.pointers);
+        this.gesture = { mode: "twofinger", live: false, acc: 0, last: c };
         // F を押しながらのピンチ: 選択の中心を画面上で固定したままズーム
         if (this.fHeld) {
           this.fChord = true;
@@ -249,31 +329,55 @@ export class GestureRouter {
     if (g.mode === "dolly") return this.h.dolly(1 + (e.clientX - px + (e.clientY - py)) * 0.006);
 
     if (g.mode === "twofinger") {
-      const a = [...this.pointers.values()];
-      if (a.length < 2) return;
-      const nd = Math.hypot(a[0].x - a[1].x, a[0].y - a[1].y);
-      const ncx = (a[0].x + a[1].x) / 2;
-      const ncy = (a[0].y + a[1].y) / 2;
+      if (this.pointers.size < 2) return;
+      const now = clusterOf(this.pointers);
+      const last = g.last ?? now;
       if (!g.live) {
-        g.acc = (g.acc ?? 0) + Math.hypot(ncx - (g.cx ?? 0), ncy - (g.cy ?? 0)) + Math.abs(nd - (g.d ?? 0));
-        if (g.acc < TWOFINGER_DEADZONE) return;
+        g.acc = (g.acc ?? 0) + clusterMotion(last, now);
+        g.last = now;
+        if (g.acc < CLUSTER_DEADZONE) return;
         // 確定した時点を基準にし直して飛びを防ぐ
         g.live = true;
         this.tap.moved = true;
-        g.d = nd;
-        g.cx = ncx;
-        g.cy = ncy;
         return;
       }
+      const factor = last.spread > 1e-6 && now.spread > 1e-6 ? last.spread / now.spread : 1;
       if (g.zoomOnly && g.pivot) {
-        if ((g.d ?? 0) > 0 && nd > 0) this.h.dollyAbout(g.pivot, (g.d ?? 1) / nd);
+        this.h.dollyAbout(g.pivot, factor);
       } else {
-        if ((g.d ?? 0) > 0 && nd > 0) this.h.dolly((g.d ?? 1) / nd);
-        this.h.pan(ncx - (g.cx ?? 0), ncy - (g.cy ?? 0));
+        this.h.dolly(factor);
+        this.h.pan(now.cx - last.cx, now.cy - last.cy);
       }
-      g.d = nd;
-      g.cx = ncx;
-      g.cy = ncy;
+      g.last = now;
+      return;
+    }
+
+    if (g.mode === "threefinger") {
+      if (this.pointers.size !== 3) return;
+      const now = clusterOf(this.pointers);
+      if (!g.live) {
+        g.acc = (g.acc ?? 0) + clusterMotion(g.last ?? now, now);
+        g.last = now;
+        if (g.acc < CLUSTER_DEADZONE) return;
+        // 選ぶものが無ければ変形しない。カメラにも化けさせない
+        if (!this.h.transformBegin()) {
+          this.gesture = { mode: "idle" };
+          return;
+        }
+        g.live = true;
+        // 変形として確定したので、タップ（やり直す）にはしない
+        this.tap.moved = true;
+        // 確定した時点を基準にし直して飛びを防ぐ
+        g.basis = now;
+        return;
+      }
+      const basis = g.basis ?? now;
+      this.h.transformUpdate({
+        scale: basis.spread > 1e-6 ? now.spread / basis.spread : 1,
+        angle: rotationSince(basis, now),
+        dx: now.cx - basis.cx,
+        dy: now.cy - basis.cy,
+      });
       return;
     }
 
@@ -287,6 +391,8 @@ export class GestureRouter {
   private up(e: PointerEvent): void {
     this.cancelHold();
     const g = this.gesture;
+    // 3 本指の変形は、指が 1 本でも離れた時点で確定する
+    if (g?.mode === "threefinger" && g.live) this.h.transformEnd();
     const wasTool = g?.mode === "tool";
     const moved = wasTool && !!g?.moved;
     this.pointers.delete(e.pointerId);
@@ -301,6 +407,7 @@ export class GestureRouter {
   }
 
   private cancelled(e: PointerEvent): void {
+    if (this.gesture?.mode === "threefinger" && this.gesture.live) this.h.transformEnd();
     this.pointers.delete(e.pointerId);
     this.cancelHold();
     this.h.abort();

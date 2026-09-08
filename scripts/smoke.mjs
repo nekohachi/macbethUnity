@@ -439,7 +439,176 @@ if (from && to) {
 }
 check("ターゲットウェルドできる", weldOk, `頂点 ${weld.verts} → ${weldOk ? weld.verts - 1 : "変化なし"}`);
 
-/* 21. 例外が出ていない */
+/* 21. 3 本指のピンチで選択を拡大縮小できる（マニピュレータを触らない） */
+await page.keyboard.press("F8"); // オブジェクトモード
+await page.waitForTimeout(500);
+await page.mouse.click(ON_MESH.x, ON_MESH.y);
+const pinch = await page.evaluate(async (center) => {
+  const canvas = document.getElementById("gl");
+  const app = window.macbeth;
+  const before = app.state.selected.transform.scale.slice();
+  const fire = (type, id, x, y) =>
+    canvas.dispatchEvent(
+      new PointerEvent(type, {
+        pointerId: id,
+        pointerType: "touch",
+        isPrimary: id === 1,
+        clientX: x,
+        clientY: y,
+        buttons: type === "pointerup" ? 0 : 1,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+  // 重心のまわりに 3 本置いて、外へ広げる
+  const at = (k, r) => ({
+    x: center.x + Math.cos((k / 3) * Math.PI * 2) * r,
+    y: center.y + Math.sin((k / 3) * Math.PI * 2) * r,
+  });
+  for (let k = 0; k < 3; k++) {
+    const p = at(k, 60);
+    fire("pointerdown", k + 1, p.x, p.y);
+  }
+  for (let step = 1; step <= 10; step++) {
+    const r = 60 + step * 6;
+    for (let k = 0; k < 3; k++) {
+      const p = at(k, r);
+      fire("pointermove", k + 1, p.x, p.y);
+    }
+  }
+  const during = app.state.selected.transform.scale.slice();
+  for (let k = 0; k < 3; k++) {
+    const p = at(k, 120);
+    fire("pointerup", k + 1, p.x, p.y);
+  }
+  await new Promise((r) => setTimeout(r, 50));
+  return { before, during, after: app.state.selected.transform.scale.slice() };
+}, ON_MESH);
+const grew = pinch.after[0] > pinch.before[0] * 1.2;
+await page.keyboard.press("Control+z");
+const undoneScale = await page.evaluate(() => window.macbeth.state.selected.transform.scale.slice());
+check(
+  "3 本指のピンチで選択を拡大できる",
+  grew && Math.abs(undoneScale[0] - pinch.before[0]) < 1e-6,
+  `${pinch.before[0].toFixed(2)} → ${pinch.after[0].toFixed(2)} → 取り消し ${undoneScale[0].toFixed(2)}`,
+);
+
+/* 21b. 面を選んだ状態でも 3 本指で拡大できる（要望の本体） */
+await page.keyboard.press("F11");
+await page.waitForTimeout(500);
+await page.mouse.click(ON_MESH.x, ON_MESH.y);
+const facePinch = await page.evaluate(async (center) => {
+  const canvas = document.getElementById("gl");
+  const app = window.macbeth;
+  const comp = app.state.comp.size;
+  const before = Array.from(app.state.selected.mesh.positions);
+  const fire = (type, id, x, y) =>
+    canvas.dispatchEvent(
+      new PointerEvent(type, {
+        pointerId: id,
+        pointerType: "touch",
+        isPrimary: id === 21,
+        clientX: x,
+        clientY: y,
+        buttons: type === "pointerup" ? 0 : 1,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+  const at = (k, r) => ({
+    x: center.x + Math.cos((k / 3) * Math.PI * 2) * r,
+    y: center.y + Math.sin((k / 3) * Math.PI * 2) * r,
+  });
+  for (let k = 0; k < 3; k++) {
+    const p = at(k, 50);
+    fire("pointerdown", k + 21, p.x, p.y);
+  }
+  for (let step = 1; step <= 10; step++) {
+    for (let k = 0; k < 3; k++) {
+      const p = at(k, 50 + step * 7);
+      fire("pointermove", k + 21, p.x, p.y);
+    }
+  }
+  for (let k = 0; k < 3; k++) {
+    const p = at(k, 120);
+    fire("pointerup", k + 21, p.x, p.y);
+  }
+  await new Promise((r) => setTimeout(r, 50));
+  const after = Array.from(app.state.selected.mesh.positions);
+  let moved = 0;
+  for (let i = 0; i < before.length; i++) if (Math.abs(before[i] - after[i]) > 1e-4) moved++;
+  return { comp, moved, total: before.length / 3 };
+}, ON_MESH);
+await page.keyboard.press("Control+z");
+check(
+  "面を選んで 3 本指で拡大できる",
+  facePinch.comp === 1 && facePinch.moved > 0,
+  `選択 ${facePinch.comp} 面 / 動いた成分 ${facePinch.moved}`,
+);
+
+/* 22. 3 本指ダブルタップ（やり直す）は変形と排他 */
+await page.keyboard.press("F8");
+await page.waitForTimeout(500);
+await page.mouse.click(ON_MESH.x, ON_MESH.y);
+const exclusive = await page.evaluate(async (center) => {
+  const canvas = document.getElementById("gl");
+  const app = window.macbeth;
+  const fire = (type, id, x, y) =>
+    canvas.dispatchEvent(
+      new PointerEvent(type, {
+        pointerId: id,
+        pointerType: "touch",
+        isPrimary: id === 31,
+        clientX: x,
+        clientY: y,
+        buttons: type === "pointerup" ? 0 : 1,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+  const at = (k, r) => ({
+    x: center.x + Math.cos((k / 3) * Math.PI * 2) * r,
+    y: center.y + Math.sin((k / 3) * Math.PI * 2) * r,
+  });
+
+  // まず 3 本指で拡大して、取り消す。やり直せる状態を作る
+  const base = app.state.selected.transform.scale[0];
+  for (let k = 0; k < 3; k++) {
+    const p = at(k, 50);
+    fire("pointerdown", k + 31, p.x, p.y);
+  }
+  for (let step = 1; step <= 10; step++) {
+    for (let k = 0; k < 3; k++) {
+      const p = at(k, 50 + step * 7);
+      fire("pointermove", k + 31, p.x, p.y);
+    }
+  }
+  for (let k = 0; k < 3; k++) fire("pointerup", k + 31, at(k, 120).x, at(k, 120).y);
+  await new Promise((r) => setTimeout(r, 50));
+  const scaled = app.state.selected.transform.scale[0];
+
+  app.history.undo();
+  const undone = app.state.selected.transform.scale[0];
+
+  // 動かさずに 3 本指で 2 回叩く。変形ではなくやり直しになるはず
+  for (let round = 0; round < 2; round++) {
+    for (let k = 0; k < 3; k++) fire("pointerdown", k + 41, center.x + k * 30, center.y);
+    for (let k = 0; k < 3; k++) fire("pointerup", k + 41, center.x + k * 30, center.y);
+    await new Promise((r) => setTimeout(r, 60));
+  }
+  await new Promise((r) => setTimeout(r, 80));
+  return { base, scaled, undone, redone: app.state.selected.transform.scale[0] };
+}, ON_MESH);
+check(
+  "3 本指ダブルタップは変形にならず、やり直しになる",
+  exclusive.scaled > exclusive.base * 1.2 &&
+    Math.abs(exclusive.undone - exclusive.base) < 1e-6 &&
+    Math.abs(exclusive.redone - exclusive.scaled) < 1e-6,
+  `拡大 ${exclusive.scaled.toFixed(2)} → 取り消し ${exclusive.undone.toFixed(2)} → 3本指2回 ${exclusive.redone.toFixed(2)}`,
+);
+await page.keyboard.press("Control+z");
+
+/* 23. 例外が出ていない */
 check("例外なし", errors.length === 0, errors.join(" / "));
 
 await page.screenshot({ path: SHOT });

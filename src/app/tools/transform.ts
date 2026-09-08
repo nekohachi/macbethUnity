@@ -160,6 +160,70 @@ export function updateDrag(
   );
 }
 
+/** 3 本指の変形で使う、そのときのカメラの向き。ジェスチャ中は固定する。 */
+export interface ViewBasis {
+  /** 回転軸（カメラ → ピボット の逆向き）。 */
+  axis: Vector3;
+  right: Vector3;
+  up: Vector3;
+  /** 画面 1px が、ピボットの位置で何ワールド単位にあたるか。 */
+  pixelToWorld: number;
+}
+
+/**
+ * 3 本指の変形。マニピュレータを触らずに、選択そのものを動かす。
+ *
+ * ピボットのまわりで 均等スケール → ビュー軸まわりの回転 → ビュー平面の移動 を
+ * この順に合成する。開始時点の控えに毎回当て直すので、行ったり来たりしてもずれない。
+ * ソフト選択の重みと対称編集は、コンポーネントの控えにそのまま入っている。
+ */
+export function applyGestureTransform(
+  drag: DragState,
+  object: SceneObject,
+  t: { scale: number; angle: number; dx: number; dy: number },
+  view: ViewBasis,
+): void {
+  // 裏返らないように下限を置く
+  const s = Math.max(0.02, t.scale);
+  const q = new Quaternion().setFromAxisAngle(view.axis, t.angle);
+  const move = view.right
+    .clone()
+    .multiplyScalar(t.dx * view.pixelToWorld)
+    .addScaledVector(view.up, -t.dy * view.pixelToWorld);
+  const pivot = drag.pivot;
+  const target = drag.target;
+
+  /** ピボットのまわりで拡大 → 回転 → 平行移動。 */
+  const place = (p: Vector3): Vector3 =>
+    p.clone().sub(pivot).multiplyScalar(s).applyQuaternion(q).add(pivot).add(move);
+
+  if (target.kind === "object") {
+    const t0 = target.transform;
+    const moved = place(new Vector3(t0.position[0], t0.position[1], t0.position[2]));
+    const rot = q
+      .clone()
+      .multiply(new Quaternion(t0.rotation[0], t0.rotation[1], t0.rotation[2], t0.rotation[3]));
+    object.transform = {
+      position: [moved.x, moved.y, moved.z],
+      rotation: [rot.x, rot.y, rot.z, rot.w],
+      scale: [t0.scale[0] * s, t0.scale[1] * s, t0.scale[2] * s],
+    };
+    return;
+  }
+
+  for (let i = 0; i < target.verts.length; i++) {
+    const start = target.world[i];
+    // 重みで元の位置と変形後の間を取る（ソフト選択）
+    const w = start.clone().lerp(place(start), target.weights[i]).applyMatrix4(target.inverse);
+    object.mesh.setPosition(target.verts[i], w.x, w.y, w.z);
+  }
+  // 対称編集: 相手側をローカル X で鏡映した位置に置く
+  for (const [from, to] of target.mirror) {
+    const p = object.mesh.getPosition(from);
+    object.mesh.setPosition(to, -p[0], p[1], p[2]);
+  }
+}
+
 /**
  * 控えた開始状態に差分を当てる。
  * オブジェクトはトランスフォームを、コンポーネントは頂点座標を書き換える。
