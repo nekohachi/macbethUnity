@@ -78,6 +78,12 @@ const MAT = {
   pointSel: new PointsMaterial({ color: 0xf0913c, size: 9, sizeAttenuation: false }),
   pin: new PointsMaterial({ color: 0x6cf07a, size: 11, sizeAttenuation: false }),
   border: new LineBasicMaterial({ color: 0x93a1ad }),
+  manip: new LineBasicMaterial({ color: 0xe2c860 }),
+  manipHot: new LineBasicMaterial({ color: 0xffe680 }),
+  manipCenter: new PointsMaterial({ color: 0xe2c860, size: 10, sizeAttenuation: false }),
+  // ピボット編集中は 3D と同じ黄緑
+  manipPivot: new LineBasicMaterial({ color: 0x9ade4a }),
+  manipPivotPoint: new PointsMaterial({ color: 0x9ade4a, size: 12, sizeAttenuation: false }),
 };
 
 /** 市松模様のテクスチャ。歪みを目で見るための背景。 */
@@ -458,6 +464,93 @@ export class UvView {
       for (const v of pins) pts.push(t.vertexUv[v * 2], t.vertexUv[v * 2 + 1], 0.06);
       this.addOverlay(new Points(geometryOf(pts), MAT.pin));
     }
+  }
+
+  /* ---- 2D のマニピュレータ ---------------------------------------------- */
+
+  private manip: LineSegments | null = null;
+  private manipPoints: Points | null = null;
+
+  /**
+   * 2D のマニピュレータを描く。3D と同じ形（U と V の矢印、中心、リング、箱）を
+   * 平面に置いたもの。大きさは画面上で一定になるようにする。
+   */
+  drawManipulator(pivot: UvPoint | null, hot: number, sizePx: number, pivotEdit: boolean): void {
+    for (const node of [this.manip, this.manipPoints]) {
+      if (!node) continue;
+      this.group.remove(node);
+      node.geometry.dispose();
+    }
+    this.manip = null;
+    this.manipPoints = null;
+    if (!pivot) return;
+
+    const k = this.pixelToUv();
+    const len = sizePx * k;
+    const lines: number[] = [];
+    const push = (x0: number, y0: number, x1: number, y1: number) => {
+      lines.push(pivot.u + x0, pivot.v + y0, 0.08, pivot.u + x1, pivot.v + y1, 0.08);
+    };
+    // U と V の矢印（矢じりは短い 2 本で表す）
+    push(0, 0, len, 0);
+    push(len, 0, len - len * 0.18, len * 0.09);
+    push(len, 0, len - len * 0.18, -len * 0.09);
+    push(0, 0, 0, len);
+    push(0, len, len * 0.09, len - len * 0.18);
+    push(0, len, -len * 0.09, len - len * 0.18);
+    if (!pivotEdit) {
+      // 拡大縮小の箱（斜め）
+      const s = len * 0.78;
+      const box = len * 0.07;
+      push(s - box, s - box, s + box, s - box);
+      push(s + box, s - box, s + box, s + box);
+      push(s + box, s + box, s - box, s + box);
+      push(s - box, s + box, s - box, s - box);
+      push(0, 0, s - box, s - box);
+      // 回転のリング
+      const r = len * 1.15;
+      const segments = 48;
+      for (let i = 0; i < segments; i++) {
+        const a0 = (i / segments) * Math.PI * 2;
+        const a1 = ((i + 1) / segments) * Math.PI * 2;
+        push(Math.cos(a0) * r, Math.sin(a0) * r, Math.cos(a1) * r, Math.sin(a1) * r);
+      }
+    }
+    const g = geometryOf(lines);
+    const node = new LineSegments(g, pivotEdit ? MAT.manipPivot : hot >= 0 ? MAT.manipHot : MAT.manip);
+    node.renderOrder = 6;
+    this.group.add(node);
+    this.manip = node;
+
+    const center = new Points(
+      geometryOf([pivot.u, pivot.v, 0.09]),
+      pivotEdit ? MAT.manipPivotPoint : MAT.manipCenter,
+    );
+    center.renderOrder = 7;
+    this.group.add(center);
+    this.manipPoints = center;
+  }
+
+  /**
+   * マニピュレータのハンドルを拾う。番号は 3D と同じ意味:
+   * 0 = U 移動、1 = V 移動、3 = 自由移動、10 = 回転、23 = 均等スケール。
+   */
+  pickManipulator(p: ScreenPoint, pivot: UvPoint | null, sizePx: number, pivotEdit: boolean): number {
+    if (!pivot) return -1;
+    const at = this.toUv(p);
+    const k = this.pixelToUv();
+    const du = (at.u - pivot.u) / k;
+    const dv = (at.v - pivot.v) / k;
+    const distance = Math.hypot(du, dv);
+    if (distance < 14) return 3;
+
+    const near = (x: number, y: number) => Math.hypot(du - x, dv - y) < 14;
+    if (!pivotEdit && near(sizePx * 0.78, sizePx * 0.78)) return 23;
+    // 矢印は軸から外れていないかで見る
+    if (du > 10 && du < sizePx * 1.1 && Math.abs(dv) < 12) return 0;
+    if (dv > 10 && dv < sizePx * 1.1 && Math.abs(du) < 12) return 1;
+    if (!pivotEdit && Math.abs(distance - sizePx * 1.15) < 12) return 10;
+    return -1;
   }
 
   private addOverlay(node: ThreeMesh | LineSegments | Points): void {

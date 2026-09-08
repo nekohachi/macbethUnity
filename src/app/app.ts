@@ -939,6 +939,7 @@ export class App {
     this.manipulator.hot = -1;
     this.syncToggleButtons();
     this.refreshManipulator();
+    this.uv?.refreshManipulator();
     this.refresh();
     this.hud.toast(
       this.state.pivotEdit ? "ピボット編集: オン（もう一度 D で終了）" : "ピボット編集: オフ",
@@ -949,6 +950,7 @@ export class App {
   private resetPivot(): void {
     this.state.pivotOverride = null;
     this.refreshManipulator();
+    this.uv?.resetPivot();
     this.hud.toast("ピボットを選択の中心へ");
   }
 
@@ -956,6 +958,7 @@ export class App {
     this.state.manipSize = Math.min(MANIP_SIZE_MAX, Math.max(MANIP_SIZE_MIN, size));
     localStorage.setItem("macbeth.manipSize", String(this.state.manipSize));
     this.refreshManipulator();
+    this.uv?.refreshManipulator();
     this.refresh();
     this.hud.toast(`マニピュレータの大きさ ×${this.state.manipSize.toFixed(2)}`);
   }
@@ -1005,6 +1008,7 @@ export class App {
       localStorage.setItem("macbeth.manipSize", String(this.state.manipSize));
       paint();
       this.refreshManipulator();
+      this.uv?.refreshManipulator();
     };
     let active = false;
     gauge.addEventListener("touchstart", (e) => e.preventDefault(), { passive: false });
@@ -1051,6 +1055,7 @@ export class App {
         run: () => {
           this.state.pivotEdit = false;
           this.state.pivotOverride = null;
+          this.uv?.resetPivot();
           this.setManip("all");
           this.setManipSize(1);
           this.syncToggleButtons();
@@ -1820,6 +1825,14 @@ export class App {
       { kind: "button", icon: ICONS.vEdge, title: "ソー（選んだ切れ目を縫う）", onTap: () => uv.cutOrSew(false) },
       {
         kind: "button",
+        icon: ICONS.pivot,
+        title: "マニピュレータ（タップで大きさのスライダー · 長押しでピボット）",
+        pressed: () => this.state.pivotEdit,
+        radial: () => this.manipulatorMenu(),
+        onTap: (b) => this.openManipSizeGauge(b),
+      },
+      {
+        kind: "button",
         icon: ICONS.snap,
         title: "スナップ（長押しで グリッド / UV 頂点）",
         pressed: () => this.state.snapOn,
@@ -1882,8 +1895,25 @@ export class App {
         redo: () => this.doRedo(),
         shiftOn: (e) => this.state.modOn("shift") || e.shiftKey,
         ctrlOn: (e) => this.state.modOn("ctrl") || e.ctrlKey || e.metaKey,
+        marquee: (rect) => {
+          // 枠は #vp の中に置いてあるので、2D ペインのぶんだけずらす
+          if (!rect) {
+            this.marqueeEl.style.display = "none";
+            return;
+          }
+          const pane = byId("paneUv");
+          const dx = pane.offsetLeft;
+          const dy = pane.offsetTop;
+          this.marqueeEl.style.display = "block";
+          this.marqueeEl.style.left = `${Math.min(rect.x0, rect.x1) + dx}px`;
+          this.marqueeEl.style.top = `${Math.min(rect.y0, rect.y1) + dy}px`;
+          this.marqueeEl.style.width = `${Math.abs(rect.x1 - rect.x0)}px`;
+          this.marqueeEl.style.height = `${Math.abs(rect.y1 - rect.y0)}px`;
+        },
         uvSnap: () => (this.state.snapping ? this.state.uvSnap : null),
         selectedFaces: () => (this.state.compMode === "face" ? [...this.state.comp] : []),
+        manipSize: () => this.state.manipSize,
+        pivotEdit: () => this.state.pivotEdit,
       });
       this.buildUvSwitch();
     }
@@ -3071,7 +3101,15 @@ export class App {
     this.hud.toast(`${o.name} を追加しました`);
   }
 
+  /**
+   * 選択モードを変える。
+   *
+   * **選んだものが今のツールを上書きする**（ユーザー要望）。マルチカット中に
+   * マーキングメニューで「エッジ」を選んだら、マルチカットは終わって選択に戻る。
+   * マーキングメニューもツール列のボタンもここを通る。
+   */
   setCompMode(mode: CompMode): void {
+    if (this.state.tool !== "select") this.setTool("select");
     if (this.state.compMode === mode) return;
     this.state.compMode = mode;
     this.state.comp.clear();

@@ -2158,7 +2158,128 @@ check(
     `U ${uvOps.sample[0].toFixed(3)} → ${uvOps.sample[1].toFixed(3)}（1/8 に乗る ${uvOps.onGrid}）`,
 );
 
-/* 35. 例外が出ていない */
+/* 35. 選択モードを選ぶと今のツールを上書きする（マルチカットが残らない） */
+const toolOverride = await page.evaluate(() => {
+  const app = window.macbeth;
+  app.setMode("model");
+  app.setTool("multicut");
+  const before = app.state.tool;
+  // マーキングメニューと同じ経路でエッジモードへ
+  app.setCompMode("edge");
+  return { before, after: app.state.tool, mode: app.state.compMode };
+});
+check(
+  "選択モードを選ぶとツールが上書きされる",
+  toolOverride.before === "multicut" && toolOverride.after === "select" && toolOverride.mode === "edge",
+  `${toolOverride.before} → エッジ選択 → ${toolOverride.after}`,
+);
+
+/* 36. UV の 2D: 長押しで選択が消えない、矩形選択、2D マニピュレータ */
+const uv2d = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const objectsBefore = app.state.doc.objects.length;
+  const object = app.state.doc.addObject("cube");
+  app.viewport.syncAll();
+  app.state.select(object);
+  app.setCompMode("face");
+  app.setMode("uv");
+  app.uv.view.frameUnit();
+  app.uv.setUnit("vertex");
+
+  const canvas = document.getElementById("uvgl");
+  const rect = document.getElementById("paneUv").getBoundingClientRect();
+  const fire = (type, x, y, id = 70, kind = "touch") =>
+    canvas.dispatchEvent(
+      new PointerEvent(type, {
+        pointerId: id,
+        pointerType: kind,
+        isPrimary: true,
+        clientX: x,
+        clientY: y,
+        button: 0,
+        buttons: type === "pointerup" ? 0 : 1,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+
+  // 矩形選択: 何もないところから引く
+  const a = app.uv.view.toScreen(-0.1, 1.1);
+  const b = app.uv.view.toScreen(0.4, 0.4);
+  fire("pointerdown", rect.x + a.x, rect.y + a.y, 71, "mouse");
+  for (let i = 1; i <= 8; i++) {
+    fire("pointermove", rect.x + a.x + ((b.x - a.x) * i) / 8, rect.y + a.y + ((b.y - a.y) * i) / 8, 71, "mouse");
+  }
+  const marqueeShown = document.getElementById("marquee").style.display === "block";
+  fire("pointerup", rect.x + b.x, rect.y + b.y, 71, "mouse");
+  const picked = app.uv.chosen.size;
+
+  // その選択を持ったまま、何もないところを長押し → 選択は残る
+  const empty = app.uv.view.toScreen(1.15, -0.15);
+  fire("pointerdown", rect.x + empty.x, rect.y + empty.y, 72);
+  await new Promise((r) => setTimeout(r, 500));
+  const menuOpen = !!document.querySelector(".radial");
+  fire("pointerup", rect.x + empty.x, rect.y + empty.y, 72);
+  const keptAfterHold = app.uv.chosen.size;
+  document.querySelector(".radial")?.remove();
+
+  // 2D マニピュレータ: シェルを選んで中心をつかんで動かす
+  app.uv.setUnit("shell");
+  app.uv.chosen.clear();
+  app.uv.chosen.add(0);
+  app.uv.refreshHighlight();
+  const pivot = app.uv.manipulatorPivot();
+  const uvOf = () => [...object.mesh.uvSets.get("map1")];
+  const beforeMove = uvOf();
+  const at = app.uv.view.toScreen(pivot.u, pivot.v);
+  const to = app.uv.view.toScreen(pivot.u + 0.15, pivot.v);
+  fire("pointerdown", rect.x + at.x, rect.y + at.y, 73, "mouse");
+  for (let i = 1; i <= 6; i++) {
+    fire("pointermove", rect.x + at.x + ((to.x - at.x) * i) / 6, rect.y + at.y, 73, "mouse");
+  }
+  fire("pointerup", rect.x + to.x, rect.y + to.y, 73, "mouse");
+  const afterMove = uvOf();
+  const movedU = afterMove[0] - beforeMove[0];
+
+  // 回転のリングをつかんで回す
+  const size = 60 * app.state.manipSize;
+  const k = app.uv.view.pixelToUv();
+  const p2 = app.uv.manipulatorPivot();
+  const ring = app.uv.view.toScreen(p2.u + size * 1.15 * k, p2.v);
+  const ringTo = app.uv.view.toScreen(p2.u, p2.v + size * 1.15 * k);
+  const beforeRot = uvOf();
+  fire("pointerdown", rect.x + ring.x, rect.y + ring.y, 74, "mouse");
+  for (let i = 1; i <= 8; i++) {
+    fire(
+      "pointermove",
+      rect.x + ring.x + ((ringTo.x - ring.x) * i) / 8,
+      rect.y + ring.y + ((ringTo.y - ring.y) * i) / 8,
+      74,
+      "mouse",
+    );
+  }
+  fire("pointerup", rect.x + ringTo.x, rect.y + ringTo.y, 74, "mouse");
+  const rotated = beforeRot.some((v, i) => Math.abs(v - object.mesh.uvSets.get("map1")[i]) > 1e-4);
+
+  app.setMode("model");
+  app.state.select(null);
+  app.state.doc.objects.length = objectsBefore;
+  app.viewport.syncAll();
+  return { marqueeShown, picked, menuOpen, keptAfterHold, movedU, rotated };
+});
+check(
+  "UV の 2D: 矩形選択・長押しで消えない・マニピュレータ",
+  uv2d.marqueeShown &&
+    uv2d.picked > 0 &&
+    uv2d.menuOpen &&
+    uv2d.keptAfterHold === uv2d.picked &&
+    Math.abs(uv2d.movedU - 0.15) < 0.02 &&
+    uv2d.rotated,
+  `矩形 ${uv2d.picked} 点 / 長押し後 ${uv2d.keptAfterHold} 点（メニュー ${uv2d.menuOpen}）/ ` +
+    `移動 ${uv2d.movedU.toFixed(3)} / 回転 ${uv2d.rotated}`,
+);
+
+/* 37. 例外が出ていない */
 check("例外なし", errors.length === 0, errors.join(" / "));
 
 await page.screenshot({ path: SHOT });
