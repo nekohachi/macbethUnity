@@ -12,6 +12,7 @@ import {
   defaultParams,
   cloneTransform,
   combineMeshes,
+  rebuildRecipeFor,
   recipeFromMesh,
   recompute,
   type CameraBookmark,
@@ -286,6 +287,11 @@ export class App {
   private gestureDrag: DragState | null = null;
   /** UV モード。最初に入ったときに作る。 */
   uv: UvMode | null = null;
+  /** 通し確認からオプションの操作を叩くための入口。 */
+  panelHostForTest(): PanelHost {
+    return this.panelHost();
+  }
+
   /** 通し確認から選択の同期を叩くための入口。 */
   pushSelectionToUvForTest(): void {
     this.pushSelectionToUv();
@@ -1614,8 +1620,13 @@ export class App {
     if (!m) return;
     m.x1 = p.x;
     m.y1 = p.y;
-    this.marqueeEl.style.left = `${Math.min(m.x0, m.x1)}px`;
-    this.marqueeEl.style.top = `${Math.min(m.y0, m.y1)}px`;
+    // 座標は 3D ペインの中のもの。枠は #vp に置いてあるので、ペインの位置ぶんずらす
+    // （UV モードの分割表示だと、ずらさないと 2D 側に枠が出る）
+    const pane = byId("pane3d");
+    const dx = pane.offsetLeft;
+    const dy = pane.offsetTop;
+    this.marqueeEl.style.left = `${Math.min(m.x0, m.x1) + dx}px`;
+    this.marqueeEl.style.top = `${Math.min(m.y0, m.y1) + dy}px`;
     this.marqueeEl.style.width = `${Math.abs(m.x1 - m.x0)}px`;
     this.marqueeEl.style.height = `${Math.abs(m.y1 - m.y0)}px`;
   }
@@ -1861,6 +1872,29 @@ export class App {
       cmd("sew", ICONS.vEdge, "ソー（選んだ切れ目を縫う）", () => uv.cutOrSew(false)),
       { kind: "separator" },
       cmd("frame", ICONS.frame, "選択にフレーム", () => uv.frame()),
+      // 3D ビューも出ているので、カメラと追加はモデリングと同じものを置く
+      { kind: "separator" },
+      { kind: "label", text: "3D" },
+      {
+        kind: "button",
+        id: "camera",
+        icon: ICONS.camera,
+        title: "カメラ（長押しでビューの切り替え · タップで設定）",
+        pressed: () => this.state.camOpts.ortho,
+        radial: () => this.cameraMenu(),
+        radialList: () => this.savedCameraItems(),
+        options: () => [cameraSection(this.optionsState(), this.panelHost())],
+        onTap: () => {},
+      },
+      {
+        kind: "button",
+        id: "add",
+        icon: () => PRIMITIVE_ICONS[this.primitiveIconKind()] ?? ICONS.prim,
+        title: "追加（長押しでプリミティブを選ぶ · タップで入力ノード）",
+        radial: () => this.primitiveMenu(),
+        options: () => [primitiveSection(this.optionsState(), this.panelHost())],
+        onTap: () => {},
+      },
     ];
   }
 
@@ -3179,6 +3213,13 @@ export class App {
         this.paramSnapshot ??= this.history.snapshot();
         o.params[key] = value;
         o.rebuild();
+        // 分割数を変えても UV はレシピから作り直す（頂点の番号が変わるので、
+        // 切れ目は新しいメッシュの UV から取り直す）
+        if (o.uv) {
+          o.uv = rebuildRecipeFor(o.uv, o.mesh);
+          recompute(o.mesh, o.uv);
+          this.uv?.rebuild();
+        }
         this.viewport.rebuildObject(o);
         this.viewport.rebuildOverlay();
         this.hud.refreshStats();

@@ -343,6 +343,22 @@ export function recipeFromMesh(mesh: Mesh): UvRecipe {
  * 土台の UV の上で辺を縫う（Maya の Sew）。`method: "none"` のとき、
  * 切れ目を消しただけでは UV は動かないので、両側のコーナーを中点へ寄せる。
  */
+/**
+ * パラメトリックなプリミティブを作り直したときのレシピ。
+ *
+ * 分割数を変えると頂点の番号がすべて変わるので、切れ目・ピン・手で動かした差分は
+ * そのままでは意味を持たない（別のところを指してしまう）。**設定だけ残して**、
+ * 新しいメッシュが持っている UV から切れ目を取り直す。
+ * こうすると「分割を変えても UV はレシピから作り直される」（非破壊のまま）。
+ */
+export function rebuildRecipeFor(recipe: UvRecipe, mesh: Mesh): UvRecipe {
+  const next = recipeFromMesh(mesh);
+  next.method = recipe.method;
+  next.packing = { ...recipe.packing };
+  next.autoSeamParams = { ...recipe.autoSeamParams };
+  return next;
+}
+
 export function sewInBase(mesh: Mesh, base: Float32Array, edges: Iterable<EdgeKey>): void {
   const wanted = new Set(edges);
   if (!wanted.size) return;

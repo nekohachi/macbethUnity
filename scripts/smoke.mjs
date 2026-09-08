@@ -2955,6 +2955,135 @@ check(
     `3本指 ${uvHistory.redoneU.toFixed(3)} / 切れ目 ${uvHistory.seamsBefore} → ${uvHistory.seamsAfterCut} → ${uvHistory.seamsUndone}`,
 );
 
+/* 43a. T8 のフィードバック 4 点（`21` のフィードバック） */
+const feedback = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const core = window.macbethCore;
+  const objectsBefore = app.state.doc.objects.length;
+  const out = {};
+
+  // (1) UV モードのツール列に、カメラと追加のグループがある
+  const sphere = app.state.doc.addObject("sphere");
+  sphere.params.sdAxis = 16;
+  sphere.params.sdHeight = 12;
+  sphere.rebuild();
+  app.viewport.syncAll();
+  app.state.select(sphere);
+  app.setMode("uv");
+  out.uvGroups = [...document.querySelectorAll("#dockLeft .ibtn")].map((b) => b.dataset.group);
+
+  // (2) 3D ビューの矩形は 3D ペインの側に出る（2D 側ではない）
+  const vp = document.getElementById("vp");
+  const pane3d = document.getElementById("pane3d");
+  const gl = document.getElementById("gl");
+  document.querySelector('#uvSwitch [data-split="both"]')?.click();
+  await new Promise((r) => setTimeout(r, 200));
+  app.setMode("model"); // 3D の矩形はモデリングでも UV でも同じ経路
+  app.setMode("uv");
+  await new Promise((r) => setTimeout(r, 100));
+  const r3 = gl.getBoundingClientRect();
+  const fire3d = (type, x, y) =>
+    gl.dispatchEvent(
+      new PointerEvent(type, {
+        pointerId: 990,
+        pointerType: "mouse",
+        isPrimary: true,
+        clientX: x,
+        clientY: y,
+        buttons: type === "pointerup" ? 0 : 1,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+  app.setCompMode("vertex");
+  fire3d("pointerdown", r3.x + 20, r3.y + 20);
+  fire3d("pointermove", r3.x + 120, r3.y + 120);
+  const box = document.getElementById("marquee").getBoundingClientRect();
+  const paneBox = pane3d.getBoundingClientRect();
+  out.marqueeInPane = box.left >= paneBox.left - 1 && box.right <= paneBox.right + 1;
+  out.marqueeLeft = Math.round(box.left - paneBox.left);
+  fire3d("pointerup", r3.x + 120, r3.y + 120);
+  await new Promise((r) => setTimeout(r, 40));
+  void vp;
+
+  // (3) 分割数を変えても UV がレシピから作り直される
+  app.setCompMode("object");
+  app.state.select(sphere);
+  const uvBefore = sphere.mesh.uvSets.get("map1")?.length ?? 0;
+  const seamsBefore = sphere.uv?.seams.size ?? 0;
+  sphere.params.sdAxis = 24;
+  sphere.uv.method = "lscm";
+  const host = app.panelHostForTest();
+  host.onParamInput(sphere, "sdAxis", 24);
+  const uv = sphere.mesh.uvSets.get("map1");
+  out.uvRebuilt =
+    !!uv &&
+    uv.length !== uvBefore &&
+    uv.length === sphere.mesh.faceCorners.length * 2 &&
+    [...uv].every((n) => Number.isFinite(n)) &&
+    (sphere.uv?.seams.size ?? 0) > 0;
+  out.seams = `${seamsBefore} → ${sphere.uv?.seams.size ?? 0}`;
+  out.method = sphere.uv?.method;
+
+  // (4) 球でカメラベースの面選択。SHF で足しても隣がシェルに化けない
+  app.setMode("model");
+  app.viewport.setView("persp");
+  app.state.select(sphere);
+  app.setCompMode("face");
+  app.state.cameraBased = true;
+  app.state.comp.clear();
+  app.viewport.frameSelected();
+  await new Promise((r) => setTimeout(r, 80));
+  const view = app.viewport.viewOf(sphere);
+  // 3D ペインは分割から全幅へ戻っているので、測り直す
+  const full = gl.getBoundingClientRect();
+  const center = { x: full.width / 2, y: full.height / 2 };
+  // 手前の面をいくつか、少しずつずらして続けて選ぶ（ダブルクリック扱いにならないこと）
+  const added = [];
+  for (let i = 0; i < 4; i++) {
+    const p = { x: center.x + i * 6, y: center.y + i * 4 };
+    const hit = app.picker.pickSurface(p);
+    if (!hit) continue;
+    const e = { shiftKey: i > 0, ctrlKey: false, metaKey: false, pointerType: "mouse" };
+    app.selector.click(p, e);
+    added.push(app.state.comp.size);
+  }
+  out.added = added;
+  // 足すたびに少しずつ増える。シェル全部（faceCount）に化けないこと
+  out.grew =
+    added.length >= 2 &&
+    added[added.length - 1] > 1 &&
+    added[added.length - 1] < 10 &&
+    added.every((n) => n < sphere.mesh.faceCount);
+  // カメラを回しても判定が古くならない
+  const frontBefore = app.picker.faceVisible(view, 0);
+  app.viewport.setView("back");
+  await new Promise((r) => setTimeout(r, 60));
+  const frontAfter = app.picker.faceVisible(view, 0);
+  out.cacheFresh = frontBefore !== frontAfter;
+
+  app.state.cameraBased = false;
+  app.setCompMode("object");
+  app.viewport.setView("persp");
+  app.state.select(null);
+  app.state.doc.objects.length = objectsBefore;
+  app.viewport.syncAll();
+  return out;
+});
+check(
+  "UV のツール列にカメラと追加 / 3D の矩形は 3D 側 / 分割を変えても UV / 球の面を続けて選べる",
+  feedback.uvGroups.includes("camera") &&
+    feedback.uvGroups.includes("add") &&
+    feedback.marqueeInPane &&
+    feedback.uvRebuilt &&
+    feedback.method === "lscm" &&
+    feedback.grew &&
+    feedback.cacheFresh,
+  `UV ツール列 ${feedback.uvGroups.join("/")} / 矩形は 3D ペイン内 ${feedback.marqueeInPane}（左端 +${feedback.marqueeLeft}px）/ ` +
+    `分割変更で UV 再生成 ${feedback.uvRebuilt}（切れ目 ${feedback.seams}・方式 ${feedback.method}）/ ` +
+    `続けて面を足す ${feedback.added.join("→")} / 回したら判定も更新 ${feedback.cacheFresh}`,
+);
+
 /* 43b. 手順 A: 立方体を切って開いて整える（`20` の T4） */
 const cubeFlow = await page.evaluate(async () => {
   const app = window.macbeth;

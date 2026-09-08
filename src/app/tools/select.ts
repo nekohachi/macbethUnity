@@ -56,6 +56,11 @@ interface ClickRecord {
   y: number;
   mode: string;
   objectId: string;
+  /**
+   * 1 回目に拾ったコンポーネント。**同じものを 2 回**でなければダブルクリックにしない
+   * （Maya と同じ）。細かいメッシュだと、隣を続けて選んだだけでシェル選択に化ける。
+   */
+  hit: number;
   /** ダブルクリック時に「1 回目の前の状態」に戻すため。 */
   before: Set<number>;
 }
@@ -103,13 +108,14 @@ export class Selector {
       o = hit.object;
       const fresh = this.viewOf(o.id);
       if (fresh) {
-        this.pickOne(p, e, fresh);
+        const hit = this.pickOne(p, e, fresh);
         this.lastClick = {
           t: performance.now(),
           x: p.x,
           y: p.y,
           mode: this.state.compMode,
           objectId: o.id,
+          hit,
           before: new Set(),
         };
       }
@@ -120,12 +126,16 @@ export class Selector {
 
     const now = performance.now();
     const last = this.lastClick;
+    const here = this.probe(p, view);
     const isDouble =
       last !== null &&
       now - last.t < DOUBLE_MS &&
       Math.hypot(p.x - last.x, p.y - last.y) < DOUBLE_PX &&
       last.mode === this.state.compMode &&
-      last.objectId === o.id;
+      last.objectId === o.id &&
+      // 同じものを 2 回。隣を続けて選んだだけでシェルに化けないようにする
+      here >= 0 &&
+      last.hit === here;
 
     if (isDouble && last) {
       this.lastClick = null;
@@ -134,25 +144,29 @@ export class Selector {
 
     const before = new Set(this.state.comp);
     if (!this.add(e) && !this.sub(e)) this.state.comp.clear();
-    this.pickOne(p, e, view);
-    this.lastClick = { t: now, x: p.x, y: p.y, mode: this.state.compMode, objectId: o.id, before };
+    const hit = this.pickOne(p, e, view);
+    this.lastClick = { t: now, x: p.x, y: p.y, mode: this.state.compMode, objectId: o.id, hit, before };
     return { changed: true, objectChanged: false };
   }
 
-  /** 一番近いコンポーネントを 1 つだけ足す / 引く。 */
-  private pickOne(p: ScreenPoint, e: PointerEvent, view: ObjectView): void {
+  /** その場所にあるコンポーネント。選択は変えない（ダブルクリックの判定に使う）。 */
+  private probe(p: ScreenPoint, view: ObjectView): number {
+    if (this.state.compMode === "vertex") return this.picker.pickVertex(view, p, VERTEX_RADIUS);
+    if (this.state.compMode === "edge") return this.picker.pickEdge(view, p, EDGE_RADIUS).edge;
+    if (this.state.compMode === "face") {
+      const hit = this.picker.pickSurface(p);
+      return hit && hit.object === view.object ? hit.face : -1;
+    }
+    return -1;
+  }
+
+  /** 一番近いコンポーネントを 1 つだけ足す / 引く。拾ったものを返す。 */
+  private pickOne(p: ScreenPoint, e: PointerEvent, view: ObjectView): number {
     const sub = this.sub(e);
     const comp = this.state.comp;
-    if (this.state.compMode === "vertex") {
-      const v = this.picker.pickVertex(view, p, VERTEX_RADIUS);
-      if (v >= 0) toggle(comp, v, sub);
-    } else if (this.state.compMode === "edge") {
-      const r = this.picker.pickEdge(view, p, EDGE_RADIUS);
-      if (r.edge >= 0) toggle(comp, r.edge, sub);
-    } else if (this.state.compMode === "face") {
-      const hit = this.picker.pickSurface(p);
-      if (hit && hit.object === view.object) toggle(comp, hit.face, sub);
-    }
+    const hit = this.probe(p, view);
+    if (hit >= 0) toggle(comp, hit, sub);
+    return hit;
   }
 
   /* ---- ダブルクリック -------------------------------------------------- */
@@ -205,6 +219,11 @@ export class Selector {
     }
 
     if (this.state.compMode === "face") {
+      // **足しているとき（SHF / CTL）はシェルに広げない。**
+      // 細かいメッシュで面を続けて選ぶと、隣を叩いただけでダブルクリック扱いになり、
+      // シェル全部が入ってしまう（球で面を選べないという指摘）。
+      // 1 回目のタップで足した分はそのまま残す
+      if (add || sub) return { changed: true, objectChanged: false };
       const hit = this.picker.pickSurface(p);
       if (!hit || hit.object !== o) return NOTHING;
       return apply(shellFaces(mesh, hit.face), "シェル");

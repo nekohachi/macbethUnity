@@ -42,6 +42,14 @@ const scratch = new Vector3();
 /** 面が「カメラを向いている」とみなす最小の余弦。真横の面を落とすためのもの。 */
 const FACING_EPS = 1e-6;
 
+const EMPTY_FACES = new Map<number, number[]>();
+
+function sameStamp(a: number[], b: number[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
 export class Picker {
   /**
    * カメラベース選択（`21` の 2.1、Maya の Camera based selection）。
@@ -49,10 +57,16 @@ export class Picker {
    * app から差し替える（`picking.ts` は状態を持たない）。
    */
   cameraBased: () => boolean = () => false;
-  /** 面がカメラを向いているかの控え。1 回の呼び出しの間だけ持つ。 */
-  private facingCache: { view: ObjectView; front: Uint8Array } | null = null;
-  /** 辺 → その辺を使っている面。エッジの判定に要る。同じく 1 回ぶん。 */
-  private edgeFaceCache: { view: ObjectView; map: Map<string, number[]> } | null = null;
+  /**
+   * 面がカメラを向いているかの控え。
+   *
+   * カメラかメッシュが動いたら作り直す。控えを持たないと矩形選択で
+   * 面の数だけ計算し直すことになり、持ちっぱなしにするとカメラを回したあとに
+   * 古い向きで選んでしまう（球を回しながら選ぶと合わなくなる）。
+   */
+  private facingCache: { view: ObjectView; front: Uint8Array; stamp: number[] } | null = null;
+  /** 辺 → その辺を使っている面。エッジの判定に要る。 */
+  private edgeFaceCache: { view: ObjectView; mesh: unknown; map: Map<string, number[]> } | null = null;
 
   constructor(
     private viewport: Viewport,
@@ -67,9 +81,10 @@ export class Picker {
    * 「カメラを向いている面のコンポーネントだけ」なので、そちらに合わせている。
    */
   private frontFaces(view: ObjectView): Uint8Array {
-    if (this.facingCache?.view === view) return this.facingCache.front;
+    const stamp = this.facingStamp(view);
+    const cached = this.facingCache;
+    if (cached?.view === view && sameStamp(cached.stamp, stamp)) return cached.front;
     const mesh = view.object.mesh;
-    view.group.updateMatrixWorld();
     const normalMatrix = new Matrix3().getNormalMatrix(view.group.matrixWorld);
     const normals = mesh.faceNormals();
     const front = new Uint8Array(mesh.faceCount);
@@ -94,27 +109,42 @@ export class Picker {
       const cos = n.dot(toEye) / Math.max(1e-12, n.length() * toEye.length());
       front[f] = cos > FACING_EPS ? 1 : 0;
     }
-    this.facingCache = { view, front };
+    this.facingCache = { view, front, stamp };
     return front;
   }
 
-  private edgeFaces(view: ObjectView): Map<string, number[]> {
-    if (this.edgeFaceCache?.view === view) return this.edgeFaceCache.map;
-    const map = view.object.mesh.edgeFaceMap();
-    this.edgeFaceCache = { view, map };
-    return map;
+  /**
+   * 控えが今も使えるかの目印。カメラとオブジェクトの姿勢、メッシュの大きさ、
+   * それに頂点の一部を混ぜる（頂点を動かしただけでも向きは変わる）。
+   */
+  private facingStamp(view: ObjectView): number[] {
+    view.group.updateMatrixWorld();
+    const camera = this.viewport.camera;
+    camera.updateMatrixWorld();
+    const mesh = view.object.mesh;
+    const p = mesh.positions;
+    const last = p.length - 3;
+    return [
+      ...camera.matrixWorld.elements,
+      ...view.group.matrixWorld.elements,
+      mesh.faceCount,
+      mesh.vertexCount,
+      p[0] ?? 0,
+      p[1] ?? 0,
+      p[2] ?? 0,
+      p[last] ?? 0,
+      p[last + 1] ?? 0,
+      p[last + 2] ?? 0,
+    ];
   }
 
-  /** この呼び出しの間だけ控えを持つ。選択が終わったら捨てる。 */
-  private withFacing<T>(run: () => T): T {
-    this.facingCache = null;
-    this.edgeFaceCache = null;
-    try {
-      return run();
-    } finally {
-      this.facingCache = null;
-      this.edgeFaceCache = null;
-    }
+  private edgeFaces(view: ObjectView): Map<string, number[]> {
+    const mesh = view.object.mesh;
+    const cached = this.edgeFaceCache;
+    if (cached?.view === view && cached.mesh === mesh) return cached.map;
+    const map = mesh.edgeFaceMap();
+    this.edgeFaceCache = { view, mesh, map };
+    return map;
   }
 
   /**
@@ -190,14 +220,17 @@ export class Picker {
       views.map((v) => v.surface),
       false,
     );
-    const hit = hits[0];
-    if (!hit) return null;
-    const view = views.find((v) => v.surface === hit.object);
-    if (!view) return null;
-    // 三角形の番号から元の面へ戻す（三角形分割は面の順で並んでいる）
-    const triIndex = hit.faceIndex ?? 0;
-    const face = view.tri.triToFace[triIndex] ?? 0;
-    return { object: view.object, view, face, point: hit.point.clone(), distance: hit.distance };
+    // カメラベース選択がオンなら、裏を向いた面は飛ばして次に手前のものを見る
+    for (const hit of hits) {
+      const view = views.find((v) => v.surface === hit.object);
+      if (!view) continue;
+      // 三角形の番号から元の面へ戻す（三角形分割は面の順で並んでいる）
+      const triIndex = hit.faceIndex ?? 0;
+      const face = view.tri.triToFace[triIndex] ?? 0;
+      if (!this.faceVisible(view, face)) continue;
+      return { object: view.object, view, face, point: hit.point.clone(), distance: hit.distance };
+    }
+    return null;
   }
 
   /**
@@ -205,23 +238,21 @@ export class Picker {
    * カメラベース選択がオンなら、隠れている頂点は飛ばして次に近いものを見る。
    */
   pickVertex(view: ObjectView, p: ScreenPoint, radius: number, exclude = -1): number {
-    return this.withFacing(() => {
-      const faces = this.cameraBased() ? view.object.mesh.vertexFaces() : new Map<number, number[]>();
-      let best = -1;
-      let bestD = radius * radius;
-      const n = view.object.mesh.vertexCount;
-      for (let i = 0; i < n; i++) {
-        if (i === exclude) continue;
-        const s = this.projectVertex(view, i);
-        if (s.z > 1) continue;
-        const d = (s.x - p.x) ** 2 + (s.y - p.y) ** 2;
-        if (d >= bestD) continue;
-        if (!this.vertexVisible(view, i, faces)) continue;
-        bestD = d;
-        best = i;
-      }
-      return best;
-    });
+    const faces = this.cameraBased() ? view.object.mesh.vertexFaces() : EMPTY_FACES;
+    let best = -1;
+    let bestD = radius * radius;
+    const n = view.object.mesh.vertexCount;
+    for (let i = 0; i < n; i++) {
+      if (i === exclude) continue;
+      const s = this.projectVertex(view, i);
+      if (s.z > 1) continue;
+      const d = (s.x - p.x) ** 2 + (s.y - p.y) ** 2;
+      if (d >= bestD) continue;
+      if (!this.vertexVisible(view, i, faces)) continue;
+      bestD = d;
+      best = i;
+    }
+    return best;
   }
 
   /**
@@ -237,46 +268,42 @@ export class Picker {
    * カメラベース選択がオンなら、隠れているエッジは飛ばす（掴んだ点で判定する）。
    */
   pickEdge(view: ObjectView, p: ScreenPoint, radius: number): EdgeHit {
-    return this.withFacing(() => {
-      let best = -1;
-      let bestD = radius;
-      let bestT = 0.5;
-      for (let i = 0; i < view.edges.length; i++) {
-        const [ia, ib] = view.edges[i];
-        const a = this.projectVertex(view, ia);
-        const b = this.projectVertex(view, ib);
-        if (a.z > 1 && b.z > 1) continue;
-        const dx = b.x - a.x;
-        const dy = b.y - a.y;
-        const len2 = dx * dx + dy * dy;
-        const t = len2 ? Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2)) : 0;
-        const d = Math.hypot(a.x + dx * t - p.x, a.y + dy * t - p.y);
-        if (d >= bestD) continue;
-        if (!this.edgeFacing(view, ia, ib)) continue;
-        bestD = d;
-        best = i;
-        bestT = t;
-      }
-      return { edge: best, t: bestT };
-    });
+    let best = -1;
+    let bestD = radius;
+    let bestT = 0.5;
+    for (let i = 0; i < view.edges.length; i++) {
+      const [ia, ib] = view.edges[i];
+      const a = this.projectVertex(view, ia);
+      const b = this.projectVertex(view, ib);
+      if (a.z > 1 && b.z > 1) continue;
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      const len2 = dx * dx + dy * dy;
+      const t = len2 ? Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2)) : 0;
+      const d = Math.hypot(a.x + dx * t - p.x, a.y + dy * t - p.y);
+      if (d >= bestD) continue;
+      if (!this.edgeFacing(view, ia, ib)) continue;
+      bestD = d;
+      best = i;
+      bestT = t;
+    }
+    return { edge: best, t: bestT };
   }
 
   /** 矩形の中に入っている頂点。矩形選択で使う。 */
   vertsInRect(view: ObjectView, x0: number, y0: number, x1: number, y1: number): number[] {
-    return this.withFacing(() => {
-      const lo = { x: Math.min(x0, x1), y: Math.min(y0, y1) };
-      const hi = { x: Math.max(x0, x1), y: Math.max(y0, y1) };
-      const out: number[] = [];
-      const faces = this.cameraBased() ? view.object.mesh.vertexFaces() : new Map<number, number[]>();
-      const n = view.object.mesh.vertexCount;
-      for (let i = 0; i < n; i++) {
-        const s = this.projectVertex(view, i);
-        if (s.z > 1 || s.x < lo.x || s.x > hi.x || s.y < lo.y || s.y > hi.y) continue;
-        if (!this.vertexVisible(view, i, faces)) continue;
-        out.push(i);
-      }
-      return out;
-    });
+    const lo = { x: Math.min(x0, x1), y: Math.min(y0, y1) };
+    const hi = { x: Math.max(x0, x1), y: Math.max(y0, y1) };
+    const out: number[] = [];
+    const faces = this.cameraBased() ? view.object.mesh.vertexFaces() : EMPTY_FACES;
+    const n = view.object.mesh.vertexCount;
+    for (let i = 0; i < n; i++) {
+      const s = this.projectVertex(view, i);
+      if (s.z > 1 || s.x < lo.x || s.x > hi.x || s.y < lo.y || s.y > hi.y) continue;
+      if (!this.vertexVisible(view, i, faces)) continue;
+      out.push(i);
+    }
+    return out;
   }
 
   /** 矩形選択で、そのエッジがカメラを向いているか。 */

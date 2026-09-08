@@ -123,7 +123,7 @@ export class UvMode {
    * 直前のタップ。ダブルタップでループ / 島を選ぶのに使う（`20` の T4）。
    * `before` は 1 回目のタップより前の選択（3D の `select.ts` と同じ扱い）。
    */
-  private lastTap: { t: number; x: number; y: number; unit: UvUnit; before: number[] } | null = null;
+  private lastTap: { t: number; x: number; y: number; unit: UvUnit; hit: number; before: number[] } | null = null;
   /** 2D マニピュレータのドラッグ。 */
   private manipDrag: {
     handle: number;
@@ -950,7 +950,9 @@ export class UvMode {
       last !== null &&
       now - last.t < DOUBLE_MS &&
       Math.hypot(p.x - last.x, p.y - last.y) < DOUBLE_PX &&
-      last.unit === this.unit;
+      last.unit === this.unit &&
+      // 同じものを 2 回（3D と同じ規則）。隣を続けて選んだだけで広がらないように
+      last.hit === hit;
     if (isDouble && hit >= 0 && last) {
       const before = last.before;
       this.lastTap = null;
@@ -958,7 +960,7 @@ export class UvMode {
       return;
     }
     // 1 回目の選択より前の状態を控える。区間はここからの続きになる
-    this.lastTap = hit >= 0 ? { t: now, x: p.x, y: p.y, unit: this.unit, before: [...this.chosen] } : null;
+    this.lastTap = hit >= 0 ? { t: now, x: p.x, y: p.y, unit: this.unit, hit, before: [...this.chosen] } : null;
 
     // マニピュレータ。掴めたらそのまま動かす
     const pivot = this.manipulatorPivot();
