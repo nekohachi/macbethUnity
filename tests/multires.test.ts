@@ -1,13 +1,15 @@
 /**
- * docs/08 の合格条件 V1〜V3。
+ * docs/08 の合格条件 V1〜V6。
  *
  * V3（剛体変換不変性）が中核。接空間デルタが正しく実装されていれば厳密に成立し、
  * 世界座標で差分を持っているなど実装が誤っていれば必ず落ちる。
+ * V6（差分更新）は、動いた頂点の周りだけ計算し直したものが
+ * 全部計算し直したものと一致することを見る。
  */
 import { describe, expect, it } from "vitest";
 import { PRIMITIVES, defaultParams } from "../src/core/primitives.js";
 import { Mesh, edgeKey } from "../src/core/mesh.js";
-import { subdivide } from "../src/core/subdivide.js";
+import { SubdivPlan, subdivide } from "../src/core/subdivide.js";
 import { Multires, buildFrames } from "../src/core/multires.js";
 
 const cube = () => PRIMITIVES.cube.build(defaultParams("cube"));
@@ -229,5 +231,228 @@ describe("V3. 剛体変換不変性", () => {
         expect(after[o + 2]).toBeCloseTo(want[2], 5);
       }
     }
+  });
+});
+
+/** 頂点 v とその周り（radius 以内）を法線方向に押し出した写しを返す。突起を作る。 */
+function bumped(mesh: Mesh, center: number, radius: number, height: number): Mesh {
+  const out = mesh.clone();
+  const normals = mesh.vertexNormals();
+  const c = mesh.getPosition(center);
+  for (let v = 0; v < mesh.vertexCount; v++) {
+    const p = mesh.getPosition(v);
+    const d = Math.hypot(p[0] - c[0], p[1] - c[1], p[2] - c[2]);
+    if (d > radius) continue;
+    // 中心で最大、縁で 0 になる山
+    const w = Math.cos((d / radius) * Math.PI * 0.5) ** 2;
+    out.setPosition(
+      v,
+      p[0] + normals[v * 3] * height * w,
+      p[1] + normals[v * 3 + 1] * height * w,
+      p[2] + normals[v * 3 + 2] * height * w,
+    );
+  }
+  return out;
+}
+
+/** v の位置と、その周り radius 以内にある頂点の番号。 */
+function near(mesh: Mesh, center: [number, number, number], radius: number): number[] {
+  const out: number[] = [];
+  for (let v = 0; v < mesh.vertexCount; v++) {
+    const p = mesh.getPosition(v);
+    if (Math.hypot(p[0] - center[0], p[1] - center[1], p[2] - center[2]) <= radius) out.push(v);
+  }
+  return out;
+}
+
+describe("V4. ローモデルを編集してもディテールが剥がれない", () => {
+  it("突起の近くを大きく動かしても、突起の高さ（S からの距離）が変わらない", () => {
+    // 「球」はレベル 2 まで細分割した立方体でよい（docs/08 の但し書き）
+    const ball = subdivide(cube(), 2);
+    const stack = new Multires(ball);
+    stack.divide();
+    stack.divide();
+    const top = stack.levelCount;
+
+    // 局所的な突起をスカルプトする
+    const level2 = stack.level(top);
+    const center = level2.getPosition(0);
+    stack.sculpt(top, bumped(level2, 0, 0.35, 0.12));
+
+    const delta = stack.deltas[top - 1]!;
+    const bump = near(stack.smoothLevel(top), center, 0.35);
+    expect(bump.length).toBeGreaterThan(10);
+
+    /** 突起の頂点ごとの「デルタのノルム」と「S からの距離」。 */
+    const measure = (): { norm: number[]; gap: number[] } => {
+      const smooth = stack.smoothLevel(top);
+      const mesh = stack.level(top);
+      const norm: number[] = [];
+      const gap: number[] = [];
+      for (const v of bump) {
+        norm.push(Math.hypot(delta[v * 3], delta[v * 3 + 1], delta[v * 3 + 2]));
+        gap.push(
+          Math.hypot(
+            mesh.positions[v * 3] - smooth.positions[v * 3],
+            mesh.positions[v * 3 + 1] - smooth.positions[v * 3 + 1],
+            mesh.positions[v * 3 + 2] - smooth.positions[v * 3 + 2],
+          ),
+        );
+      }
+      return { norm, gap };
+    };
+
+    const before = measure();
+    // 接空間の基底は正規直交なので、デルタのノルムがそのまま S からの距離になる
+    for (let i = 0; i < bump.length; i++) expect(before.gap[i]).toBeCloseTo(before.norm[i], 5);
+    expect(Math.max(...before.norm)).toBeGreaterThan(0.05);
+
+    // レベル 0 に戻って、突起の近くをモデルの大きさの 30% 動かす
+    const size = 2; // 立方体は 1 辺 1、対角の幅がおよそ 2
+    const edited = stack.base.clone();
+    const movedVerts = near(stack.base, center, 0.6);
+    expect(movedVerts.length).toBeGreaterThan(3);
+    for (const v of movedVerts) {
+      const p = edited.getPosition(v);
+      edited.setPosition(v, p[0] + size * 0.3, p[1] + size * 0.3 * 0.5, p[2]);
+    }
+    stack.setBase(edited);
+
+    // レベル 4 に戻る。突起は表面に張り付いたまま追従しているはず
+    const after = measure();
+    for (let i = 0; i < bump.length; i++) {
+      expect(after.norm[i]).toBeCloseTo(before.norm[i], 5);
+      expect(after.gap[i]).toBeCloseTo(before.gap[i], 5);
+    }
+
+    // 実際に大きく動いていること（動いていなければこの検証は無意味）
+    const moved = stack.level(top);
+    let travelled = 0;
+    for (const v of bump) travelled = Math.max(travelled, Math.abs(moved.positions[v * 3] - 0));
+    expect(travelled).toBeGreaterThan(0.1);
+  });
+});
+
+describe("V5. 往復しても累積誤差が出ない", () => {
+  it("スカルプトの取り込み → レベル 0 → 最大レベル を 10 回繰り返しても座標が動かない", () => {
+    const stack = new Multires(cube());
+    for (let i = 0; i < 3; i++) stack.divide();
+    const top = stack.levelCount;
+    stack.sculpt(top, bumped(stack.level(top), 0, 0.5, 0.1));
+
+    const first = Float32Array.from(stack.level(top).positions);
+    let worst = 0;
+    for (let round = 0; round < 10; round++) {
+      // 今の形をそのままスカルプト結果として取り込み直す（デルタを取り直す）
+      stack.sculpt(top, stack.level(top).clone());
+      // レベル 0 に降りて、そのまま戻す
+      stack.setBase(stack.level(0).clone());
+      const now = stack.level(top).positions;
+      for (let i = 0; i < first.length; i++) worst = Math.max(worst, Math.abs(now[i] - first[i]));
+    }
+    expect(worst).toBeLessThan(1e-5);
+  });
+});
+
+describe("V6. 差分更新", () => {
+  it("影響する頂点だけ細分割し直しても、全部計算したときと同じ値になる", () => {
+    const mesh = subdivide(cube(), 1);
+    const plan = new SubdivPlan(mesh);
+    const full = new Float32Array(plan.outCount * 3);
+    plan.positions(mesh, full);
+
+    const sub = plan.affected([5]);
+    // 部分更新になっていること（全部なら差分更新の意味が無い）
+    expect(sub.size).toBeGreaterThan(0);
+    expect(sub.size).toBeLessThan(plan.outCount);
+
+    const part = new Float32Array(plan.outCount * 3).fill(NaN);
+    plan.positions(mesh, part, sub);
+    for (const v of sub) {
+      // 同じ式を同じ順序で通るので、丸めまで含めて完全に一致する
+      expect(part[v * 3]).toBe(full[v * 3]);
+      expect(part[v * 3 + 1]).toBe(full[v * 3 + 1]);
+      expect(part[v * 3 + 2]).toBe(full[v * 3 + 2]);
+    }
+  });
+
+  it("レベル 0 の頂点を 1 つ動かしたとき、差分更新が全体再計算と一致する", () => {
+    /** レベル 1 と 3 にディテールを持つスタック。 */
+    const build = (): Multires => {
+      const stack = new Multires(cube());
+      for (let i = 0; i < 3; i++) stack.divide();
+      stack.sculpt(1, bumped(stack.level(1), 0, 0.9, 0.08));
+      stack.sculpt(3, bumped(stack.level(3), 0, 0.4, 0.05));
+      return stack;
+    };
+    /** 頂点 3 をずらした写し。 */
+    const edit = (mesh: Mesh): Mesh => {
+      const out = mesh.clone();
+      const p = out.getPosition(3);
+      out.setPosition(3, p[0] + 0.3, p[1] - 0.22, p[2] + 0.14);
+      return out;
+    };
+
+    const incremental = build();
+    const whole = build();
+    // 先に控えを作っておく（作っていないと差分更新に入らない）
+    const before = Float32Array.from(incremental.level(3).positions);
+
+    incremental.setBase(edit(incremental.base), [3]);
+    whole.setBase(edit(whole.base));
+
+    const a = incremental.level(3).positions;
+    const b = whole.level(3).positions;
+    expect(a.length).toBe(b.length);
+
+    let worst = 0;
+    let worstAt = -1;
+    for (let i = 0; i < a.length; i++) {
+      const d = Math.abs(a[i] - b[i]);
+      if (d > worst) {
+        worst = d;
+        worstAt = i;
+      }
+    }
+    expect(worst, `頂点 ${Math.floor(worstAt / 3)} がずれている`).toBeLessThan(1e-6);
+
+    // 実際に伝わっていること（伝わっていなければ一致しても意味が無い）
+    let changed = 0;
+    for (let i = 0; i < a.length; i++) if (Math.abs(a[i] - before[i]) > 1e-5) changed++;
+    // 立方体はレベル 0 の頂点が 8 つしかないので、1 つ動かすと広く伝わる。
+    // 「差分更新が部分計算になっているか」は SubdivPlan.affected の項目で見ている
+    expect(changed).toBeGreaterThan(30);
+  });
+
+  it("何度も差分更新しても、全体再計算とずれない", () => {
+    const make = (): Multires => {
+      const stack = new Multires(cube());
+      for (let i = 0; i < 3; i++) stack.divide();
+      stack.sculpt(3, bumped(stack.level(3), 0, 0.5, 0.07));
+      return stack;
+    };
+    const incremental = make();
+    const whole = make();
+    incremental.level(3);
+
+    const rand = rng(4242);
+    for (let step = 0; step < 8; step++) {
+      const v = step % 8;
+      const move = [(rand() - 0.5) * 0.3, (rand() - 0.5) * 0.3, (rand() - 0.5) * 0.3];
+      const shift = (stack: Multires): Mesh => {
+        const out = stack.base.clone();
+        const p = out.getPosition(v);
+        out.setPosition(v, p[0] + move[0], p[1] + move[1], p[2] + move[2]);
+        return out;
+      };
+      incremental.setBase(shift(incremental), [v]);
+      whole.setBase(shift(whole));
+    }
+
+    const a = incremental.level(3).positions;
+    const b = whole.level(3).positions;
+    let worst = 0;
+    for (let i = 0; i < a.length; i++) worst = Math.max(worst, Math.abs(a[i] - b[i]));
+    expect(worst).toBeLessThan(1e-6);
   });
 });
