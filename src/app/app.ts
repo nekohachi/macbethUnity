@@ -4,7 +4,7 @@
  * プロトタイプ（prototype/modeling-ui-prototype.html）からの移植途中。
  * 移植が済んだ順に、ここへ機能が増えていく。docs/10 の土台フェーズ。
  */
-import { Euler, Matrix4, Quaternion, Raycaster, Vector3 } from "three";
+import { Euler, Matrix4, Plane, Quaternion, Raycaster, Vector3 } from "three";
 import {
   PRIMITIVES,
   PRIMITIVE_ORDER,
@@ -46,11 +46,13 @@ import {
 import { Picker, type ScreenPoint } from "./render/picking.js";
 import { STANDARD_VIEWS, Viewport, type ViewName } from "./render/viewport.js";
 import {
+  AXES,
   HANDLE_GESTURE,
   HANDLE_TWEAK,
   Manipulator,
   TOUCH_TOLERANCE,
   handleKind,
+  rayAxisT,
 } from "./render/manipulator.js";
 import {
   AppState,
@@ -101,6 +103,17 @@ const COMP_MODES: Array<{ id: CompMode; label: string; key: string }> = [
 ];
 
 /** スナップの行き先の名前。HUD とオプションで使う。 */
+/** マニピュレータの大きさの上下限と 1 段の倍率（Maya の + / − と同じ感覚）。 */
+const MANIP_SIZE_MIN = 0.5;
+const MANIP_SIZE_MAX = 2;
+const MANIP_SIZE_STEP = 1.25;
+
+function readManipSize(): number {
+  const raw = Number(localStorage.getItem("macbeth.manipSize"));
+  if (!Number.isFinite(raw) || raw <= 0) return 1;
+  return Math.min(MANIP_SIZE_MAX, Math.max(MANIP_SIZE_MIN, raw));
+}
+
 const SNAP_LABEL: Record<SnapKind, string> = {
   grid: "グリッド",
   vertex: "頂点",
@@ -209,6 +222,14 @@ export class App {
     shift: boolean;
     ctrl: boolean;
   } | null = null;
+  /** ピボットだけを動かしているときの控え（Maya の D）。 */
+  private pivotDrag: {
+    axis: number;
+    origin: Vector3;
+    plane: Plane;
+    planeStart: Vector3 | null;
+    t0: number;
+  } | null = null;
   /** ドラッグ開始前のスナップショット。動いたときだけ履歴に積む。 */
   private dragSnapshot: ReturnType<History["snapshot"]> | null = null;
   private raycaster = new Raycaster();
@@ -248,7 +269,10 @@ export class App {
       },
       camera: () => this.viewport.camera,
       orthoDistance: () => (this.state.camOpts.ortho ? this.viewport.cam.distance : null),
+      manipSize: () => this.state.manipSize,
+      pivotEdit: () => this.state.pivotEdit,
     });
+    this.state.manipSize = readManipSize();
     this.viewport.manip.add(this.manipulator.group);
 
     this.history.onChange = () => {
@@ -339,6 +363,7 @@ export class App {
         this.endMarquee();
         this.drag = null;
         this.pendingDrag = null;
+        this.pivotDrag = null;
         this.dragSnapshot = null;
         this.manipulator.hot = -1;
         this.multicut.clear();
@@ -409,7 +434,8 @@ export class App {
    * カメラには化けさせないので、呼び出し側はそのまま何もしない。
    */
   private beginGestureTransform(): boolean {
-    if (this.state.tool !== "select") return false;
+    // ピボット編集中はメッシュを動かさない（3 本指も同じ）
+    if (this.state.tool !== "select" || this.state.pivotEdit) return false;
     const o = this.state.selected;
     const pivot = this.pivotWorld();
     if (!o || !pivot) return false;
@@ -609,6 +635,13 @@ export class App {
       return;
     }
 
+    // ピボット編集はメッシュを触らないので、待たせずにその場で始めてよい。
+    // 掴み損ねても何も壊れない（履歴にも積まない）
+    if (this.state.pivotEdit) {
+      this.beginPivotDrag(handle, p, pivot);
+      return;
+    }
+
     // ペンと指は、着地のぶれでマニピュレータを掴んでしまう（ダブルクリックの
     // 2 回目がそれ）。動きが確かになるまでドラッグを始めない。マウスは即時
     if (e.pointerType !== "mouse") {
@@ -669,6 +702,133 @@ export class App {
     this.refreshManipulator();
   }
 
+  /* ---- ピボットの移動（Maya の D） ------------------------------------- */
+
+  /**
+   * ピボットだけを動かすドラッグ。メッシュもトランスフォームも触らないので
+   * 履歴には積まない。スナップは効く（V で頂点へ寄せるのが Maya の常套手段）。
+   */
+  private beginPivotDrag(handle: number, p: ScreenPoint, pivot: Vector3): void {
+    const axis = handle < 3 ? handle : -1;
+    const plane = new Plane().setFromNormalAndCoplanarPoint(
+      new Vector3().subVectors(this.cameraPosition(), pivot).normalize(),
+      pivot,
+    );
+    let planeStart: Vector3 | null = null;
+    if (axis < 0) {
+      const hit = new Vector3();
+      if (this.ray(p).intersectPlane(plane, hit)) planeStart = hit;
+    }
+    this.pivotDrag = {
+      axis,
+      origin: pivot.clone(),
+      plane,
+      planeStart,
+      t0: axis >= 0 ? rayAxisT(this.ray(p), pivot, AXES[axis]) : 0,
+    };
+    this.manipulator.hot = handle;
+    this.refreshManipulator();
+  }
+
+  private updatePivotDrag(p: ScreenPoint): void {
+    const d = this.pivotDrag;
+    if (!d) return;
+    const ray = this.ray(p);
+    let next: Vector3;
+    if (d.axis >= 0) {
+      const t = rayAxisT(ray, d.origin, AXES[d.axis]);
+      next = d.origin.clone().addScaledVector(AXES[d.axis], t - d.t0);
+    } else {
+      const hit = new Vector3();
+      if (!ray.intersectPlane(d.plane, hit) || !d.planeStart) return;
+      next = d.origin.clone().add(hit.sub(d.planeStart));
+    }
+    if (this.state.snapping) {
+      const snapped = this.snapPoint(next);
+      if (snapped) {
+        // 軸ドラッグ中は軸の上に留める（メッシュの移動と同じ規則）
+        next =
+          d.axis >= 0
+            ? d.origin
+                .clone()
+                .addScaledVector(AXES[d.axis], snapped.clone().sub(d.origin).dot(AXES[d.axis]))
+            : snapped.clone();
+      }
+      this.showSnapTarget();
+    }
+    this.state.pivotOverride = { x: next.x, y: next.y, z: next.z };
+    this.refreshManipulator();
+    if (!this.state.snapping) {
+      byId("hudHint").innerHTML =
+        `ピボット <kbd>${next.x.toFixed(2)}, ${next.y.toFixed(2)}, ${next.z.toFixed(2)}</kbd>`;
+    }
+  }
+
+  /** ピボット編集の入切。Maya の D / Insert。 */
+  private togglePivotEdit(): void {
+    this.state.pivotEdit = !this.state.pivotEdit;
+    this.manipulator.hot = -1;
+    this.syncToggleButtons();
+    this.refreshManipulator();
+    this.refresh();
+    this.hud.toast(
+      this.state.pivotEdit ? "ピボット編集: オン（もう一度 D で終了）" : "ピボット編集: オフ",
+    );
+  }
+
+  /** ピボットを選択の中心へ戻す。 */
+  private resetPivot(): void {
+    this.state.pivotOverride = null;
+    this.refreshManipulator();
+    this.hud.toast("ピボットを選択の中心へ");
+  }
+
+  private setManipSize(size: number): void {
+    this.state.manipSize = Math.min(MANIP_SIZE_MAX, Math.max(MANIP_SIZE_MIN, size));
+    localStorage.setItem("macbeth.manipSize", String(this.state.manipSize));
+    this.refreshManipulator();
+    this.refresh();
+    this.hud.toast(`マニピュレータの大きさ ×${this.state.manipSize.toFixed(2)}`);
+  }
+
+  /** マニピュレータのサークルメニュー（ツール列の長押し）。 */
+  private manipulatorMenu(): RadialMenu {
+    return {
+      N: {
+        label: this.state.pivotEdit ? "ピボットの移動を終える" : "ピボットを移動",
+        sub: "Pivot  D",
+        icon: ICONS.pivot,
+        run: () => this.togglePivotEdit(),
+      },
+      NE: { label: "選択の中心へ戻す", sub: "Center", icon: ICONS.vObj, run: () => this.resetPivot() },
+      E: {
+        label: "大きく",
+        sub: "+",
+        icon: ICONS.scale,
+        run: () => this.setManipSize(this.state.manipSize * MANIP_SIZE_STEP),
+      },
+      W: {
+        label: "小さく",
+        sub: "-",
+        icon: ICONS.scale,
+        run: () => this.setManipSize(this.state.manipSize / MANIP_SIZE_STEP),
+      },
+      S: {
+        label: "初期設定に戻す",
+        sub: "Reset",
+        icon: ICONS.xform,
+        run: () => {
+          this.state.pivotEdit = false;
+          this.state.pivotOverride = null;
+          this.setManip("all");
+          this.setManipSize(1);
+          this.syncToggleButtons();
+          this.hud.toast("マニピュレータを初期設定に戻した");
+        },
+      },
+    };
+  }
+
   /** Shift ドラッグの押し出し。面とエッジに対応。頂点はそのまま移動する。 */
   private extrudeForDrag(o: SceneObject): boolean {
     if (this.state.compMode === "face") {
@@ -720,6 +880,7 @@ export class App {
     if (this.state.tool === "multicut") return this.updateCutPreview(p, e);
     if (this.state.tool === "bevel") return this.dragBevel(p);
     if (this.marquee) return this.updateMarquee(p);
+    if (this.pivotDrag) return this.updatePivotDrag(p);
     // 待たせているドラッグがあれば、生かすかどうかをここで決める
     if (this.pendingDrag) {
       const pend = this.pendingDrag;
@@ -887,6 +1048,15 @@ export class App {
     }
     if (this.state.tool === "bevel") {
       this.endBevel(moved);
+      return;
+    }
+    // ピボットの移動。履歴には積まない（メッシュは変わっていない）
+    if (this.pivotDrag) {
+      this.pivotDrag = null;
+      this.manipulator.hot = -1;
+      this.preselect.clear();
+      this.refreshManipulator();
+      this.hud.defaultHint();
       return;
     }
     // 生きないまま離した = タップ。何も変えていないので選択として扱う
@@ -1202,6 +1372,9 @@ export class App {
     if (!o) return null;
     const view = this.viewport.viewOf(o);
     if (!view) return null;
+    // 手で動かしたピボットがあればそれ。選択を変えると消える
+    const over = this.state.pivotOverride;
+    if (over) return new Vector3(over.x, over.y, over.z);
     view.group.updateMatrixWorld();
     if (this.state.compMode === "object" || !this.state.comp.size) {
       return new Vector3().setFromMatrixPosition(view.group.matrixWorld);
@@ -2241,6 +2414,14 @@ export class App {
       },
       {
         kind: "button",
+        icon: ICONS.pivot,
+        title: "マニピュレータ（タップでピボット移動 D · 長押しで大きさと初期化）",
+        pressed: () => this.state.pivotEdit,
+        radial: () => this.manipulatorMenu(),
+        onTap: () => this.togglePivotEdit(),
+      },
+      {
+        kind: "button",
         icon: ICONS.snap,
         title: "スナップ（長押しで グリッド / 頂点 / カーブ / サーフェス）",
         pressed: () => this.state.snapOn,
@@ -2436,6 +2617,7 @@ export class App {
         this.state.smoothAngle = value;
         for (const o of this.state.doc.objects) this.viewport.rebuildObject(o);
       },
+      onManipSizeChange: (value) => this.setManipSize(value),
       onSelect: (o) => {
         this.state.select(o);
         this.viewport.applyDisplayAll();
@@ -2508,6 +2690,7 @@ export class App {
             : [0, 0, 0],
           smoothAngle: this.state.smoothAngle,
           compMode: this.state.compMode,
+          manipSize: this.state.manipSize,
         },
         host,
       );
@@ -2645,6 +2828,21 @@ export class App {
           this.hud.toast(`スナップ: ${SNAP_LABEL[this.state.snap.kind]}（押している間）`);
           this.refresh();
         }
+        return;
+      }
+      // ピボットの移動。Maya の D（Insert でも同じ）
+      if ((e.key === "d" || e.key === "D" || e.key === "Insert") && !e.ctrlKey && !e.metaKey) {
+        e.preventDefault();
+        this.togglePivotEdit();
+        return;
+      }
+      // マニピュレータの大きさ。Maya と同じ + / −
+      if (e.key === "+" || e.key === "=") {
+        this.setManipSize(this.state.manipSize * MANIP_SIZE_STEP);
+        return;
+      }
+      if (e.key === "-" || e.key === "_") {
+        this.setManipSize(this.state.manipSize / MANIP_SIZE_STEP);
         return;
       }
       // 対称編集は S。X は Maya に合わせてグリッドスナップに譲った

@@ -1743,7 +1743,110 @@ check(
     `ドラッグは効く ${tapGuard.dragged} / SHF タップ ${tapGuard.facesBefore} → ${tapGuard.facesAfter} 面`,
 );
 
-/* 32. 例外が出ていない */
+/* 32. マニピュレータ: 大きさとピボットの移動（docs/17 の 4 章） */
+const manip = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const canvas = document.getElementById("gl");
+  const rect = canvas.getBoundingClientRect();
+
+  // 大きく 2 回 → ×1.5625、初期設定に戻すと ×1
+  app.setManipSize(app.state.manipSize * 1.25);
+  app.setManipSize(app.state.manipSize * 1.25);
+  const bigger = app.state.manipSize;
+  const stored = Number(localStorage.getItem("macbeth.manipSize"));
+  app.setManipSize(1);
+
+  // 面を 1 枚選び、ピボットを動かして、そのまわりで回るかを見る
+  app.viewport.setView("persp");
+  app.setCompMode("face");
+  app.state.comp.clear();
+  app.viewport.rebuildOverlay();
+  const front = app.picker.pickSurface({ x: rect.width / 2, y: rect.height / 2 });
+  if (!front) return { fail: "面が拾えない" };
+  app.state.select(front.object);
+  app.state.comp.add(front.face);
+  app.viewport.rebuildOverlay();
+  app.refreshManipulator();
+
+  const fire = (type, x, y, id) =>
+    canvas.dispatchEvent(
+      new PointerEvent(type, {
+        pointerId: id,
+        pointerType: "mouse",
+        isPrimary: true,
+        clientX: x,
+        clientY: y,
+        button: 0,
+        buttons: type === "pointerup" ? 0 : 1,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+
+  const object = front.object;
+  const vertsBefore = [...object.mesh.positions];
+  app.togglePivotEdit();
+  const at = app.manipulator.toScreen(app.pivotWorld());
+  let id = 60;
+  fire("pointerdown", rect.x + at.x, rect.y + at.y, ++id);
+  for (let i = 1; i <= 10; i++) fire("pointermove", rect.x + at.x + i * 8, rect.y + at.y - i * 4, id);
+  fire("pointerup", rect.x + at.x + 80, rect.y + at.y - 40, id);
+  await new Promise((r) => setTimeout(r, 40));
+  const movedPivot = !!app.state.pivotOverride;
+  // メッシュは動いていない
+  const meshStill = vertsBefore.every((v, i) => Math.abs(v - object.mesh.positions[i]) < 1e-6);
+  const pivotAt = app.pivotWorld();
+  const moved = [pivotAt.x, pivotAt.y, pivotAt.z];
+  app.togglePivotEdit();
+
+  // 新しいピボットのまわりで回る。選択から離れた頂点で確かめる
+  app.setManip("rotate");
+  // 回るのは選択に入っている頂点だけなので、選んだ面の頂点で見る
+  const probe = object.mesh.faceVerts(front.face)[0];
+  const before = object.mesh.getPosition(probe);
+  const at2 = app.manipulator.toScreen(app.pivotWorld());
+  // リングの半径は画面上では一定でないので、当たる点を探してから掴む
+  let grab = null;
+  for (let r = 24; r <= 220 && !grab; r += 4) {
+    for (const a of [0, 45, 90, 135, 180, 225, 270, 315]) {
+      const t = (a * Math.PI) / 180;
+      const cand = { x: at2.x + Math.cos(t) * r, y: at2.y + Math.sin(t) * r };
+      if (app.manipulator.pick(cand, app.pivotWorld(), "rotate") >= 10) {
+        grab = cand;
+        break;
+      }
+    }
+  }
+  if (!grab) return { fail: "回転リングが拾えない" };
+  fire("pointerdown", rect.x + grab.x, rect.y + grab.y, ++id);
+  for (let i = 1; i <= 10; i++) fire("pointermove", rect.x + grab.x, rect.y + grab.y + i * 6, id);
+  fire("pointerup", rect.x + grab.x, rect.y + grab.y + 60, id);
+  await new Promise((r) => setTimeout(r, 40));
+  const after = object.mesh.getPosition(probe);
+  const rotated = before.some((v, i) => Math.abs(v - after[i]) > 1e-4);
+  if (rotated) app.doUndo();
+  app.setManip("all");
+
+  // 選択を変えるとピボットは中心へ戻る
+  app.state.select(object);
+  const clearedOnSelect = app.state.pivotOverride === null;
+
+  return { bigger, stored, movedPivot, meshStill, moved, rotated, clearedOnSelect, size: app.state.manipSize };
+});
+check(
+  "マニピュレータの大きさとピボットの移動",
+  Math.abs(manip.bigger - 1.5625) < 1e-6 &&
+    Math.abs(manip.stored - 1.5625) < 1e-6 &&
+    manip.size === 1 &&
+    manip.movedPivot &&
+    manip.meshStill &&
+    manip.rotated &&
+    manip.clearedOnSelect,
+  `大きさ ×${manip.bigger?.toFixed(4)} → ×${manip.size} / ピボット ${manip.moved?.map((n) => n.toFixed(2)).join(",")} ` +
+    `（メッシュ据え置き ${manip.meshStill}）/ そのまわりで回る ${manip.rotated}`,
+);
+
+/* 33. 例外が出ていない */
 check("例外なし", errors.length === 0, errors.join(" / "));
 
 await page.screenshot({ path: SHOT });

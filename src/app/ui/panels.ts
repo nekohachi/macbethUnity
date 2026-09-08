@@ -23,6 +23,7 @@ export interface PanelHost {
   onBevelChange(key: "width" | "segments", value: number): void;
   onCutChange(key: "snapStep" | "edgeFlow", value: number | boolean): void;
   onSmoothAngleChange(value: number): void;
+  onManipSizeChange(value: number): void;
   onSelect(object: SceneObject): void;
   onRename(object: SceneObject, name: string): void;
   onOutlinerMenu(object: SceneObject, x: number, y: number): void;
@@ -119,6 +120,8 @@ export interface OptionsState {
   rotationEuler: [number, number, number];
   smoothAngle: number;
   compMode: string;
+  /** マニピュレータの見た目の大きさ（0.5〜2.0）。 */
+  manipSize: number;
 }
 
 /** オプションパネルを描き直す。 */
@@ -386,6 +389,15 @@ export function renderOptions(body: HTMLElement, state: OptionsState, host: Pane
     step: 1,
     format: (v) => `${Math.round(v)}°`,
     onInput: (v) => host.onSmoothAngleChange(v),
+  });
+  paramRow(s, {
+    label: "マニピュレータの大きさ",
+    value: state.manipSize,
+    min: 0.5,
+    max: 2,
+    step: 0.05,
+    format: (v) => `×${v.toFixed(2)}`,
+    onInput: (v) => host.onManipSizeChange(v),
   });
   body.appendChild(s);
 

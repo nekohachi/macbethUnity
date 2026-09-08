@@ -96,6 +96,22 @@ export class AppState {
   manip: Manip = "all";
   display: Display = "shadedWire";
 
+  /**
+   * マニピュレータの見た目の大きさ（0.5〜2.0）。当たり判定の px は変えない。
+   * `localStorage` に残す（docs/17 の 4.2）。
+   */
+  manipSize = 1;
+  /**
+   * ピボットを動かしている最中（Maya の D）。オンの間はメッシュではなく
+   * ピボットだけが動く。
+   */
+  pivotEdit = false;
+  /**
+   * 選択の中心から動かしたピボット。null なら今までどおり選択の中心。
+   * 選択が変わったら消える（セッション値。docs/17 の 4.3）。
+   */
+  pivotOverride: { x: number; y: number; z: number } | null = null;
+
   mods: Mods = { shift: "off", ctrl: "off", alt: "off" };
   /** 対称編集（ローカル X）。 */
   symX = false;
@@ -161,6 +177,8 @@ export class AppState {
     if (this.selected !== o) this.comp.clear();
     this.also.clear();
     this.selected = o;
+    // ピボットは選択について回るものなので、選び直したら中心へ戻す
+    this.pivotOverride = null;
   }
 
   /** 選んでいるオブジェクトすべて（最後に選んだものが先頭）。 */

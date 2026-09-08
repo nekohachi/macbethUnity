@@ -59,6 +59,8 @@ export const TOUCH_TOLERANCE = 1.8;
 
 const HOT = 0xffe680;
 const CENTER = 0xe2c860;
+/** ピボット編集中の色。黄緑。ふだんの軸色と間違えないように。 */
+const PIVOT = 0x9ade4a;
 
 interface Layout {
   move: boolean;
@@ -112,6 +114,10 @@ export interface ManipulatorHost {
   camera(): Camera;
   /** 平行投影のときは距離で大きさを決められないので、カメラの距離を使う。透視なら null。 */
   orthoDistance(): number | null;
+  /** 見た目の大きさの倍率（0.5〜2.0）。当たり判定の px は変えない。 */
+  manipSize(): number;
+  /** ピボットを動かしている最中か。見た目を変える（Maya の D）。 */
+  pivotEdit(): boolean;
 }
 
 export class Manipulator {
@@ -128,11 +134,11 @@ export class Manipulator {
     return this.host.toScreen(v);
   }
 
-  /** 画面上での大きさが一定になるようにする係数。 */
+  /** 画面上での大きさが一定になるようにする係数。ユーザーの倍率もここで掛ける。 */
   scaleAt(center: Vector3): number {
     const ortho = this.host.orthoDistance();
-    if (ortho !== null) return ortho * 0.09;
-    return this.host.camera().position.distanceTo(center) * 0.15;
+    const base = ortho !== null ? ortho * 0.09 : this.host.camera().position.distanceTo(center) * 0.15;
+    return base * this.host.manipSize();
   }
 
   clear(): void {
@@ -150,10 +156,13 @@ export class Manipulator {
       return;
     }
     const s = this.scaleAt(center);
+    // ピボット編集中は移動だけを出す。動かす先はピボットであってメッシュではない
+    const pivotEdit = this.host.pivotEdit();
     const sig = [
       manip,
       this.hot,
       extraSignature,
+      pivotEdit ? "pivot" : "",
       center.x.toFixed(3),
       center.y.toFixed(3),
       center.z.toFixed(3),
@@ -163,7 +172,8 @@ export class Manipulator {
     this.clear();
     this.signature = sig;
 
-    const L = layoutFor(manip);
+    const L = pivotEdit ? layoutFor("move") : layoutFor(manip);
+    const axisColor = (a: number): number => (pivotEdit ? PIVOT : AXIS_COLORS[a]);
     const isHot = (id: number) => this.hot === id;
 
     for (let a = 0; a < 3; a++) {
@@ -173,7 +183,7 @@ export class Manipulator {
           .clone()
           .multiplyScalar((L.scale ? L.cube : L.arrow) * s)
           .add(center);
-        const color = isHot(a) || isHot(20 + a) ? HOT : AXIS_COLORS[a];
+        const color = isHot(a) || isHot(20 + a) ? HOT : axisColor(a);
         const g = new BufferGeometry();
         g.setAttribute(
           "position",
@@ -186,7 +196,7 @@ export class Manipulator {
       if (L.move) {
         const cone = new ThreeMesh(
           new ConeGeometry(s * 0.075, s * 0.22, 10),
-          new MeshBasicMaterial({ color: isHot(a) ? HOT : AXIS_COLORS[a] }),
+          new MeshBasicMaterial({ color: isHot(a) ? HOT : axisColor(a) }),
         );
         cone.quaternion.setFromUnitVectors(new Vector3(0, 1, 0), axis);
         cone.position.copy(axis.clone().multiplyScalar(L.arrow * s).add(center));
@@ -196,19 +206,19 @@ export class Manipulator {
       if (L.scale) {
         const cube = new ThreeMesh(
           new BoxGeometry(s * 0.12, s * 0.12, s * 0.12),
-          new MeshBasicMaterial({ color: isHot(20 + a) ? HOT : AXIS_COLORS[a] }),
+          new MeshBasicMaterial({ color: isHot(20 + a) ? HOT : axisColor(a) }),
         );
         cube.position.copy(axis.clone().multiplyScalar(L.cube * s).add(center));
         cube.renderOrder = 6;
         this.group.add(cube);
       }
       if (L.rotate) {
-        this.group.add(ringLine(center, axis, L.ring * s, isHot(10 + a) ? HOT : AXIS_COLORS[a]));
+        this.group.add(ringLine(center, axis, L.ring * s, isHot(10 + a) ? HOT : axisColor(a)));
       }
     }
 
     // 回転単独のときだけ、画面に正対したリングを足す（Maya と同じ）
-    if (manip === "rotate") {
+    if (manip === "rotate" && !pivotEdit) {
       const viewAxis = new Vector3().subVectors(this.host.camera().position, center).normalize();
       this.group.add(
         ringLine(center, viewAxis, s * 1.18, isHot(HANDLE_VIEW_ROTATE) ? HOT : 0xb9c3cb),
@@ -216,7 +226,7 @@ export class Manipulator {
     }
 
     const center3d =
-      manip === "scale"
+      manip === "scale" && !pivotEdit
         ? new ThreeMesh(
             new BoxGeometry(s * 0.14, s * 0.14, s * 0.14),
             new MeshBasicMaterial({ color: isHot(HANDLE_UNIFORM_SCALE) ? HOT : CENTER }),
@@ -224,7 +234,7 @@ export class Manipulator {
         : new ThreeMesh(
             new SphereGeometry(s * 0.085, 12, 10),
             new MeshBasicMaterial({
-              color: isHot(HANDLE_FREE_MOVE) || isHot(HANDLE_TWEAK) ? HOT : CENTER,
+              color: isHot(HANDLE_FREE_MOVE) || isHot(HANDLE_TWEAK) ? HOT : pivotEdit ? PIVOT : CENTER,
             }),
           );
     center3d.position.copy(center);
@@ -241,13 +251,16 @@ export class Manipulator {
    */
   pick(p: ScreenPoint, center: Vector3 | null, manip: Manip, tolerance = 1): number {
     if (!center) return -1;
+    // ピボット編集中は移動しか出していないので、拾えるのも移動だけ
+    const pivotEdit = this.host.pivotEdit();
+    const kind: Manip = pivotEdit ? "move" : manip;
     const s = this.scaleAt(center);
     const sc = this.host.toScreen(center);
     if (Math.hypot(sc.x - p.x, sc.y - p.y) < 16 * tolerance) {
-      return manip === "scale" ? HANDLE_UNIFORM_SCALE : HANDLE_FREE_MOVE;
+      return kind === "scale" ? HANDLE_UNIFORM_SCALE : HANDLE_FREE_MOVE;
     }
 
-    const L = layoutFor(manip);
+    const L = layoutFor(kind);
     let best = -1;
     let bestD = Infinity;
     const consider = (id: number, d: number, threshold: number) => {
@@ -276,7 +289,7 @@ export class Manipulator {
       for (let a = 0; a < 3; a++) {
         consider(10 + a, this.ringDistance(p, center, AXES[a], L.ring * s), 12 * tolerance);
       }
-      if (manip === "rotate") {
+      if (kind === "rotate") {
         const viewAxis = new Vector3().subVectors(this.host.camera().position, center).normalize();
         consider(HANDLE_VIEW_ROTATE, this.ringDistance(p, center, viewAxis, s * 1.18), 12 * tolerance);
       }

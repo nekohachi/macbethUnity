@@ -49,7 +49,9 @@ export class Hud {
     const comp = COMP_NAME[this.state.compMode];
     const disp = DISPLAY_NAME[this.state.display];
     byId("hudMode").innerHTML =
-      `${this.state.tool}${this.state.symX ? " · 対称X" : ""} · <b>${comp}</b>` +
+      `${this.state.tool}${this.state.symX ? " · 対称X" : ""}` +
+      (this.state.pivotEdit ? " · <b>ピボット編集</b>" : "") +
+      ` · <b>${comp}</b>` +
       (this.state.comp.size ? ` · ${this.state.comp.size}` : "") +
       modNote +
       `<br>${disp} · ${this.state.viewName}${this.state.camOpts.ortho ? " · ORTHO" : ""}` +
