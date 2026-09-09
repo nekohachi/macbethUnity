@@ -57,6 +57,8 @@ export interface PanelHost {
   onPivotEditToggle(): void;
   onCamOptChange(key: "focal" | "near" | "far", value: number): void;
   onCamOrthoChange(on: boolean): void;
+  /** カメラのロック（`25` の T5）。ロック中は視点が動かない。 */
+  onCamLockChange(on: boolean): void;
   /** カメラを既定の設定へ戻す。 */
   onCamReset(): void;
   /** 「次に追加するプリミティブ」のパラメータ（`21` の 2.7）。 */
@@ -228,7 +230,7 @@ export interface OptionsState {
   showGrid: boolean;
   /** アトリビュートの転送（`24` の T6）。source / target は名前（決まらなければ null）。 */
   transfer: { positions: boolean; uvs: boolean; space: string; source: string | null; target: string | null };
-  cam: { focal: number; near: number; far: number; ortho: boolean };
+  cam: { focal: number; near: number; far: number; ortho: boolean; locked: boolean };
   /** 次に追加するプリミティブの種類と、その既定値（`21` の 2.7）。 */
   nextPrimitive: string;
   nextPrimitiveParams: Record<string, number>;
@@ -911,6 +913,10 @@ export function cameraSection(state: OptionsState, host: PanelHost): HTMLElement
   updateAov(state.cam.focal);
   s.appendChild(aov);
   checkbox(s, "平行投影", state.cam.ortho, (v) => host.onCamOrthoChange(v));
+  checkbox(s, "カメラをロック", state.cam.locked, (v) => host.onCamLockChange(v));
+  s.appendChild(
+    el("div", "hint", "ロック中はタンブル・パン・ズーム・フレーム・ビューの切り替えを受けません。\n選択とマニピュレータは今までどおり使えます。"),
+  );
   const reset = el("button", "act", "初期設定に戻す");
   reset.addEventListener("click", () => host.onCamReset());
   s.appendChild(reset);

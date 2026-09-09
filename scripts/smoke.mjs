@@ -4846,6 +4846,53 @@ check(
     `材質が透ける ${fade.transparent} / 選べる ${fade.selectable} / .mbz ${fade.round.toFixed(2)} / 取り消し ${fade.undone}`,
 );
 
+/* 43z-16. カメラをロックすると動かない（`25` の T5） */
+await page.evaluate(() => {
+  window.macbeth.state.camOpts.locked = false;
+  window.macbeth.setView("persp");
+});
+// カメラのカットインを開く（本物の経路）
+await tapGroup("camera");
+const camLock = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const vp = app.viewport;
+  await new Promise((r) => setTimeout(r, 120));
+  const cutin = document.querySelector('.cutin.wide[data-gauge="camera"]');
+  const chk = cutin ? [...cutin.querySelectorAll(".chk")].find((b) => b.textContent.includes("カメラをロック")) : null;
+  chk?.click();
+  await new Promise((r) => setTimeout(r, 120));
+  const locked = app.state.camOpts.locked;
+
+  // ロック中はタンブル・パン・ズーム・フレーム・ビューの切り替えが効かない
+  const before = { theta: vp.cam.theta, dist: vp.cam.distance, view: app.state.viewName };
+  vp.tumble(50, 0);
+  vp.pan(40, 0);
+  vp.dolly(1.4);
+  vp.frameSelected();
+  app.setView("top");
+  await new Promise((r) => setTimeout(r, 60));
+  const held =
+    vp.cam.theta === before.theta && vp.cam.distance === before.dist && app.state.viewName === before.view;
+  const hudLock = document.getElementById("hudMode").textContent.includes("🔒");
+  const iconLock = !!document.querySelector('#dockLeft .ibtn[data-group="camera"] .badge');
+
+  // 外すと動く
+  app.panelHostForTest().onCamLockChange(false);
+  vp.tumble(50, 0);
+  app.setView("top");
+  await new Promise((r) => setTimeout(r, 60));
+  const freed = vp.cam.theta !== before.theta && app.state.viewName !== before.view;
+
+  app.setView("persp");
+  document.querySelector('.cutin.wide[data-gauge="camera"]')?.remove();
+  return { locked, held, freed, hudLock, iconLock };
+});
+check(
+  "カメラをロックすると動かない",
+  camLock.locked && camLock.held && camLock.freed && camLock.hudLock && camLock.iconLock,
+  `ロック ${camLock.locked} / 動かない ${camLock.held} / HUD の鍵 ${camLock.hudLock} / アイコンの鍵 ${camLock.iconLock} / 外すと動く ${camLock.freed}`,
+);
+
 /* 44. ツール列のグループ（`21` の 4 章） */
 
 /* 44-1. ボタンは 7 つ、右のオプションパネルは無い */

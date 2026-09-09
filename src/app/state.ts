@@ -248,7 +248,11 @@ export class AppState {
   showGrid = true;
   /** Maya の既定と同じ 30°。 */
   smoothAngle = 30;
-  camOpts = { focal: 35, near: 0.05, far: 500, ortho: false };
+  /**
+   * カメラの設定。`locked` はタンブル / パン / ズーム / フレーム / ビュー切り替えを
+   * 受けなくする（`25` の T5）。作業中の都合なので `.mbz` には入れない。
+   */
+  camOpts = { focal: 35, near: 0.05, far: 500, ortho: false, locked: false };
   /** 今のビューの名前。HUD に出す。標準ビュー名か、控えたカメラの名前。 */
   viewName = "パース";
   /** 名前を付けて控えたカメラは `doc.cameraBookmarks`。`.mbz` に一緒に保存される。 */

@@ -150,6 +150,9 @@ button{font-family:inherit; font-size:inherit; color:inherit; background:none; b
 .ibtn[aria-pressed="true"]{background:var(--accent-dim); border-color:var(--accent); color:#eaf4fb}
 .ibtn[data-radial]::after{content:""; position:absolute; right:2px; bottom:2px;
   border-left:5px solid transparent; border-bottom:5px solid var(--text-faint)}
+/* アイコンの隅の小さな印（カメラのロック。25 の T5） */
+.ibtn .badge{position:absolute; left:2px; top:1px; font-size:9px; line-height:1; font-style:normal;
+  pointer-events:none}
 .tool-sep{width:30px; height:1px; background:var(--line-soft); margin:4px 0}
 .igrid{display:flex; flex-direction:column; gap:3px; align-items:center}
 .minilbl{font-size:8px; letter-spacing:.06em; text-transform:uppercase; color:var(--text-faint); margin:8px 0 4px; text-align:center}

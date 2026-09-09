@@ -57,7 +57,9 @@ export class Hud {
       ` · <b>${comp}</b>` +
       (this.state.comp.size ? ` · ${this.state.comp.size}` : "") +
       modNote +
-      `<br>${disp} · ${this.state.viewName}${this.state.camOpts.ortho ? " · ORTHO" : ""}` +
+      // ロック中は名前の横に鍵。視点が動かない理由がここで分かる（`25` の T5）
+      `<br>${disp} · ${this.state.viewName}${this.state.camOpts.locked ? " 🔒" : ""}` +
+      `${this.state.camOpts.ortho ? " · ORTHO" : ""}` +
       (this.state.selected ? ` · ${this.state.selected.name}` : "");
   }
 

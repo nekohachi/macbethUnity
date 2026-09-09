@@ -167,8 +167,17 @@ export class Viewport {
     this.camera = opts.ortho ? this.ortho : this.persp;
   }
 
+  /**
+   * カメラがロックされているか（`25` の T5）。
+   * 動かす操作はすべてここを通してから効かせる。選択やマニピュレータは止めない。
+   */
+  get locked(): boolean {
+    return this.state.camOpts.locked;
+  }
+
   /** 標準ビューへ向きだけ切り替える。注視点と距離はそのまま。 */
   setView(name: ViewName): void {
+    if (this.locked) return;
     const v = STANDARD_VIEWS[name];
     this.cam.theta = v.theta;
     this.cam.phi = v.phi;
@@ -177,12 +186,14 @@ export class Viewport {
   }
 
   tumble(dx: number, dy: number): void {
+    if (this.locked) return;
     this.cam.theta -= dx * 0.0088;
     this.cam.phi = Math.max(0.05, Math.min(Math.PI - 0.05, this.cam.phi - dy * 0.0088));
     this.applyCamera();
   }
 
   pan(dx: number, dy: number): void {
+    if (this.locked) return;
     const right = new Vector3().setFromMatrixColumn(this.camera.matrix, 0);
     const up = new Vector3().setFromMatrixColumn(this.camera.matrix, 1);
     const k = this.cam.distance * 0.0016;
@@ -191,12 +202,14 @@ export class Viewport {
   }
 
   dolly(factor: number): void {
+    if (this.locked) return;
     this.cam.distance = Math.max(MIN_DIST, Math.min(MAX_DIST, this.cam.distance * factor));
     this.applyCamera();
   }
 
   /** pivot が画面上で動かないズーム。F を押しながらのピンチで使う。 */
   dollyAbout(pivot: Vector3, factor: number): void {
+    if (this.locked) return;
     const next = Math.max(MIN_DIST, Math.min(MAX_DIST, this.cam.distance * factor));
     const f = next / this.cam.distance;
     this.cam.target.sub(pivot).multiplyScalar(f).add(pivot);
@@ -206,6 +219,7 @@ export class Viewport {
 
   /** 選択（なければ全体）にフレームを合わせる。Maya の F。 */
   frameSelected(): void {
+    if (this.locked) return;
     const targets = this.state.selected ? [this.state.selected] : this.state.doc.objects;
     let min = [Infinity, Infinity, Infinity];
     let max = [-Infinity, -Infinity, -Infinity];

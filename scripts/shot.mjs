@@ -592,6 +592,33 @@ const scenes = {
     await new Promise((r) => setTimeout(r, 120));
   },
 
+  /** `25` の T5: カメラをロックしたところ。HUD とツール列のアイコンに鍵。 */
+  "25-t5-camlock": async () => {
+    const app = window.macbeth;
+    app.state.doc.objects.length = 0;
+    const object = app.state.doc.addObject("cylinder");
+    app.viewport.syncAll();
+    app.setCompMode("object");
+    app.state.select(object);
+    app.viewport.frameSelected();
+    app.viewport.cam.distance = 6.4;
+    app.viewport.applyCamera();
+    app.refresh();
+
+    // カメラのカットインを開いてロックする（本物の経路）
+    const b = document.querySelector('#dockLeft .ibtn[data-group="camera"]');
+    const r = b.getBoundingClientRect();
+    const at = { clientX: r.x + r.width / 2, clientY: r.y + r.height / 2 };
+    for (const type of ["pointerdown", "pointerup"]) {
+      const e = new PointerEvent(type, { pointerId: 7, pointerType: "mouse", bubbles: true, cancelable: true, ...at });
+      (type === "pointerdown" ? b : window).dispatchEvent(e);
+    }
+    await new Promise((r2) => setTimeout(r2, 200));
+    const cutin = document.querySelector('.cutin.wide[data-gauge="camera"]');
+    [...cutin.querySelectorAll(".chk")].find((c) => c.textContent.includes("カメラをロック"))?.click();
+    await new Promise((r2) => setTimeout(r2, 250));
+  },
+
   /** `23` の T4: ブリッジの分割数 3。上下の縁の間に輪が 2 本入る。 */
   "23-t4-bridge": async () => {
     const app = window.macbeth;

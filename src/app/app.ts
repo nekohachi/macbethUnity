@@ -218,6 +218,8 @@ type ToolEntry =
       compMode?: CompMode;
       /** ツールでもコンポーネントモードでもない、独自のオン / オフ（スナップなど）。 */
       pressed?: () => boolean;
+      /** アイコンの隅に出す小さな印（カメラのロックなど。`25` の T5）。 */
+      badge?: () => string;
       /** 長押しのサークルメニュー。 */
       radial?: () => RadialMenu;
       /** 輪の下に並べる一覧（カメラの控え）。 */
@@ -1953,6 +1955,11 @@ export class App {
   }
 
   private setView(name: ViewName): void {
+    // ロック中は視点も名前も変えない（`25` の T5）
+    if (this.state.camOpts.locked) {
+      this.hud.toast("カメラがロックされています（カメラのオプションで外せます）");
+      return;
+    }
     this.viewport.setView(name);
     this.state.viewName = STANDARD_VIEWS[name].label;
     this.refresh();
@@ -1978,6 +1985,10 @@ export class App {
   }
 
   private recallCamera(c: CameraBookmark): void {
+    if (this.state.camOpts.locked) {
+      this.hud.toast("カメラがロックされています（カメラのオプションで外せます）");
+      return;
+    }
     const cam = this.viewport.cam;
     cam.theta = c.theta;
     cam.phi = c.phi;
@@ -2162,6 +2173,7 @@ export class App {
         icon: ICONS.camera,
         title: "カメラ（長押しでビューの切り替え · タップで設定）",
         pressed: () => this.state.camOpts.ortho,
+        badge: () => (this.state.camOpts.locked ? "🔒" : ""),
         radial: () => this.cameraMenu(),
         radialList: () => this.savedCameraItems(),
         options: () => [cameraSection(this.optionsState(), this.panelHost())],
@@ -3386,6 +3398,7 @@ export class App {
         icon: ICONS.camera,
         title: "カメラ（長押しでビューの切り替え · タップで設定）",
         pressed: () => this.state.camOpts.ortho,
+        badge: () => (this.state.camOpts.locked ? "🔒" : ""),
         radial: () => this.cameraMenu(),
         radialList: () => this.savedCameraItems(),
         options: () => [cameraSection(this.optionsState(), this.panelHost())],
@@ -3564,6 +3577,8 @@ export class App {
       const b = el("button", "ibtn");
       b.dataset.group = entry.id;
       b.innerHTML = iconSvg(typeof entry.icon === "function" ? entry.icon() : entry.icon);
+      const badge = entry.badge?.();
+      if (badge) b.appendChild(el("i", "badge", badge));
       b.title = entry.title;
       if (entry.tool) {
         b.dataset.tool = entry.tool;
@@ -3963,8 +3978,16 @@ export class App {
         this.viewport.applyCamera();
         this.refresh();
       },
+      onCamLockChange: (on) => {
+        this.state.camOpts.locked = on;
+        // アイコンの隅の鍵は列を描き直さないと出ない
+        this.renderToolColumn();
+        this.refresh();
+        this.hud.toast(on ? "カメラをロックしました（視点は動きません）" : "カメラのロックを外しました");
+      },
       onCamReset: () => {
-        this.state.camOpts = { focal: 35, near: 0.05, far: 500, ortho: false };
+        // ロックは初期設定に戻すの対象にしない（外したいならチェックを外す）
+        this.state.camOpts = { focal: 35, near: 0.05, far: 500, ortho: false, locked: this.state.camOpts.locked };
         this.setView("persp");
         this.refreshManipulator();
         this.reopenToolOptions("camera");
