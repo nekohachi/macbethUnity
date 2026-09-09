@@ -55,7 +55,7 @@ export interface PanelHost {
   onSelect(object: SceneObject): void;
   onRename(object: SceneObject, name: string): void;
   onOutlinerMenu(object: SceneObject, x: number, y: number): void;
-  /** レイヤー（`19` の 3.3）。 */
+  /** アウトライナ（`19` の 3.3、`24` の T1）。 */
   onVisible(object: SceneObject, visible: boolean): void;
   onLock(object: SceneObject, locked: boolean): void;
   onReorder(from: number, to: number): void;
@@ -945,7 +945,7 @@ export function renderLayers(
   }
 }
 
-/** レイヤーの行を開いたときのトランスフォーム。数値だけ（`21` の 2.7 でパラメータは「追加」へ）。 */
+/** アウトライナの行を開いたときのトランスフォーム。数値だけ（`21` の 2.7 でパラメータは「追加」へ）。 */
 function transformSectionFor(o: SceneObject, host: PanelHost): HTMLElement | null {
   const s = section("トランスフォーム", "TRANSFORM");
   tripleRow(s, "移動", o.transform.position as [number, number, number], 3, (axis, v) =>
@@ -958,7 +958,7 @@ function transformSectionFor(o: SceneObject, host: PanelHost): HTMLElement | nul
 }
 
 /**
- * レイヤーの行の操作（`19` の 3.3）。
+ * アウトライナの行の操作（`19` の 3.3）。
  * タップで選択、ダブルタップで改名、長押しでメニュー、長押しのままドラッグで並び替え。
  */
 function attachOutlinerRow(row: HTMLElement, o: SceneObject, host: PanelHost): void {

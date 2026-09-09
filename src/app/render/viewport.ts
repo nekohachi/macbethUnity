@@ -223,8 +223,27 @@ export class Viewport {
     if (!any) return;
     this.cam.target.set((min[0] + max[0]) / 2, (min[1] + max[1]) / 2, (min[2] + max[2]) / 2);
     const size = Math.max(max[0] - min[0], max[1] - min[1], max[2] - min[2]);
-    this.cam.distance = Math.max(1.4, size * 2.4);
+    // 選択を包む球の半径。どの向きから見ても、これが収まれば全部見える
+    const radius = Math.hypot(max[0] - min[0], max[1] - min[1], max[2] - min[2]) / 2;
+    this.cam.distance = Math.max(1.4, size * 2.4, this.fitDistance(radius));
     this.applyCamera();
+  }
+
+  /**
+   * 半径 `radius` の球が画角に収まる距離（`24` の T1）。
+   *
+   * パースの縦の画角は**アスペクト比で変わる**（three.js は焦点距離とフィルム
+   * ゲージから縦の画角を出すので、横長になるほど縦が狭くなる）。ビューポートが
+   * 広がったぶん縦が狭くなり、`size * 2.4` だけでは選択がはみ出すようになった。
+   * 平行投影は左右がアスペクト比で伸びるだけなので、縦がはみ出すことはない。
+   */
+  private fitDistance(radius: number): number {
+    if (this.state.camOpts.ortho || radius <= 0) return 0;
+    const fovY = (this.persp.fov * Math.PI) / 180;
+    const halfY = Math.max(1e-3, fovY / 2);
+    const halfX = Math.atan(Math.tan(halfY) * Math.max(0.01, this.persp.aspect));
+    // 少し余白を持たせる（画面の縁ぎりぎりに置かない）
+    return (radius / Math.sin(Math.min(halfY, halfX))) * 1.1;
   }
 
   /* ---- オブジェクトの同期 --------------------------------------------- */
@@ -234,7 +253,7 @@ export class Viewport {
   }
 
   /**
-   * そのオブジェクトだけを小さく描いた画像（レイヤーのサムネイル。`19` の 3.3）。
+   * そのオブジェクトだけを小さく描いた画像（アウトライナのサムネイル。`19` の 3.3）。
    *
    * ふだんの描画に使っているレンダラを一時的に別の的へ向けて 1 枚描く。
    * 開いたときに全行ぶん作るだけなので、毎フレームの負担にはならない。

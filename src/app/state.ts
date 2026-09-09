@@ -120,7 +120,6 @@ export class AppState {
   symX = false;
   /** true = 指は常にカメラ。false（既定）= メッシュの上ならツール、外ならタンブル。 */
   fingerCam = false;
-  panelsHidden = false;
 
   soft = { strength: 0, radius: 1.0 };
   toolOpts = { extrudeDist: 0.35 };

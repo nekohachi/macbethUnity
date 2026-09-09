@@ -354,7 +354,7 @@ const layers = await page.evaluate(() => ({
   rows: document.querySelectorAll(".panel[data-panel='layers'] .lyrow").length,
   thumbs: document.querySelectorAll(".panel[data-panel='layers'] .thumb img").length,
 }));
-check("レイヤーが出る（サムネイル付き）", layers.rows >= 1 && layers.thumbs === layers.rows, `行 ${layers.rows} / サムネ ${layers.thumbs}`);
+check("アウトライナが出る（サムネイル付き）", layers.rows >= 1 && layers.thumbs === layers.rows, `行 ${layers.rows} / サムネ ${layers.thumbs}`);
 
 /* 14. 編集メニューの操作が効く（面の押し出しと削除） */
 await page.keyboard.press("F11");
@@ -378,25 +378,44 @@ await page.keyboard.press("6");
 const back = await page.evaluate(() => window.macbeth.state.display);
 check("シェーディングを切り替えられる", wire === "wire" && back === "shadedWire", `${wire} → ${back}`);
 
-/* 16. パネルをドラッグして置き場所を変えられる */
+/* 16. パネルをドラッグして置き場所を変えられる（アウトライナはドロワー専用になったのでツール列で試す） */
 const headBox = await page.evaluate(() => {
-  const h = document.querySelector('.panel[data-panel="layers"] .phead');
+  const h = document.querySelector('.panel[data-panel="tools"] .phead');
   const r = h.getBoundingClientRect();
   return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
 });
 await page.mouse.move(headBox.x, headBox.y);
 await page.mouse.down();
-// 左の落とし場所へ運ぶ
+// 右上の落とし場所へ運ぶ
 const stage = await page.evaluate(() => {
   const r = document.getElementById("stage").getBoundingClientRect();
-  return { x: r.x, y: r.y, h: r.height };
+  return { x: r.x, y: r.y, w: r.width, h: r.height };
 });
+await page.mouse.move(stage.x + stage.w - 60, stage.y + 80, { steps: 10 });
+await page.mouse.up();
+const dockedRight = await page.evaluate(() => ({
+  right: !!document.querySelector('#dockRightTop .panel[data-panel="tools"]'),
+  colShown: !document.getElementById("dockColRight").hidden,
+}));
+// 左へ戻す
+const headBox2 = await page.evaluate(() => {
+  const h = document.querySelector('.panel[data-panel="tools"] .phead');
+  const r = h.getBoundingClientRect();
+  return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+});
+await page.mouse.move(headBox2.x, headBox2.y);
+await page.mouse.down();
 await page.mouse.move(stage.x + 150, stage.y + stage.h / 2, { steps: 10 });
 await page.mouse.up();
-const dockedLeft = await page.evaluate(
-  () => !!document.querySelector('#dockLeft .panel[data-panel="layers"]'),
+const dockedLeft = await page.evaluate(() => ({
+  left: !!document.querySelector('#dockLeft .panel[data-panel="tools"]'),
+  colHidden: document.getElementById("dockColRight").hidden,
+}));
+check(
+  "パネルを別の場所へドッキングできる（空のドック列は消える）",
+  dockedRight.right && dockedRight.colShown && dockedLeft.left && dockedLeft.colHidden,
+  `右上 ${dockedRight.right}（列が出る ${dockedRight.colShown}）→ 左 ${dockedLeft.left}（列が消える ${dockedLeft.colHidden}）`,
 );
-check("パネルを別の場所へドッキングできる", dockedLeft);
 
 /* 17. モードを切り替えると予定表が出て、戻すとキャンバスが戻る */
 await page.evaluate(() => window.macbeth.setMode("sculpt"));
@@ -420,16 +439,15 @@ check(
   `スカルプト: 予定表 ${inStub.stub} / ツール ${inStub.tools} / ゲージ「${inStub.gauge}」→ モデリング: ツール ${backToModel.tools}`,
 );
 
-/* 18. 縦持ちで右のドックがビューポートの下に来る */
+/* 18. 縦持ちでもビューポートが縦一杯（右のドック列は空なので場所を取らない。`24` の T1） */
 await page.setViewportSize({ width: 744, height: 1133 }); // iPad mini の縦
 await page.waitForTimeout(200);
 const portrait = await page.evaluate(() => {
   const stage = document.getElementById("stage");
   const vp = document.getElementById("vp").getBoundingClientRect();
-  const dock = document.getElementById("dockColRight").getBoundingClientRect();
   return {
     klass: stage.classList.contains("portrait"),
-    below: dock.top >= vp.bottom - 2,
+    dockHidden: document.getElementById("dockColRight").hidden,
     vpRatio: vp.height / stage.getBoundingClientRect().height,
     canvas: document.getElementById("gl").width > 0,
   };
@@ -438,9 +456,9 @@ await page.setViewportSize({ width: 1280, height: 800 });
 await page.waitForTimeout(200);
 const backLandscape = await page.evaluate(() => !document.getElementById("stage").classList.contains("portrait"));
 check(
-  "縦持ちで右のドックが下に来る",
-  portrait.klass && portrait.below && portrait.vpRatio >= 0.55 && portrait.canvas && backLandscape,
-  `下に配置 ${portrait.below} / ビューポート ${Math.round(portrait.vpRatio * 100)}%`,
+  "縦持ちでもビューポートが縦一杯（空のドック列は場所を取らない）",
+  portrait.klass && portrait.dockHidden && portrait.vpRatio >= 0.98 && portrait.canvas && backLandscape,
+  `ドック列 ${portrait.dockHidden ? "無し" : "あり"} / ビューポート ${Math.round(portrait.vpRatio * 100)}%`,
 );
 
 /* 19. ベベル: エッジを選んで左右にドラッグすると面が増える */
@@ -3883,17 +3901,20 @@ check(
     `対称 ${sphereFlow.symmetryOk} / 0〜1 に収まる ${sphereFlow.packed}`,
 );
 
-/* 43e. レイヤーのドロワー（`20` の T9） */
-await page.setViewportSize({ width: 1024, height: 768 });
+/* 43e. アウトライナのドロワー（`20` の T9、`24` の T1） */
+// 1280px（広い画面）でも、アウトライナはドロワーで出る（`24` の T1）
+await page.setViewportSize({ width: 1280, height: 800 });
 await page.waitForTimeout(250);
-const drawerNarrow = await page.evaluate(async () => {
+const outliner = await page.evaluate(async () => {
   const app = window.macbeth;
   const objectsBefore = app.state.doc.objects.length;
   if (app.state.doc.objects.length < 2) app.state.doc.addObject("sphere");
   app.viewport.syncAll();
   app.refresh();
 
-  const before = { docked: !!document.querySelector('#dockColRight .panel[data-panel="layers"]') };
+  const dockColHidden = document.getElementById("dockColRight").hidden;
+  const label = document.getElementById("btnPanels").textContent.trim();
+  const title = document.querySelector('.panel[data-panel="layers"] .phead span').textContent;
   document.getElementById("btnPanels").click();
   await new Promise((r) => setTimeout(r, 250));
   const drawer = document.querySelector(".drawer");
@@ -3914,7 +3935,14 @@ const drawerNarrow = await page.evaluate(async () => {
   const locked = target.locked;
   lock?.click();
 
-  // 外を触ると閉じる
+  // 見出しの × で閉じる（選択を変えずに閉じられる）
+  drawer?.querySelector(".pclose")?.click();
+  await new Promise((r) => setTimeout(r, 200));
+  const closedByButton = !document.querySelector(".drawer.open");
+
+  // もう一度開いて、外を触っても閉じる
+  document.getElementById("btnPanels").click();
+  await new Promise((r) => setTimeout(r, 200));
   document.getElementById("vp").dispatchEvent(
     new PointerEvent("pointerdown", { pointerType: "touch", bubbles: true, clientX: vp.x + 20, clientY: vp.y + 20 }),
   );
@@ -3925,36 +3953,33 @@ const drawerNarrow = await page.evaluate(async () => {
   app.viewport.syncAll();
   app.refresh();
   return {
-    dockedBefore: before.docked,
+    label,
+    title,
+    dockColHidden,
     open: !!drawer?.classList.contains("open") || rows > 0,
     rows,
     // ドロワーはビューポートに被さるだけ。3D の描画幅は変わらない
     coversViewport: Math.abs(gl.width - vp.width) < 2,
     hidden,
     locked,
+    closedByButton,
     closed,
   };
 });
-await page.setViewportSize({ width: 1400, height: 900 });
-await page.waitForTimeout(250);
-const drawerWide = await page.evaluate(() => ({
-  docked: !!document.querySelector('#dockColRight .panel[data-panel="layers"]'),
-  drawer: !!document.querySelector(".drawer"),
-}));
-await page.setViewportSize({ width: 1280, height: 800 });
-await page.waitForTimeout(250);
 check(
-  "レイヤー: 狭い画面は右からのドロワー、広い画面はドッキング",
-  !drawerNarrow.dockedBefore &&
-    drawerNarrow.rows >= 2 &&
-    drawerNarrow.coversViewport &&
-    drawerNarrow.hidden &&
-    drawerNarrow.locked &&
-    drawerNarrow.closed &&
-    drawerWide.docked &&
-    !drawerWide.drawer,
-  `狭い: 行 ${drawerNarrow.rows}・ビューポートは縮まない ${drawerNarrow.coversViewport}・目 ${drawerNarrow.hidden}・` +
-    `ロック ${drawerNarrow.locked}・外を触ると閉じる ${drawerNarrow.closed} / 広い: ドッキング ${drawerWide.docked}`,
+  "アウトライナ: どの幅でもドロワー、ビューポートは全幅",
+  outliner.label === "アウトライナ" &&
+    outliner.title === "アウトライナ" &&
+    outliner.dockColHidden &&
+    outliner.rows >= 2 &&
+    outliner.coversViewport &&
+    outliner.hidden &&
+    outliner.locked &&
+    outliner.closedByButton &&
+    outliner.closed,
+  `1280px で 行 ${outliner.rows}・ドック列 ${outliner.dockColHidden ? "無し" : "あり"}・` +
+    `ビューポートは縮まない ${outliner.coversViewport}・目 ${outliner.hidden}・ロック ${outliner.locked}・` +
+    `× で閉じる ${outliner.closedByButton}・外を触って閉じる ${outliner.closed}`,
 );
 
 /* 44. ツール列のグループ（`21` の 4 章） */

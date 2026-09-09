@@ -321,14 +321,14 @@ export class App {
   private docking: Docking;
   private layout: Layout;
   /** パネルの置き場所。移したら覚えて、次に開いたときに戻す。 */
-  private zones: Record<string, Zone> = { tools: "left", outliner: "rightTop" };
+  private zones: Record<string, Zone> = { tools: "left" };
   private toolPanelBody: HTMLElement | null = null;
   private outlinerBody: HTMLElement | null = null;
-  /** レイヤーで開いている行。 */
+  /** アウトライナで開いている行。 */
   private openedLayers = new Set<string>();
   /** サムネイルの控え。開いたときに作って、形が変わるまで使い回す。 */
   private thumbs = new Map<string, { url: string; stamp: string }>();
-  /** レイヤーのドロワー（狭い画面のとき）。 */
+  /** アウトライナのドロワー。 */
   private drawer: HTMLElement | null = null;
   private layersPanel: HTMLElement | null = null;
   /** スライダーを触り始めたときの状態。離したときに履歴へ積む。 */
@@ -433,6 +433,7 @@ export class App {
       },
       onMessage: (text) => this.hud.toast(text),
       onLayoutChange: () => {
+        this.syncDockCol();
         this.layout?.apply();
         this.viewport.resize();
       },
@@ -3404,62 +3405,73 @@ export class App {
   }
 
   /**
-   * レイヤー（`19` の 3.3）。
+   * アウトライナ（`19` の 3.3、`24` の T1）。
    *
-   * 広い画面（1200px 以上）は今までどおり右にドッキング。
-   * 狭ければ右から被さるドロワーにして、描画領域を削らない。
+   * **画面の広さに関わらず右から被さるドロワー**にする。ドッキングだと
+   * その分ビューポートが狭くなるので、広い画面でも被せるほうを取った。
    */
   private buildPanels(): void {
-    const panel = panelShell("layers", "レイヤー");
+    const panel = panelShell("layers", "アウトライナ");
     this.layersPanel = panel.panel;
     this.outlinerBody = panel.body;
-    this.docking.attach(panel.panel);
+    // ドロワーは外を触っても閉じるが、それだと選択も動いてしまう。
+    // 見出しに閉じるボタンを置いて、選択を変えずに閉じられるようにする
+    const close = el("button", "pclose", "×");
+    close.title = "閉じる（Esc）";
+    close.addEventListener("click", () => this.closeLayers());
+    panel.panel.querySelector(".phead")?.appendChild(close);
+    // ドロワー専用なので掴み手（ドッキング）は付けない。掴めるとドックへ
+    // 落ちてしまい、ドロワーから消える
     this.placeLayers();
     this.renderPanels();
     this.bindLayerSwipe();
+    this.syncDockCol();
     this.viewport.resize();
   }
 
-  /** 画面の広さに合わせて、ドッキングとドロワーを入れ替える。 */
+  /**
+   * 右のドック列は、中にパネルが無ければ消す（`24` の T1）。
+   * アウトライナがドロワーへ移ったので、ふだんは空でビューポートが全幅になる。
+   * ツール列をここへ運んだときだけ出る。
+   */
+  private syncDockCol(): void {
+    const col = byId("dockColRight");
+    col.hidden = !col.querySelector(".panel");
+  }
+
+  /** ドロワーを作って中に入れる。ドッキングはしない（`24` の T1）。 */
   private placeLayers(): void {
     const panel = this.layersPanel;
     if (!panel) return;
-    const wide = this.layout?.isWide ?? true;
-    if (wide) {
-      this.drawer?.remove();
-      this.drawer = null;
-      this.docking.place(panel, this.zones.outliner ?? "rightTop");
-    } else {
-      if (!this.drawer) {
-        this.drawer = el("div", "drawer");
-        byId("vp").appendChild(this.drawer);
-      }
-      this.drawer.appendChild(panel);
-      panel.classList.remove("floating");
+    if (!this.drawer) {
+      this.drawer = el("div", "drawer");
+      byId("vp").appendChild(this.drawer);
     }
+    if (panel.parentElement !== this.drawer) this.drawer.appendChild(panel);
+    panel.classList.remove("floating");
     this.syncLayersButton();
   }
 
+  /** アウトライナの開閉。 */
   private toggleLayers(): void {
-    if (this.layout?.isWide ?? true) {
-      this.state.panelsHidden = !this.state.panelsHidden;
-      byId("dockColRight").hidden = this.state.panelsHidden;
-      this.syncLayersButton();
-      this.viewport.resize();
-      return;
-    }
     this.drawer?.classList.toggle("open");
     // 開いたときだけサムネイルを描き直す（`19` の 3.4）
     if (this.drawer?.classList.contains("open")) this.renderPanels();
     this.syncLayersButton();
   }
 
-  private syncLayersButton(): void {
-    const open = (this.layout?.isWide ?? true) ? !this.state.panelsHidden : !!this.drawer?.classList.contains("open");
-    byId("btnPanels").setAttribute("aria-pressed", String(open));
+  /** 開いていれば閉じる（外を触ったとき、Esc）。 */
+  private closeLayers(): void {
+    if (!this.drawer?.classList.contains("open")) return;
+    this.drawer.classList.remove("open");
+    this.syncLayersButton();
   }
 
-  /** 右端から左へのスワイプでレイヤーを出す（指だけ。既存の操作は邪魔しない）。 */
+  private syncLayersButton(): void {
+    byId("btnPanels").setAttribute("aria-pressed", String(!!this.drawer?.classList.contains("open")));
+  }
+
+  /** 右端から左へのスワイプでアウトライナを出す（指だけ。既存の操作は邪魔しない）。 */
   private bindLayerSwipe(): void {
     const vp = byId("vp");
     let from: { x: number; y: number; id: number } | null = null;
@@ -3471,7 +3483,7 @@ export class App {
       if (!from || e.pointerId !== from.id) return;
       if (from.x - e.clientX > 40 && Math.abs(e.clientY - from.y) < 60) {
         from = null;
-        if (!(this.layout?.isWide ?? true) && !this.drawer?.classList.contains("open")) this.toggleLayers();
+        if (!this.drawer?.classList.contains("open")) this.toggleLayers();
       }
     });
     for (const t of ["pointerup", "pointercancel"] as const) vp.addEventListener(t, () => (from = null));
@@ -3479,8 +3491,7 @@ export class App {
     vp.addEventListener("pointerdown", (e) => {
       if (!this.drawer?.classList.contains("open")) return;
       if (this.drawer.contains(e.target as Node)) return;
-      this.drawer.classList.remove("open");
-      this.syncLayersButton();
+      this.closeLayers();
     });
   }
 
@@ -3758,7 +3769,7 @@ export class App {
   }
 
   /**
-   * レイヤーのサムネイル。形が変わっていなければ前のものを使い回す
+   * アウトライナのサムネイル。形が変わっていなければ前のものを使い回す
    * （毎回描くと、行を開くたびにオブジェクトの数だけ描画が走る）。
    */
   private thumbnailOf(o: SceneObject): string {
@@ -3915,6 +3926,12 @@ export class App {
       const target = e.target as HTMLElement | null;
       if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA")) return;
 
+      // Esc は開いているものを閉じる（PC 用。`24` の T1）
+      if (e.key === "Escape") {
+        this.closePopup();
+        this.closeLayers();
+        return;
+      }
       const mode = COMP_MODES.find((m) => m.key === e.key);
       if (mode) {
         e.preventDefault();

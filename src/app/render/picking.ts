@@ -215,7 +215,7 @@ export class Picker {
     raycaster.setFromCamera(this.ndc(p), this.viewport.camera);
     const views = this.viewport
       .allViews()
-      // ロックしたものは選べない（`19` の 3.3 のレイヤー）
+      // ロックしたものは選べない（`19` の 3.3 のアウトライナ）
       .filter((v) => v.object.visible && !v.object.locked && (!exclude || v.object !== exclude));
     const hits = raycaster.intersectObjects(
       views.map((v) => v.surface),
