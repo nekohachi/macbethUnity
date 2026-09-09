@@ -288,3 +288,72 @@ PNG: `docs/img/25-t2-axis-scale.png`（ALT + 縦つまみで Y だけ伸びる�
 ### 次
 
 T4（不透明度の長押し）→ T5（カメラのロック）→ T6（ビューポートの分割）。終わったらまとめて報告。
+
+---
+
+## 実装の報告 その 2（Opus、2026-09-09。T4〜T6）
+
+### 変えたファイル
+
+**T4: 目の長押しで不透明度**
+
+- `ui/panels.ts`: `attachEyeOpacity(eye, o, host, primary)`。目のアイコンを 420ms 長押しすると `document.body` に `.opacity-pop` を出し、指を離さず左右に引くと値が変わる。離すと閉じて履歴に 1 段。タップは今までどおり表示 / 非表示。目のアイコン自体も `opacity: 0.4 + 0.6 * o.opacity` で薄くする（0 でも目は開いたまま）
+- `ui/panels.ts` の `paramRow` に `key`。アトリビュート欄の不透明度の行に印を付け、長押しで引いている間は**そちらの数字とスライダーも一緒に動かす**
+- `render/meshView.ts`: `ObjectView.faded`（`MAT.surf` の複製）と `disposeViewMaterials(view)`
+- `render/viewport.ts` の `applyDisplay`: `opacity < 1` のときだけそのオブジェクト用の材質にして `transparent` / `opacity` / `depthWrite: false` を当てる。チェッカーとヒートマップにも同じ不透明度。共有の `MAT.surf` は触らない
+- `styles/shell.css`: `.opacity-pop` と `.lyrow .eye{touch-action:none}`
+
+**T5: カメラのロック**
+
+- `state.ts`: `CamOpts` を型として切り出し、`locked` を追加
+- `render/viewport.ts`: `get locked()` と、`tumble` / `pan` / `dolly` / `dollyAbout` / `frameSelected` / `setView` の頭で判定
+- `app.ts`: `setView` と `recallCamera` でも止めてトーストを出す。`onCamLockChange`。ツール列のボタンに `badge`（アイコンの隅の小さな印）
+- `ui/panels.ts` の `cameraSection`: 「カメラをロック」のチェックと説明
+- `ui/hud.ts`: ビュー名の横に 🔒
+
+**T6: ビューポートの分割**
+
+- `render/viewport.ts`: `Pane`（`view` / `cam` / `camOpts` / `display` / 自分の `PerspectiveCamera` と `OrthographicCamera`）、`panes` / `active` / `inputPane` / `layout`。`paneRect(i)` / `paneAt(x, y)` / `paneAtClient` / `setLayout` / `setActive` / `applyCameraTo(i)` / `renderFrame`（`setScissor` で描き分け）/ `saveLayout` / `restoreLayout`。枠は canvas の上に置いた `.panes` > `.paneframe`（当たり判定なし）
+- `state.ts`: `PaneLike` と `defaultPane()`。`display` / `camOpts` / `viewName` は**アクティブなペインへの別名**（getter / setter）にした
+- `render/picking.ts`: `local(e)` が**ペインの中の座標**を返し、`width` / `height` もそのペインの矩形。指を置いている間は `viewport.inputLocked` で基準のペインを固定
+- `app.ts`: canvas の `pointerdown`（キャプチャ）でアクティブなペインを決める。ツール列に「分割」（`layoutMenu` / `cycleLayout` / `setLayout`）。マニピュレータの `toScreen` と矩形選択の枠がペインの位置を見る。UV モードに入るときは 1 画面に戻す
+- `core/document.ts` / `core/io/mbz.ts`: `Document.layout`（`PaneLayout`）。`.mbz` に入る
+- `storage/autosave.ts`: `beforeSave` フック（自動保存にも分割とカメラを載せる）
+- `ui/icons.ts`: `layout1` / `layoutCols` / `layoutRows` / `layoutQuad`
+
+### 数
+
+| | `25` の前 | T3 まで | T6 まで |
+|---|---|---|---|
+| core の単体（vitest） | 210 | 210 | 210 |
+| 通し確認（smoke） | 85 | 90 | 94 |
+
+足した通し確認: 「目の長押しで不透明度」「カメラをロックすると動かない」「ビューポートを 2 / 4 に分割できる」「分割しても選べる」。
+
+PNG: `docs/img/25-t4-opacity.png`（長押しのスライダーを出したまま、手前の立方体ごしに球が見える）、`25-t5-camlock.png`（ロック中。HUD とアイコンに鍵）、`25-t6-quad.png`（4 分割。右下がアクティブでワイヤーフレーム）。
+
+公開版（`app/`）も更新済み。通し確認は `dist` と `app` の両方で通した。
+
+### 設計と変えたところ
+
+1. **不透明度のスライダーは「右へ引くと濃く」にした。** 指示書の通し確認は「右へ 60px で 1 未満」でしたが、既定が 1 なので右へ引いても 1 のままです。左右の向きは一般のスライダーに合わせ（右 = 増）、確認は**左へ 60px 引いて 0.63 になる**ことを見ています
+2. **描画は毎フレーム全ペインを描いています**（指示書は「ドラッグ中はアクティブなペインだけ」）。他のペインを描き飛ばすには `preserveDrawingBuffer: true` が要り、これはタブレットの GPU で目に見えて遅くなる設定です。`setScissor` で描き分けているので**塗るピクセルの合計は 1 画面のときと同じ**で、増えるのは頂点の処理と描画呼び出しだけ。実機で 4 分割が重ければ、そのときに「アクティブだけ」を入れます
+3. **`state.display` / `camOpts` / `viewName` は別名にしました。** ペインごとの値を持ちつつ、`setDisplay` やキーの 4〜9、HUD、パネルの呼び出し側を 1 行も変えずに済みます
+4. **入力のペインは「指を置いた場所」で決め、離すまで固定します。** ドラッグが隣のペインへはみ出しても座標の基準が入れ替わりません。ホバーだけのときは指の下のペインについていきます
+5. **分割を変えても、既にあるペインの向きは取り上げません**（1 → 4 のとき、パースだったペイン 0 はパースのまま）
+6. **`ObjectView` の材質を捨てる口を作りました**（`disposeViewMaterials`）。`syncAll` はオブジェクトごとに view を作り直すので、不透明度の複製やチェッカーの材質がそのままだと積み上がります
+
+### 判断が要った点（確認してほしいところ）
+
+1. **3 分割は入れていません**（指示書どおり）。2 は「左右」と「上下」の両方を用意しました
+2. **カメラのロックは `.mbz` に入れていません**（作業中の都合）。分割と各ペインのカメラは入れています
+3. **「初期設定に戻す」はロックを触りません。** 外したいときはチェックを外してください
+4. **不透明度 0 でも選べます**（非表示とは別）。目のアイコンは開いたまま薄くなります
+5. **UV モードの 3D は 1 画面に固定**です。UV モードに入ると分割は解けます（戻っても 1 画面のままです）
+6. **4 分割の並びは パース（左上）/ 上（右上）/ 前（左下）/ 右（右下）**。Maya の既定と同じ並びにしました
+
+### 次にできそうなこと
+
+- 分割の線をドラッグして幅を変える（今は均等割り）
+- ペインごとの「このオブジェクトだけ表示」（Maya の Isolate Select）
+- 透明どうしの前後関係（今は `depthWrite: false` で誤魔化しています）
