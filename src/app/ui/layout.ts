@@ -32,6 +32,10 @@ export class Layout {
     this.stage.appendChild(this.grip);
     this.attachGrip();
     this.apply();
+    // 寸法の出どころは ResizeObserver（`29` の A-T2）。iOS は回転の resize が
+    // 寸法の確定より先に来ることがあり、そこで読む矩形は古い。
+    // window の resize は来ないときの保険として残す
+    new ResizeObserver(() => this.apply()).observe(this.stage);
     window.addEventListener("resize", () => this.apply());
   }
 

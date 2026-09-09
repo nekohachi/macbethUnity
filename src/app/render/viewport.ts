@@ -962,8 +962,10 @@ export class Viewport {
   /* ---- 描画ループ ----------------------------------------------------- */
 
   resize(): void {
-    const w = this.container.clientWidth || 1;
-    const h = this.container.clientHeight || 1;
+    // 隠れている（UV だけの表示など）ときは触らない。0 で組むと戻したとき潰れる
+    if (!this.container.clientWidth || !this.container.clientHeight) return;
+    const w = this.container.clientWidth;
+    const h = this.container.clientHeight;
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     this.renderer.setSize(w, h, false);
     this.applyCameraAll();

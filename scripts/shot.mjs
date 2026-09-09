@@ -868,6 +868,23 @@ const scenes = {
     await new Promise((r) => setTimeout(r, 250));
   },
 
+  /** `29` の A-T2: 縦持ち。回しても潰れないことの絵（SHOT_SIZE=744x1133 で撮る）。 */
+  "29-t2-portrait": async () => {
+    const app = window.macbeth;
+    app.state.doc.objects.length = 0;
+    const cube = app.state.doc.addObject("cube");
+    const sphere = app.state.doc.addObject("sphere");
+    sphere.transform.position = [1.9, 0, 0];
+    app.viewport.syncAll();
+    app.setCompMode("object");
+    app.state.select(cube);
+    app.viewport.frameSelected();
+    app.viewport.cam.distance = 7.5;
+    app.viewport.applyCamera();
+    app.refresh();
+    await new Promise((r) => setTimeout(r, 300));
+  },
+
   /** `23` の T4: ブリッジの分割数 3。上下の縁の間に輪が 2 本入る。 */
   "23-t4-bridge": async () => {
     const app = window.macbeth;

@@ -595,7 +595,7 @@ export class App {
       });
     }
 
-    window.addEventListener("resize", () => this.viewport.resize());
+    this.watchSize();
     this.viewport.resize();
     this.viewport.start();
   }
@@ -4770,6 +4770,38 @@ export class App {
     document.body.appendChild(pop);
     this.popup = pop;
     this.popupAnchor = anchor;
+  }
+
+  /**
+   * 画面の大きさの変化を拾う（`29` の A-T2）。
+   *
+   * iOS（特にホーム画面から開いた standalone）は、回転のときの `resize` が
+   * **寸法の確定より先に**来ることがある。そこで読んだ `clientWidth` は古く、
+   * canvas の裏の大きさだけ前の向きのまま残るので「潰れた」ように見える。
+   * 最後の 1 発が来ないこともある。
+   *
+   * そこで寸法の出どころを `ResizeObserver`（レイアウト確定後に呼ばれる）にして、
+   * `window` の `resize` と `visualViewport` は保険にする。向きが変わったあとは
+   * 350ms 置いてもう 1 回通す。
+   */
+  private watchSize(): void {
+    const sync = () => {
+      this.viewport.resize();
+      this.uv?.resize();
+    };
+    new ResizeObserver(sync).observe(byId("pane3d"));
+    new ResizeObserver(sync).observe(byId("paneUv"));
+    window.addEventListener("resize", sync);
+    window.visualViewport?.addEventListener("resize", sync);
+    const late = () => {
+      sync();
+      setTimeout(() => {
+        this.layout?.apply();
+        sync();
+      }, 350);
+    };
+    window.addEventListener("orientationchange", late);
+    window.screen?.orientation?.addEventListener?.("change", late);
   }
 
   /** 左利きなら画面を左右鏡映しにする（`24` の T4）。中身は `shell.css`。 */

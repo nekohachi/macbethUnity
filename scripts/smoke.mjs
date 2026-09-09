@@ -5778,6 +5778,68 @@ check(
     `控え ${cluster.saved} / 左利きで右へ ${cluster.nearRight} / 戻して ${cluster.back}`,
 );
 
+/* 43z-24. 画面を回しても潰れない（`29` の A-T2） */
+const rotated = [];
+for (const [w, h] of [
+  [1133, 744],
+  [744, 1133],
+  [1133, 744],
+]) {
+  await page.setViewportSize({ width: w, height: h });
+  await page.waitForTimeout(320);
+  rotated.push(
+    await page.evaluate(() => {
+      const vp = document.getElementById("vp").getBoundingClientRect();
+      const pane = document.getElementById("pane3d");
+      const pr = pane.getBoundingClientRect();
+      const gl = document.getElementById("gl");
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      const cl = document.querySelector(".cluster").getBoundingClientRect();
+      return {
+        portrait: document.getElementById("stage").classList.contains("portrait"),
+        // canvas の裏の大きさが、今の CSS の大きさと合っている
+        canvasFits:
+          Math.abs(gl.width - pane.clientWidth * dpr) <= 1 && Math.abs(gl.height - pane.clientHeight * dpr) <= 1,
+        // 3D のペインはビューポートいっぱい（1 画面のとき）
+        paneFits: Math.abs(pr.width - vp.width) < 1 && Math.abs(pr.height - vp.height) < 1,
+        // 修飾ボタンは画面の中
+        clusterIn: cl.left >= vp.left - 1 && cl.right <= vp.right + 1 && cl.bottom <= vp.bottom + 1,
+        size: `${Math.round(pr.width)}×${Math.round(pr.height)}`,
+      };
+    }),
+  );
+}
+// 4 分割にして回しても、ペインが隙間なく container を埋める
+await page.evaluate(() => window.macbeth.setLayoutForTest("quad"));
+await page.setViewportSize({ width: 744, height: 1133 });
+await page.waitForTimeout(320);
+const quadRot = await page.evaluate(() => {
+  const vp = window.macbeth.viewport;
+  const pane = document.getElementById("pane3d");
+  const r = [0, 1, 2, 3].map((i) => vp.paneRect(i));
+  return {
+    widthSum: r[0].w + r[1].w,
+    heightSum: r[0].h + r[2].h,
+    w: pane.clientWidth,
+    h: pane.clientHeight,
+  };
+});
+await page.evaluate(() => window.macbeth.setLayoutForTest("single"));
+await page.setViewportSize({ width: 1280, height: 800 });
+await page.waitForTimeout(320);
+check(
+  "画面を回しても潰れない",
+  rotated.every((r) => r.canvasFits && r.paneFits && r.clusterIn) &&
+    !rotated[0].portrait &&
+    rotated[1].portrait &&
+    !rotated[2].portrait &&
+    quadRot.widthSum === quadRot.w &&
+    quadRot.heightSum === quadRot.h,
+  `横 ${rotated[0].size} → 縦 ${rotated[1].size} → 横 ${rotated[2].size} / ` +
+    `canvas が合う ${rotated.map((r) => r.canvasFits).join(",")} / 縦持ち ${rotated.map((r) => r.portrait).join(",")} / ` +
+    `4 分割で回しても隙間なし ${quadRot.widthSum === quadRot.w && quadRot.heightSum === quadRot.h}`,
+);
+
 /* 44. ツール列のグループ（`21` の 4 章） */
 
 /* 44-1. ボタンは 7 つ、右のオプションパネルは無い */
