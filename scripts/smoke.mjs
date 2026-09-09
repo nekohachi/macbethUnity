@@ -4838,6 +4838,139 @@ check(
     `履歴 「${twist.label}」→ 取り消しで ${twist.undone.toFixed(3)}`,
 );
 
+/* 43z-13c. ひねり・スワイプ・つまみを取り違えない（`26` の T2） */
+const threeWay = await page.evaluate(async (center) => {
+  const app = window.macbeth;
+  app.state.doc.objects.length = 0;
+  const object = app.state.doc.addObject("cube");
+  app.viewport.syncAll();
+  app.setCompMode("object");
+  app.state.select(object);
+  app.setView("front");
+  app.viewport.frameSelected();
+  app.refresh();
+  await new Promise((r) => setTimeout(r, 80));
+
+  const canvas = document.getElementById("gl");
+  const fire = (type, id, x, y) =>
+    canvas.dispatchEvent(
+      new PointerEvent(type, {
+        pointerId: id,
+        pointerType: "touch",
+        isPrimary: id === 131,
+        clientX: x,
+        clientY: y,
+        buttons: type === "pointerup" ? 0 : 1,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const turn = (p, deg) => {
+    const a = (deg * Math.PI) / 180;
+    const dx = p.x - center.x;
+    const dy = p.y - center.y;
+    return { x: center.x + dx * Math.cos(a) - dy * Math.sin(a), y: center.y + dx * Math.sin(a) + dy * Math.cos(a) };
+  };
+
+  /**
+   * 3 本指の 1 回のジェスチャ。`at(step)` が 10 段ぶんの指の位置を返す。
+   * 終わったらオブジェクトを元に戻して、次の試行に持ち越さない。
+   */
+  const run = async (start, at) => {
+    object.transform.position = [0, 0, 0];
+    object.transform.rotation = [0, 0, 0, 1];
+    object.transform.scale = [1, 1, 1];
+    app.viewport.syncAll();
+    app.refresh();
+    start.forEach((p, i) => fire("pointerdown", 131 + i, p.x, p.y));
+    for (let step = 1; step <= 10; step++) {
+      at(step).forEach((p, i) => fire("pointermove", 131 + i, p.x, p.y));
+      await wait(8);
+    }
+    const t = object.transform;
+    const out = {
+      position: [...t.position],
+      rotation: Math.hypot(t.rotation[0], t.rotation[1], t.rotation[2]),
+      scale: [...t.scale],
+    };
+    start.forEach((p, i) => fire("pointerup", 131 + i, p.x, p.y));
+    await wait(40);
+    // 取り消しはしない（履歴を戻すと選択ごと前の状態に化ける）。
+    // 次の試行のはじめに transform を戻している
+    return out;
+  };
+
+  // 親指と対（あいだに空間がある持ち方）
+  const thumb = { x: center.x - 50, y: center.y + 50 };
+  const pair = [
+    { x: center.x + 43, y: center.y - 50 },
+    { x: center.x + 57, y: center.y - 43 },
+  ];
+  const grip = [thumb, ...pair];
+
+  // 1. 少し曲がったスワイプは移動（手はまっすぐ動かない）
+  const curved = await run(grip, (step) => {
+    const slide = step * 6;
+    return grip.map((p) => {
+      const t = turn(p, 0.3 * step);
+      return { x: t.x + slide, y: t.y };
+    });
+  });
+
+  // 2. 親指と対を離すのはつまみ（拡大縮小）
+  const pinched = await run(grip, (step) =>
+    grip.map((p) => {
+      const k = step * 4;
+      const ux = (p.x - center.x) / Math.hypot(p.x - center.x, p.y - center.y);
+      const uy = (p.y - center.y) / Math.hypot(p.x - center.x, p.y - center.y);
+      return { x: p.x + ux * k, y: p.y + uy * k };
+    }),
+  );
+
+  // 3. 均等に開いた 3 本（正三角形）を回しても、ひねりには入らない
+  const even = [0, 120, 240].map((deg) => {
+    const a = (deg * Math.PI) / 180;
+    return { x: center.x + Math.cos(a) * 35, y: center.y + Math.sin(a) * 35 };
+  });
+  const evenTurn = await run(even, (step) => even.map((p) => turn(p, 3 * step)));
+
+  // 4. ひねっている途中で対の間隔が開いても、つまみには化けない
+  const spread = await run(grip, (step) => {
+    const t = grip.map((p) => turn(p, 3.2 * step));
+    // 対の 2 本だけ、間隔を 14 → 18px に開く
+    const dx = ((18 - 14) / 2 / 10) * step;
+    return [t[0], { x: t[1].x - dx, y: t[1].y }, { x: t[2].x + dx, y: t[2].y }];
+  });
+
+  app.state.select(null);
+  app.state.doc.objects.length = 0;
+  app.viewport.syncAll();
+  app.setView("persp");
+  app.refresh();
+  return { curved, pinched, evenTurn, spread };
+}, ON_MESH);
+check(
+  "3 本指のひねり・スワイプ・つまみを取り違えない",
+  // 曲がったスワイプ = 移動だけ
+  Math.hypot(...threeWay.curved.position) > 0.05 &&
+    threeWay.curved.rotation < 1e-6 &&
+    // つまみ = 拡大縮小だけ
+    threeWay.pinched.scale[0] > 1.05 &&
+    threeWay.pinched.rotation < 1e-6 &&
+    // 均等に開いた 3 本を回しても何も起きない
+    threeWay.evenTurn.rotation < 1e-6 &&
+    Math.hypot(...threeWay.evenTurn.position) < 1e-6 &&
+    Math.abs(threeWay.evenTurn.scale[0] - 1) < 1e-6 &&
+    // ひねりはつまみに化けない
+    threeWay.spread.rotation > 1e-6 &&
+    threeWay.spread.scale.every((v) => Math.abs(v - 1) < 1e-6),
+  `曲がったスワイプ 移動 ${Math.hypot(...threeWay.curved.position).toFixed(2)}・回転 ${threeWay.curved.rotation.toFixed(3)} / ` +
+    `つまみ ×${threeWay.pinched.scale[0].toFixed(2)}・回転 ${threeWay.pinched.rotation.toFixed(3)} / ` +
+    `均等な 3 本 回転 ${threeWay.evenTurn.rotation.toFixed(3)}・移動 ${Math.hypot(...threeWay.evenTurn.position).toFixed(2)} / ` +
+    `ひねり 回転 ${threeWay.spread.rotation.toFixed(3)}・スケール ${threeWay.spread.scale[0].toFixed(2)}`,
+);
+
 /* 43z-14. アトリビュート欄がアウトライナの上に出る（`25` の T3） */
 const attrs = await page.evaluate(async () => {
   const app = window.macbeth;
