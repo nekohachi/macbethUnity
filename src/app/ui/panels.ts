@@ -835,13 +835,15 @@ export function transferSection(state: OptionsState, host: PanelHost): HTMLEleme
   s.appendChild(head);
 
   checkbox(s, "位置", t.positions, (v) => host.onTransfer("positions", v));
+  s.appendChild(el("div", "hint", "先の頂点を、元の面のいちばん近い点へ動かします。"));
   checkbox(s, "UV", t.uvs, (v) => host.onTransfer("uvs", v));
 
   const row = el("div", "row");
   row.appendChild(el("label", undefined, "空間"));
   const group = el("div", "segmented");
   for (const [key, label] of [
-    ["component", "コンポーネント"],
+    // 「コンポーネント」では何のことか伝わらなかったので「頂点番号」に（`25` の T1）
+    ["component", "頂点番号"],
     ["world", "ワールド"],
     ["local", "ローカル"],
   ] as const) {
@@ -862,7 +864,7 @@ export function transferSection(state: OptionsState, host: PanelHost): HTMLEleme
     el(
       "div",
       "hint",
-      "コンポーネントは番号でそのまま写します（分割が同じときだけ）。\nワールドは、先の頂点ごとに元の面のいちばん近い点から取ります。",
+      "頂点番号は、番号でそのまま写します（分割が同じときだけ）。\nワールドは、先の頂点ごとに元の面のいちばん近い点から取ります。\n離して置いてあるものはローカルのほうが合います。",
     ),
   );
   return s;

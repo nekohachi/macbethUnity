@@ -316,6 +316,8 @@ export class App {
   private gestureDrag: DragState | null = null;
   /** UV モード。最初に入ったときに作る。 */
   uv: UvMode | null = null;
+  /** 2D に今出ているオブジェクト。選択が変わったら入れ替える（`25` の T1）。 */
+  private uvObject: SceneObject | null = null;
   /** 通し確認からオプションの操作を叩くための入口。 */
   panelHostForTest(): PanelHost {
     return this.panelHost();
@@ -1792,6 +1794,8 @@ export class App {
     if (r.objectChanged) this.viewport.applyDisplayAll();
     this.viewport.rebuildOverlay();
     this.refresh();
+    // 別のオブジェクトを選んだなら、2D の中身も入れ替える（`25` の T1）
+    this.afterSelectionChange();
     this.pushSelectionToUv();
     if (r.message) this.hud.toast(r.message);
   }
@@ -2286,6 +2290,7 @@ export class App {
     byId("uvSwitch").hidden = false;
     this.applyUvSplit();
     this.uv.start();
+    this.uvObject = object;
     this.uv.rebuild();
     this.hud.uvNote = this.uv.stats();
     // 3D で面を選んでいたら、その島を選んでおく
@@ -2295,6 +2300,30 @@ export class App {
         `今の UV を取り込んだ — 島 ${imported}（「展開」を押すまで開き直しません）`,
       );
     }
+  }
+
+  /**
+   * 選んでいるものが変わったあとの後始末（`25` の T1）。
+   *
+   * UV モードなら、**2D の中身も新しい対象に入れ替える**。今までは
+   * UV モードに入ったときのオブジェクトを出したままだった。
+   */
+  private afterSelectionChange(): void {
+    if (this.state.mode !== "uv" || !this.uv) return;
+    const object = this.state.selected;
+    if (object === this.uvObject) return;
+    this.uvObject = object;
+    // レシピが無ければ、今ある UV をそのまま取り込む（`17` の 1 章）
+    if (object && !object.uv) {
+      object.uv = recipeFromMesh(object.mesh);
+      recompute(object.mesh, object.uv);
+      this.viewport.rebuildObject(object);
+    }
+    // 前の対象で選んでいた島は、新しい対象では意味が無い
+    this.uv.chosen.clear();
+    this.uv.rebuild();
+    this.hud.uvNote = this.uv.stats();
+    this.hud.refreshStats();
   }
 
   private leaveUv(): void {
@@ -2917,12 +2946,35 @@ export class App {
       opts,
     );
     if (!r) {
-      this.hud.toast("トポロジが違います（コンポーネントは分割が同じときだけ）");
+      this.hud.toast("トポロジが違います（頂点番号は分割が同じときだけ）");
       return;
     }
     const snapshot = this.history.snapshot();
-    if (r.positions) target.mesh.positions.set(r.positions);
+    // 何が実際に変わったかを数える。「効かない」と見えるときの多くは
+    // 「同じ値が入っただけ」なので、動いた数を出せば自分で気づける（`25` の T1）
+    let movedVerts = 0;
+    if (r.positions) {
+      const before = target.mesh.positions;
+      for (let v = 0; v < target.mesh.vertexCount; v++) {
+        const d = Math.hypot(
+          r.positions[v * 3] - before[v * 3],
+          r.positions[v * 3 + 1] - before[v * 3 + 1],
+          r.positions[v * 3 + 2] - before[v * 3 + 2],
+        );
+        if (d > 1e-6) movedVerts++;
+      }
+      target.mesh.positions.set(r.positions);
+    }
+    let movedUv = 0;
     if (r.uv) {
+      const before = target.mesh.uvSets.get(UV_SET);
+      if (before) {
+        for (let i = 0; i < r.uv.length; i += 2) {
+          if (Math.abs(r.uv[i] - before[i]) > 1e-6 || Math.abs(r.uv[i + 1] - before[i + 1]) > 1e-6) movedUv++;
+        }
+      } else {
+        movedUv = r.uv.length / 2;
+      }
       target.mesh.uvSets.set(UV_SET, r.uv);
       // 切れ目は写した UV から取り直す（元のレシピは先のトポロジに合わない）
       target.uv = recipeFromMesh(target.mesh);
@@ -2936,9 +2988,18 @@ export class App {
     // 離れて置いてあるものをワールドで写すと、いちばん近い点が全部「縁」になる。
     // 気づきにくいので、重なっていないときだけ言い添える
     const apart = opts.space === "world" && !this.overlapsInWorld(source, target);
+    const parts: string[] = [];
+    if (opts.positions) {
+      parts.push(
+        movedVerts ? `位置 ${movedVerts} / ${target.mesh.vertexCount} 頂点が動いた` : "位置は変わりませんでした（元と同じ形です）",
+      );
+    }
+    if (opts.uvs) {
+      const corners = target.mesh.faceOffsets[target.mesh.faceCount];
+      parts.push(r.uv ? (movedUv ? `UV ${movedUv} / ${corners} コーナーが動いた` : "UV は変わりませんでした") : "元に UV がありません");
+    }
     this.hud.toast(
-      `転送 — 頂点 ${target.mesh.vertexCount} / 一致 ${r.matched}` +
-        (apart ? "（2 つが重なっていません。ローカルのほうが合うかもしれません）" : ""),
+      `転送 — ${parts.join(" · ")}` + (apart ? "（2 つが重なっていません。ローカルのほうが合うかもしれません）" : ""),
     );
   }
 
@@ -3211,6 +3272,8 @@ export class App {
     this.syncCompModeButtons();
     // UV モードなら 2D も作り直す。レシピが戻っているので切れ目と島も戻る（`19` の 1.3）
     if (this.state.mode === "uv" && this.uv) {
+      // 取り消しで別のオブジェクトに戻ることもある（`25` の T1）
+      this.afterSelectionChange();
       this.uv.rebuild();
       this.pushSelectionToUv();
     }
@@ -3689,10 +3752,13 @@ export class App {
       }
     });
     for (const t of ["pointerup", "pointercancel"] as const) vp.addEventListener(t, () => (from = null));
-    // 外を触ったら閉じる
+    // 外を触ったら閉じる。ただし**クラスターとレールは「外」と数えない**
+    // （F を押しながらアウトライナをなぞりたい。`25` の T1）
     vp.addEventListener("pointerdown", (e) => {
       if (!this.drawer?.classList.contains("open")) return;
-      if (this.drawer.contains(e.target as Node)) return;
+      const target = e.target as HTMLElement | null;
+      if (this.drawer.contains(target)) return;
+      if (target?.closest(".cluster, .rail, .uvswitch")) return;
       this.closeLayers();
     });
   }
@@ -3893,6 +3959,7 @@ export class App {
         this.viewport.applyDisplayAll();
         this.viewport.rebuildOverlay();
         this.refresh();
+        this.afterSelectionChange();
       },
       onSelectRange: (ids) => {
         const byId = new Map(this.state.doc.objects.map((o) => [o.id, o]));
@@ -3907,6 +3974,7 @@ export class App {
         this.viewport.applyDisplayAll();
         this.viewport.rebuildOverlay();
         this.refresh();
+        this.afterSelectionChange();
       },
       frameHeld: () => this.fHeld,
       shiftHeld: (e) => this.state.modOn("shift") || e.shiftKey,
@@ -3949,6 +4017,7 @@ export class App {
           this.viewport.applyDisplayAll();
           this.viewport.rebuildOverlay();
           this.refresh();
+          this.afterSelectionChange();
         }
         return {
           N: {
@@ -4142,7 +4211,12 @@ export class App {
     const f = byId("btnFrame");
     f.addEventListener("touchstart", (e) => e.preventDefault(), { passive: false });
     f.addEventListener("pointerdown", (e) => {
-      f.setPointerCapture(e.pointerId);
+      // 押している指を追い続ける。合成した入力では捕まえられないことがある
+      try {
+        f.setPointerCapture(e.pointerId);
+      } catch {
+        /* 捕まえられなくても、離した合図は届く */
+      }
       this.fHeld = true;
     });
     for (const t of ["pointerup", "pointercancel"] as const) {

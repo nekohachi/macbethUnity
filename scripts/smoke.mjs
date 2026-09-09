@@ -4472,6 +4472,164 @@ check(
   `「${transfer.title}」/ UV が一致 ${transfer.same}（レシピ ${transfer.gotRecipe}）/ 取り消しで戻る ${transfer.restored}`,
 );
 
+/* 43z-10. 転送の「位置」を本物の経路で（`25` の T1） */
+const transferPos = await page.evaluate(async () => {
+  const app = window.macbeth;
+  app.state.doc.objects.length = 0;
+  const source = app.state.doc.addObject("cube");
+  const target = app.state.doc.addObject("cube");
+  // 元の頂点 0 を動かしておく
+  source.mesh.positions[0] += 0.7;
+  source.mesh.positions[1] += 0.5;
+  app.viewport.syncAll();
+  app.setCompMode("object");
+  app.state.select(target);
+  app.state.also.add(source);
+  app.refresh();
+  const before = [...target.mesh.positions.slice(0, 3)];
+
+  // アウトライナの長押しメニュー北西からカットインを開く
+  app.panelHostForTest().outlinerMenu(target).NW.run();
+  await new Promise((r) => setTimeout(r, 120));
+  const cutin = document.querySelector('.cutin[data-gauge="transfer"]');
+  const segs = cutin ? [...cutin.querySelectorAll(".seg")].map((b) => b.textContent) : [];
+  // 「位置」のチェックを押す（host を直に叩かない）
+  const checks = [...(cutin?.querySelectorAll(".chk") ?? [])];
+  checks.find((b) => b.textContent.includes("位置"))?.click();
+  await new Promise((r) => setTimeout(r, 80));
+  // 「頂点番号」を選んで実行
+  const fresh = document.querySelector('.cutin[data-gauge="transfer"]');
+  [...fresh.querySelectorAll(".seg")].find((b) => b.textContent === "頂点番号")?.click();
+  await new Promise((r) => setTimeout(r, 80));
+  const fresh2 = document.querySelector('.cutin[data-gauge="transfer"]');
+  [...fresh2.querySelectorAll(".act")].find((b) => b.textContent === "転送する")?.click();
+  await new Promise((r) => setTimeout(r, 150));
+  const after = [...target.mesh.positions.slice(0, 3)];
+  const note = document.getElementById("hudHint").textContent;
+
+  app.doUndo();
+  await new Promise((r) => setTimeout(r, 120));
+  const undone = [...target.mesh.positions.slice(0, 3)];
+
+  // ワールド: 横に 1.2 倍した球が、元の球の形に戻る
+  app.state.doc.objects.length = 0;
+  const s2 = app.state.doc.addObject("sphere");
+  const t2 = app.state.doc.addObject("sphere");
+  for (let v = 0; v < t2.mesh.vertexCount; v++) t2.mesh.positions[v * 3] *= 1.2;
+  app.viewport.syncAll();
+  app.state.select(t2);
+  app.state.also.add(s2);
+  app.refresh();
+  const r0 = Math.hypot(...t2.mesh.getPosition(5));
+  const host = app.panelHostForTest();
+  host.onTransfer("space", "world");
+  host.onTransfer("run");
+  await new Promise((r) => setTimeout(r, 150));
+  const r1 = Math.hypot(...t2.mesh.getPosition(5));
+
+  document.body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, clientX: 2, clientY: 2 }));
+  host.onTransfer("space", "component");
+  host.onTransfer("positions", false);
+  app.state.select(null);
+  app.state.doc.objects.length = 0;
+  app.viewport.syncAll();
+  app.refresh();
+  return { segs, before, after, undone, note, r0, r1 };
+});
+check(
+  "転送の「位置」が効く（頂点番号とワールド）",
+  transferPos.segs.includes("頂点番号") &&
+    Math.abs(transferPos.after[0] - transferPos.before[0]) > 0.5 &&
+    Math.abs(transferPos.undone[0] - transferPos.before[0]) < 1e-6 &&
+    transferPos.note.includes("頂点が動いた") &&
+    Math.abs(transferPos.r0 - 1) > 0.05 &&
+    Math.abs(transferPos.r1 - 1) < 0.02,
+  `空間 ${transferPos.segs.join(" · ")} / 頂点番号: X ${transferPos.before[0].toFixed(2)} → ${transferPos.after[0].toFixed(2)} → 取り消し ${transferPos.undone[0].toFixed(2)} / ` +
+    `ワールド: 半径 ${transferPos.r0.toFixed(2)} → ${transferPos.r1.toFixed(2)} / 「${transferPos.note.slice(0, 40)}」`,
+);
+
+/* 43z-11. UV エディタは選んだオブジェクトについてくる（`25` の T1） */
+const uvFollows = await page.evaluate(async () => {
+  const app = window.macbeth;
+  app.state.doc.objects.length = 0;
+  const cube = app.state.doc.addObject("cube");
+  const sphere = app.state.doc.addObject("sphere");
+  sphere.transform.position = [3, 0, 0];
+  app.viewport.syncAll();
+  app.setCompMode("object");
+  app.state.select(cube);
+  app.setMode("uv");
+  await new Promise((r) => setTimeout(r, 150));
+  const onCube = { charts: app.uv.stats().charts, faces: app.uv.view.uvTopology?.chartOfFace.size ?? 0 };
+
+  // アウトライナから球を選ぶ（本物の経路）
+  app.panelHostForTest().onSelect(sphere, false);
+  await new Promise((r) => setTimeout(r, 150));
+  const onSphere = { charts: app.uv.stats().charts, faces: app.uv.view.uvTopology?.chartOfFace.size ?? 0 };
+
+  app.setMode("model");
+  app.state.select(null);
+  app.state.doc.objects.length = 0;
+  app.viewport.syncAll();
+  app.refresh();
+  return { onCube, onSphere };
+});
+check(
+  "UV エディタは選んだオブジェクトについてくる",
+  uvFollows.onCube.faces === 6 && uvFollows.onSphere.faces > 6,
+  `立方体で面 ${uvFollows.onCube.faces}（島 ${uvFollows.onCube.charts}）→ 球で面 ${uvFollows.onSphere.faces}（島 ${uvFollows.onSphere.charts}）`,
+);
+
+/* 43z-12. F を押してもアウトライナは閉じない（`25` の T1） */
+const drawerKeepsOpen = await page.evaluate(async () => {
+  const app = window.macbeth;
+  // 前の項目の状態に関わらず、いったん閉じてから開く
+  if (document.querySelector(".drawer.open")) {
+    document.getElementById("btnPanels").click();
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  document.getElementById("btnPanels").click();
+  await new Promise((r) => setTimeout(r, 250));
+  const opened = !!document.querySelector(".drawer.open");
+  // クラスターの F を押す
+  const f = document.getElementById("btnFrame");
+  const fr = f.getBoundingClientRect();
+  f.dispatchEvent(
+    new PointerEvent("pointerdown", {
+      pointerId: 80,
+      pointerType: "touch",
+      bubbles: true,
+      cancelable: true,
+      clientX: fr.x + fr.width / 2,
+      clientY: fr.y + fr.height / 2,
+    }),
+  );
+  await new Promise((r) => setTimeout(r, 100));
+  const afterF = !!document.querySelector(".drawer.open");
+  f.dispatchEvent(
+    new PointerEvent("pointerup", { pointerId: 80, pointerType: "touch", bubbles: true, clientX: fr.x + fr.width / 2, clientY: fr.y + fr.height / 2 }),
+  );
+  await new Promise((r) => setTimeout(r, 80));
+
+  // 3D を触ったら閉じる（押して離すまでを 1 組で）
+  const vp = document.getElementById("vp").getBoundingClientRect();
+  const gl = document.getElementById("gl");
+  const at = { clientX: vp.x + 100, clientY: vp.y + 100 };
+  gl.dispatchEvent(
+    new PointerEvent("pointerdown", { pointerId: 81, pointerType: "touch", isPrimary: true, bubbles: true, cancelable: true, ...at }),
+  );
+  gl.dispatchEvent(new PointerEvent("pointerup", { pointerId: 81, pointerType: "touch", isPrimary: true, bubbles: true, ...at }));
+  await new Promise((r) => setTimeout(r, 150));
+  const after3d = !!document.querySelector(".drawer.open");
+  void app;
+  return { opened, afterF, after3d };
+});
+check(
+  "F を押してもアウトライナは閉じない",
+  drawerKeepsOpen.opened && drawerKeepsOpen.afterF && !drawerKeepsOpen.after3d,
+  `開く ${drawerKeepsOpen.opened} → F で残る ${drawerKeepsOpen.afterF} → 3D で閉じる ${!drawerKeepsOpen.after3d}`,
+);
+
 /* 44. ツール列のグループ（`21` の 4 章） */
 
 /* 44-1. ボタンは 7 つ、右のオプションパネルは無い */
