@@ -39,8 +39,12 @@ export interface PanelHost {
   onCameraBasedChange(on: boolean): void;
   /** 歪みを色で見る（`23` の T2）。 */
   onUvHeatChange(on: boolean): void;
-  /** チェッカーの細かさと模様（`23` の T3）。 */
-  onCheckerChange(key: "cells" | "pattern", value: number | string): void;
+  /**
+   * チェッカーの細かさと模様（`23` の T3、`24` の T5）。
+   * `cellsPreview` は数字だけ動かす（スライダーを引いている間）。
+   * `cells` は控えた数でテクスチャを作り直す（離したとき）。
+   */
+  onCheckerChange(key: "cells" | "cellsPreview" | "pattern", value: number | string): void;
   /** 3D の表示（`23` の T6）。裏面を描かない / グリッド。 */
   onDisplayToggle(key: "cullBack" | "showGrid", on: boolean): void;
   /** 回転の刻み（度。0 でなし）。 */
@@ -748,15 +752,17 @@ function segmented(
  */
 export function checkerSection(state: OptionsState, host: PanelHost): HTMLElement {
   const s = section("チェッカー", "CHECKER");
-  segmented(
-    s,
-    "細かさ",
-    [4, 8, 16, 32, 64].map((n) => ({
-      label: String(n),
-      on: state.checker.cells === n,
-      run: () => host.onCheckerChange("cells", n),
-    })),
-  );
+  // 細かさはスライダー（`24` の T5）。作り直しは離したときだけ（重いので）
+  paramRow(s, {
+    label: "細かさ",
+    value: state.checker.cells,
+    min: 2,
+    max: 64,
+    step: 1,
+    format: (v) => `${Math.round(v)} マス`,
+    onInput: (v) => host.onCheckerChange("cellsPreview", Math.round(v)),
+    onCommit: () => host.onCheckerChange("cells", 0),
+  });
   segmented(
     s,
     "模様",

@@ -3106,7 +3106,8 @@ const checker = await page.evaluate(async () => {
   const host = app.panelHostForTest();
   const before = app.uv.view.checkerCellsForTest();
 
-  host.onCheckerChange("cells", 32);
+  host.onCheckerChange("cellsPreview", 32);
+  host.onCheckerChange("cells", 0);
   await new Promise((r) => setTimeout(r, 40));
   const coarse = app.uv.view.checkerCellsForTest();
 
@@ -3121,7 +3122,8 @@ const checker = await page.evaluate(async () => {
   const map = view.surface.material.map;
   const three = { hasMap: !!map, size: map ? map.image.width : 0 };
 
-  host.onCheckerChange("cells", 8);
+  host.onCheckerChange("cellsPreview", 8);
+  host.onCheckerChange("cells", 0);
   host.onCheckerChange("pattern", "checker");
   app.setMode("model");
   app.setDisplay(displayBefore);
@@ -3771,7 +3773,7 @@ const t7 = await page.evaluate(async () => {
   );
   await new Promise((res) => setTimeout(res, 260));
   const labels = [...document.querySelectorAll(".radial text")].map((t) => t.textContent);
-  // 西（オプション…）を選ぶ
+  // 輪の中心へ戻して閉じる（オプションは「UV オプション」のボタンへ移った。`24` の T5）
   const svg = document.querySelector(".radial svg");
   const hub = [...svg.querySelectorAll("circle")].reduce((best, c) =>
     Number(c.getAttribute("r")) > Number(best.getAttribute("r")) ? c : best,
@@ -3780,10 +3782,15 @@ const t7 = await page.evaluate(async () => {
   const cy = Number(hub.getAttribute("cy"));
   const fire = (type, x, y) =>
     window.dispatchEvent(new PointerEvent(type, { pointerId: 61, pointerType: "mouse", bubbles: true, clientX: x, clientY: y }));
-  fire("pointermove", cx - 110, cy);
-  fire("pointerup", cx - 110, cy);
+  fire("pointermove", cx, cy);
+  fire("pointerup", cx, cy);
   await new Promise((res) => setTimeout(res, 80));
-  const cutin = document.querySelector('.cutin.wide[data-gauge="unfold"]');
+
+  // ツール列の「UV オプション」をタップするとカットインが出る
+  const opts = document.querySelector('#dockLeft .ibtn[data-group="uvopts"]');
+  opts?.click();
+  await new Promise((res) => setTimeout(res, 100));
+  const cutin = document.querySelector('.cutin.wide[data-gauge="uvopts"]');
   const heads = cutin ? [...cutin.querySelectorAll(".sect-h span")].map((h) => h.textContent) : [];
   const folded = cutin?.querySelector("details");
 
@@ -3799,10 +3806,11 @@ const t7 = await page.evaluate(async () => {
   };
 });
 check(
-  "自動 UV と方式は「展開」の長押しの奥（T7）",
+  "自動 UV は「展開」の長押し、方式は「UV オプション」の奥（T7、`24` の T5）",
   t7.noAutoButton &&
     t7.labels.includes("展開") &&
-    t7.labels.includes("オプション…") &&
+    t7.labels.includes("自動 UV") &&
+    !t7.labels.includes("オプション…") &&
     t7.heads.includes("パッキング") &&
     t7.heads.includes("詳細（自動 UV・方式）") &&
     t7.foldedClosed,
@@ -4283,6 +4291,124 @@ check(
     viewMenu.back.hint,
   `${viewMenu.labels.join(" · ")} / ヒント空 ${viewMenu.hintEmpty}（トーストは出る ${viewMenu.toastShown}）/ ` +
     `カウント消える ${viewMenu.statsHidden} / 左利きで鏡映し ${viewMenu.mirrored} → 戻す ${viewMenu.back.hand}`,
+);
+
+/* 43z-8. UV 列: 細かさのスライダーとカット / ソーの 1 グループ（`24` の T5） */
+const uvColumn = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const objectsBefore = app.state.doc.objects.length;
+  const object = app.state.doc.addObject("sphere");
+  app.viewport.syncAll();
+  app.state.select(object);
+  app.setMode("uv");
+  await new Promise((r) => setTimeout(r, 120));
+
+  const groups = [...document.querySelectorAll("#dockLeft .ibtn")].map((b) => b.dataset.group);
+
+  // 「UV オプション」をタップ → 細かさはスライダー
+  document.querySelector('#dockLeft .ibtn[data-group="uvopts"]').click();
+  await new Promise((r) => setTimeout(r, 120));
+  const cutin = document.querySelector('.cutin[data-gauge="uvopts"]');
+  const rows = cutin ? [...cutin.querySelectorAll(".row label")].map((l) => l.textContent) : [];
+  const slider = cutin?.querySelector(".sect input.slider");
+  const beforeTexture = app.uv.view.checkerCellsForTest();
+  if (slider) {
+    slider.value = "24";
+    slider.dispatchEvent(new Event("input", { bubbles: true }));
+    slider.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+  await new Promise((r) => setTimeout(r, 80));
+  const afterTexture = app.uv.view.checkerCellsForTest();
+  document.body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, clientX: 2, clientY: 2 }));
+
+  // カット / ソーは 1 つのボタン。長押しで 3 つ
+  const b = document.querySelector('#dockLeft .ibtn[data-group="cutsew"]');
+  const br = b.getBoundingClientRect();
+  b.dispatchEvent(
+    new PointerEvent("pointerdown", {
+      pointerId: 70,
+      pointerType: "mouse",
+      bubbles: true,
+      cancelable: true,
+      clientX: br.x + br.width / 2,
+      clientY: br.y + br.height / 2,
+    }),
+  );
+  await new Promise((r) => setTimeout(r, 260));
+  const labels = [...document.querySelectorAll(".radial text")].map((t) => t.textContent);
+  const svg = document.querySelector(".radial svg");
+  const hub = [...svg.querySelectorAll("circle")].reduce((best, c) =>
+    Number(c.getAttribute("r")) > Number(best.getAttribute("r")) ? c : best,
+  );
+  const cx = Number(hub.getAttribute("cx"));
+  const cy = Number(hub.getAttribute("cy"));
+  // 東（移動して縫う）を選ぶ
+  for (const type of ["pointermove", "pointerup"]) {
+    window.dispatchEvent(
+      new PointerEvent(type, { pointerId: 70, pointerType: "mouse", bubbles: true, clientX: cx + 110, clientY: cy }),
+    );
+  }
+  await new Promise((r) => setTimeout(r, 120));
+  const lastUvCut = app.state.lastUvCut;
+
+  // 赤道で切ってから、タップ（= 移動して縫う）で 1 島に戻る
+  app.uv.unfold();
+  app.setCompMode("edge");
+  const view = app.viewport.viewOf(object);
+  app.state.comp.clear();
+  view.edges.forEach(([a, c], i) => {
+    const pa = object.mesh.getPosition(a);
+    const pc = object.mesh.getPosition(c);
+    if (Math.abs(pa[1]) < 1e-6 && Math.abs(pc[1]) < 1e-6) app.state.comp.add(i);
+  });
+  app.pushSelectionToUvForTest();
+  app.uv.cutOrSew(true);
+  const afterCut = app.uv.stats().charts;
+  app.uv.setUnit("edge");
+  app.uv.chosen.clear();
+  const t = app.uv.view.uvTopology;
+  t.edgeKeys.forEach((key, i) => {
+    if (object.uv.seams.has(key)) app.uv.chosen.add(i);
+  });
+  // ラジアルの付いたボタンは click を見ないので pointer で叩く
+  const cs = document.querySelector('#dockLeft .ibtn[data-group="cutsew"]');
+  const csr = cs.getBoundingClientRect();
+  const csAt = { clientX: csr.x + csr.width / 2, clientY: csr.y + csr.height / 2 };
+  cs.dispatchEvent(new PointerEvent("pointerdown", { pointerId: 71, pointerType: "mouse", bubbles: true, cancelable: true, ...csAt }));
+  window.dispatchEvent(new PointerEvent("pointerup", { pointerId: 71, pointerType: "mouse", bubbles: true, ...csAt }));
+  await new Promise((r) => setTimeout(r, 150));
+  const afterSew = app.uv.stats().charts;
+
+  app.setMode("model");
+  app.state.select(null);
+  app.state.doc.objects.length = objectsBefore;
+  app.viewport.syncAll();
+  return {
+    groups,
+    rows,
+    hasSlider: !!slider,
+    cells: app.state.checker.cells,
+    rebuilt: beforeTexture.textureId !== afterTexture.textureId,
+    labels: labels.filter((l) => l && l !== "キャンセル"),
+    lastUvCut,
+    afterCut,
+    afterSew,
+  };
+});
+check(
+  "UV 列: 細かさはスライダー、カットとソーは 1 つのボタン",
+  uvColumn.hasSlider &&
+    uvColumn.cells === 24 &&
+    uvColumn.rebuilt &&
+    !uvColumn.groups.includes("cut") &&
+    !uvColumn.groups.includes("sew") &&
+    uvColumn.groups.includes("cutsew") &&
+    uvColumn.groups.includes("uvopts") &&
+    uvColumn.lastUvCut === "moveSew" &&
+    uvColumn.afterCut === 2 &&
+    uvColumn.afterSew === 1,
+  `細かさ ${uvColumn.cells} マス（作り直し ${uvColumn.rebuilt}）/ 輪 ${uvColumn.labels.slice(0, 6).join(" · ")} / ` +
+    `最後に使ったもの ${uvColumn.lastUvCut} / 切って ${uvColumn.afterCut} 島 → タップで ${uvColumn.afterSew} 島`,
 );
 
 /* 44. ツール列のグループ（`21` の 4 章） */

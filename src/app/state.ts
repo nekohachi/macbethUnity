@@ -18,6 +18,8 @@ export type EditKind = "multicut" | "bevel" | "bridge" | "extrude" | "connect" |
  * サーフェスは Maya の Make Live にあたるもので、キーは無い（docs/17 の 7.3）。
  */
 export type SnapKind = "grid" | "vertex" | "edge" | "surface";
+/** UV 列の「カット / ソー」グループの中身（`24` の T5）。 */
+export type UvCutKind = "cut" | "moveSew" | "sew";
 /**
  * 修飾キーのラッチ。オンとオフの 2 段階だけ（docs/17 の 6 章）。
  * 一度使ったら消える中間の状態は置かない。消すのは自分でもう一度押したとき。
@@ -202,6 +204,11 @@ export class AppState {
   preventNegativeScale = true;
   /** 「編集」グループで最後に使ったもの。ボタンのアイコンとタップの中身になる。 */
   lastEdit: EditKind = "multicut";
+  /**
+   * UV 列の「カット / ソー」グループで最後に使ったもの（`24` の T5）。
+   * ボタンのアイコンとタップの中身になる。`localStorage` に残す。
+   */
+  lastUvCut: UvCutKind = "cut";
   /** 「追加」グループで最後に追加した種類。 */
   lastPrimitive = "cube";
   /**

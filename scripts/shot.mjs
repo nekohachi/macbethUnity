@@ -404,6 +404,26 @@ const scenes = {
     await new Promise((r2) => setTimeout(r2, 150));
   },
 
+  /** `24` の T5: UV 列の「UV オプション」と、細かさのスライダー。 */
+  "24-t5-uvopts": async () => {
+    const app = window.macbeth;
+    app.state.doc.objects.length = 0;
+    const object = app.state.doc.addObject("cylinder");
+    app.viewport.syncAll();
+    app.state.select(object);
+    app.setMode("uv");
+    await new Promise((r) => setTimeout(r, 120));
+    app.uv.autoUnwrap();
+    app.panelHostForTest().onCheckerChange("cellsPreview", 24);
+    app.panelHostForTest().onCheckerChange("cells", 0);
+    app.uv.chosen.clear();
+    app.uv.refreshHighlight();
+    app.uv.view.frameUnit();
+    app.viewport.frameSelected();
+    document.querySelector('#dockLeft .ibtn[data-group="uvopts"]').click();
+    await new Promise((r) => setTimeout(r, 200));
+  },
+
   /** `23` の T4: ブリッジの分割数 3。上下の縁の間に輪が 2 本入る。 */
   "23-t4-bridge": async () => {
     const app = window.macbeth;

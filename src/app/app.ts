@@ -72,6 +72,7 @@ import {
   type Manip,
   type Mode,
   type SnapKind,
+  type UvCutKind,
 } from "./state.js";
 import { History } from "./history.js";
 import { Autosave } from "./storage/autosave.js";
@@ -264,6 +265,13 @@ const DISPLAY_ICONS: Record<Display, string> = {
   smooth: ICONS.smooth,
   checker: ICONS.mUV,
   heat: ICONS.heat,
+};
+
+/** カット / ソーのグループのアイコン（`24` の T5）。 */
+const UV_CUT_ICONS: Record<UvCutKind, string> = {
+  cut: ICONS.multicut,
+  moveSew: ICONS.vEdge,
+  sew: ICONS.vVert,
 };
 
 const PRIMITIVE_ICONS: Record<string, string> = {
@@ -1724,10 +1732,14 @@ export class App {
    * チェッカーの細かさと模様（`23` の T3）。2D の下地と 3D のチェッカー表示は
    * 同じ設定から作るので、どちらから触っても両方が変わる。
    */
-  private setChecker(key: "cells" | "pattern", value: number | string): void {
-    if (key === "cells") this.state.checker.cells = Number(value);
-    else this.state.checker.pattern = value as CheckerPattern;
-    this.remember(`checker.${key}`, String(value));
+  private setChecker(key: "cells" | "cellsPreview" | "pattern", value: number | string): void {
+    // 引いている間は数を控えるだけ。テクスチャの作り直しは離してから（`24` の T5）
+    if (key === "cellsPreview") {
+      this.state.checker.cells = Math.max(2, Math.min(64, Math.round(Number(value))));
+      return;
+    }
+    if (key === "pattern") this.state.checker.pattern = value as CheckerPattern;
+    this.remember(`checker.${key}`, key === "cells" ? String(this.state.checker.cells) : String(value));
     this.uv?.view.setChecker(this.state.checker.cells, this.state.checker.pattern);
     this.viewport.refreshChecker();
     this.hud.toast(
@@ -1737,8 +1749,16 @@ export class App {
           ? "カラーグリッド"
           : "市松",
     );
-    // 開いているカットインのボタンの押され方を合わせる
-    if (this.popup?.dataset.gauge === "unfold") this.openGroupOptions("unfold", () => this.uvUnfoldOptions());
+    this.reopenUvOrDisplayOptions();
+  }
+
+  /**
+   * 開いているカットインを開き直して、チェックやスライダーを今の値に合わせる。
+   * 同じ区画が UV の「UV オプション」と 3D の「シェード」の両方にあるため。
+   */
+  private reopenUvOrDisplayOptions(): void {
+    const at = this.popup?.dataset.gauge;
+    if (at === "uvopts" || at === "unfold") this.openGroupOptions(at, () => this.uvUnfoldOptions());
     else this.reopenToolOptions("display");
   }
 
@@ -1751,9 +1771,8 @@ export class App {
       this.remember("uvHeat", false);
       this.uv?.rebuild();
     }
-    // 開いているカットインのチェックを合わせる（「展開」と「表示」の両方に置いてある）
-    if (this.popup?.dataset.gauge === "unfold") this.openGroupOptions("unfold", () => this.uvUnfoldOptions());
-    else this.reopenToolOptions("display");
+    // 開いているカットインのチェックを合わせる（UV と 3D の両方に置いてある）
+    this.reopenUvOrDisplayOptions();
   }
 
   setManip(manip: Manip): void {
@@ -2078,12 +2097,6 @@ export class App {
           N: { label: "展開", sub: "Unfold", icon: ICONS.smooth, run: () => uv.unfold() },
           E: { label: "自動 UV", sub: "Auto", icon: ICONS.mUV, run: () => uv.autoUnwrap() },
           S: { label: "整列", sub: "Layout", icon: ICONS.vMulti, run: () => uv.repack() },
-          W: {
-            label: "オプション…",
-            sub: "Options",
-            icon: ICONS.mUV,
-            run: () => this.openGroupOptions("unfold", () => this.uvUnfoldOptions()),
-          },
           SW: {
             label: "歪みを色で",
             sub: "Heat  9",
@@ -2093,12 +2106,24 @@ export class App {
         }),
         onTap: () => uv.unfold(),
       },
-      cmd("cut", ICONS.multicut, "カット（選んだところを切る）", () => uv.cutOrSew(true)),
-      cmd("sew", ICONS.vEdge, "ソー（切れ目を縫う。エッジ / シェルは動かしてから縫う）", () =>
-        uv.unit === "vertex" ? uv.cutOrSew(false) : uv.moveAndSew(),
-      ),
+      {
+        kind: "button",
+        id: "cutsew",
+        icon: () => UV_CUT_ICONS[this.state.lastUvCut],
+        title: "カット / ソー（タップで最後に使ったもの · 長押しで選ぶ）",
+        radial: () => ({
+          N: { label: "カット", sub: "Cut", icon: ICONS.multicut, run: () => this.doUvCut("cut") },
+          E: { label: "移動して縫う", sub: "Move and Sew", icon: ICONS.vEdge, run: () => this.doUvCut("moveSew") },
+          S: { label: "その場で縫う", sub: "Sew", icon: ICONS.vVert, run: () => this.doUvCut("sew") },
+        }),
+        // オプションを持たない、毎回使うコマンドなのでタップは実行（`21` の 1.1 の例外）
+        onTap: () => this.doUvCut(this.state.lastUvCut),
+      },
       { kind: "separator" },
       cmd("frame", ICONS.frame, "選択にフレーム", () => uv.frame()),
+      cmd("uvopts", ICONS.options, "UV のオプション（歪み / チェッカー / パッキング / スナップ）", () =>
+        this.openGroupOptions("uvopts", () => this.uvUnfoldOptions()),
+      ),
       // 3D ビューも出ているので、カメラと追加はモデリングと同じものを置く
       { kind: "separator" },
       { kind: "label", text: "3D" },
@@ -2123,6 +2148,21 @@ export class App {
         onTap: () => {},
       },
     ];
+  }
+
+  /**
+   * カット / ソー（`24` の T5）。最後に使ったものがボタンのアイコンになる。
+   * 頂点単位のときは「移動して縫う」も「その場で縫う」と同じ動き。
+   */
+  private doUvCut(kind: UvCutKind): void {
+    const uv = this.uv;
+    if (!uv) return;
+    this.state.lastUvCut = kind;
+    this.remember("lastUvCut", kind);
+    this.renderToolColumn();
+    if (kind === "cut") uv.cutOrSew(true);
+    else if (kind === "sew" || uv.unit === "vertex") uv.cutOrSew(false);
+    else uv.moveAndSew();
   }
 
   private setUvUnit(unit: UvUnit): void {
@@ -3885,11 +3925,13 @@ export class App {
     const segs = Number(read("bridgeSegments"));
     if (Number.isFinite(segs) && segs >= 1 && segs <= 16) this.state.bridgeSegments = Math.round(segs);
     const cells = Number(read("checker.cells"));
-    if ([4, 8, 16, 32, 64].includes(cells)) this.state.checker.cells = cells;
+    if (Number.isFinite(cells) && cells >= 2 && cells <= 64) this.state.checker.cells = Math.round(cells);
     const pattern = read("checker.pattern");
     if (pattern === "checker" || pattern === "colorGrid") this.state.checker.pattern = pattern;
     this.state.uvHeat = read("uvHeat") === "true";
     if (this.state.uvHeat) this.state.display = "heat";
+    const uvCut = read("lastUvCut");
+    if (uvCut === "cut" || uvCut === "moveSew" || uvCut === "sew") this.state.lastUvCut = uvCut;
     const kind = read("lastPrimitive");
     if (kind && PRIMITIVES[kind]) this.state.lastPrimitive = kind;
   }
