@@ -381,7 +381,8 @@ export class App {
   private toolPanelBody: HTMLElement | null = null;
   private outlinerBody: HTMLElement | null = null;
   /** アトリビュート欄で開いている区画（`25` の T3）。 */
-  private openedLayers = new Set<string>();
+  /** アトリビュート欄の置き場所（`26` の T4）。`localStorage` に残す。 */
+  private attrDock: "top" | "bottom" = "top";
   /** サムネイルの控え。開いたときに作って、形が変わるまで使い回す。 */
   private thumbs = new Map<string, { url: string; stamp: string }>();
   /** アウトライナのドロワー。 */
@@ -3861,6 +3862,7 @@ export class App {
       soft: this.state.soft,
       canGrow: this.state.compMode !== "object" && this.state.comp.size > 0,
       alsoCount: this.state.also.size,
+      attrDock: this.attrDock,
       cut: this.state.cut,
       bevel: this.state.bevel,
       bevelActive: this.bevel.active,
@@ -4230,7 +4232,12 @@ export class App {
       onRenamePrompt: (o) => {
         if (this.outlinerBody) renameInOutliner(this.outlinerBody, o, this.panelHost());
       },
-      onAttrFold: () => this.remember("attrFold", [...this.openedLayers].join(",")),
+      onAttrDock: (side) => {
+        if (this.attrDock === side) return;
+        this.attrDock = side;
+        this.remember("attrDock", side);
+        this.renderPanels();
+      },
       onOpacityInput: (o, value) => {
         this.opacitySnapshot ??= this.history.snapshot();
         o.opacity = Math.max(0, Math.min(1, value));
@@ -4320,10 +4327,12 @@ export class App {
     if (!body) return;
     const host = this.panelHost();
     body.textContent = "";
-    // 選んでいるものの値を、いつも同じ場所に（`25` の T3）
-    body.appendChild(attributeSection(this.optionsState(), host, this.openedLayers));
+    // 選んでいるものの値を、いつも同じ場所に（`25` の T3）。
+    // 一覧の上か下かはつまみで選べる（`26` の T4）
+    const attrs = attributeSection(this.optionsState(), host);
     const list = el("div", "lylist");
-    body.appendChild(list);
+    if (this.attrDock === "top") body.append(attrs, list);
+    else body.append(list, attrs);
     renderLayers(list, this.state.doc.objects, this.state.selected, host, this.state.also);
   }
 
@@ -4377,7 +4386,7 @@ export class App {
     } catch {
       /* 保存が壊れていても既定で始める */
     }
-    for (const key of (read("attrFold") ?? "").split(",")) if (key) this.openedLayers.add(key);
+    if (read("attrDock") === "bottom") this.attrDock = "bottom";
     this.state.cullBack = read("cullBack") === "true";
     this.state.showGrid = read("showGrid") !== "false";
     const segs = Number(read("bridgeSegments"));

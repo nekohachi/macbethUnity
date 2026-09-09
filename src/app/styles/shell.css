@@ -319,9 +319,23 @@ button{font-family:inherit; font-size:inherit; color:inherit; background:none; b
 .pclose{margin-left:auto; width:22px; height:20px; display:grid; place-items:center; font-size:14px;
   color:var(--text-faint); border-radius:2px}
 .pclose:hover{background:var(--panel-hi); color:var(--text)}
-/* アトリビュート欄（25 の T3）。選んでいるものの値をいつも同じ場所に */
-.attrs{border-bottom:1px solid var(--line); margin:-8px -8px 8px; padding:6px 8px 4px; background:var(--panel-lo)}
+/* アトリビュート欄（25 の T3、26 の T4）。選んでいるものの値をいつも同じ場所に。
+   一覧の上か下かはつまみで選べる。高さはドロワーの半分までで、中でスクロールする */
+.drawer .pbody{display:flex; flex-direction:column; min-height:0}
+.attrs{border-bottom:1px solid var(--line); margin:-8px -8px 8px; padding:6px 8px 4px;
+  background:var(--panel-lo); flex:0 0 auto; max-height:50%; overflow-y:auto; overscroll-behavior:contain}
+.attrs[data-dock="bottom"]{border-bottom:0; border-top:1px solid var(--line); margin:8px -8px -8px}
+.attrs.moving{opacity:.5}
+.lylist{flex:1 1 auto; overflow-y:auto; overscroll-behavior:contain}
 .attrs .empty{padding:14px 4px; white-space:pre-line}
+.attrgrip{width:14px; height:20px; display:grid; place-items:center; flex:0 0 auto;
+  color:var(--text-faint); border-radius:2px; cursor:grab; touch-action:none}
+.attrgrip:hover{background:rgba(255,255,255,.08); color:var(--text)}
+/* 運んでいる間、落ちる側に出る線 */
+.dropline{position:absolute; left:0; right:0; height:2px; background:var(--accent); z-index:30; pointer-events:none}
+.dropline[data-side="top"]{top:34px}
+.dropline[data-side="bottom"]{bottom:0}
+.attr-stats{padding:2px 2px 4px}
 .attr-head{display:flex; align-items:center; gap:6px; padding:2px 2px 6px}
 .attrs .attr-title{font-family:"IBM Plex Mono",monospace; font-size:11px; color:var(--text)}
 .attrs .attr-title span{margin-left:6px; color:var(--text-faint); font-size:10px}
@@ -329,7 +343,7 @@ button{font-family:inherit; font-size:inherit; color:inherit; background:none; b
 /* 幅 236px のドロワーに 3 つ並ぶので、数字は少し詰める */
 .attrs .row.triple{grid-template-columns:42px repeat(3, 1fr); gap:3px}
 .attrs .row.triple .num{padding:2px 1px; font-size:10px; min-width:0}
-.lylist{display:flex; flex-direction:column}
+
 .lyitem{margin-bottom:3px}
 /* 縦は一覧のスクロールに使う。並び替えはつまみからだけ（24 の T2） */
 .lyrow{display:flex; align-items:center; gap:6px; padding:5px 6px; border-radius:var(--radius);

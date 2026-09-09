@@ -767,6 +767,42 @@ const scenes = {
     await new Promise((r) => setTimeout(r, 200));
   },
 
+  /** `26` の T4: アトリビュート欄を一覧の下に置いたところ。 */
+  "26-t4-attrs-bottom": async () => {
+    const app = window.macbeth;
+    app.state.doc.objects.length = 0;
+    for (const kind of ["cube", "sphere", "cylinder"]) app.state.doc.addObject(kind);
+    app.state.doc.objects[0].transform.position = [-1.7, 0, 0];
+    app.state.doc.objects[2].transform.position = [1.7, 0, 0];
+    app.viewport.syncAll();
+    app.setCompMode("object");
+    app.state.select(app.state.doc.objects[1]);
+    app.viewport.frameSelected();
+    app.viewport.cam.distance = 7;
+    app.viewport.applyCamera();
+    app.refresh();
+    document.getElementById("btnPanels").click();
+    await new Promise((r) => setTimeout(r, 300));
+
+    // つまみを掴んでドロワーの下へ運ぶ（本物の経路）
+    const grip = document.querySelector(".drawer .attrgrip");
+    const g = grip.getBoundingClientRect();
+    const r = document.querySelector(".drawer").getBoundingClientRect();
+    const ev = (type, cy) =>
+      new PointerEvent(type, {
+        pointerId: 151,
+        pointerType: "touch",
+        bubbles: true,
+        cancelable: true,
+        clientX: g.x + 6,
+        clientY: cy,
+      });
+    grip.dispatchEvent(ev("pointerdown", g.y + 8));
+    window.dispatchEvent(ev("pointermove", r.bottom - 20));
+    window.dispatchEvent(ev("pointerup", r.bottom - 20));
+    await new Promise((r2) => setTimeout(r2, 300));
+  },
+
   /** `23` の T4: ブリッジの分割数 3。上下の縁の間に輪が 2 本入る。 */
   "23-t4-bridge": async () => {
     const app = window.macbeth;

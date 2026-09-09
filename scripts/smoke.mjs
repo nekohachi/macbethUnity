@@ -5387,6 +5387,77 @@ check(
   `右のペインで選べた ${splitPick.picked}（active ${splitPick.active}）/ 戻して ${splitPick.panes} 画面`,
 );
 
+/* 43z-19. アトリビュート欄を一覧の下へ運べる（`26` の T4） */
+const attrDock = await page.evaluate(async () => {
+  const app = window.macbeth;
+  app.state.doc.objects.length = 0;
+  const cube = app.state.doc.addObject("cube");
+  app.viewport.syncAll();
+  app.setCompMode("object");
+  app.state.select(cube);
+  app.refresh();
+  if (!document.querySelector(".drawer.open")) document.getElementById("btnPanels").click();
+  await new Promise((r) => setTimeout(r, 250));
+
+  const body = document.querySelector(".drawer .pbody");
+  const kids = () => [...body.children].map((c) => c.className.split(" ")[0]);
+  const before = kids();
+  const folds = document.querySelectorAll(".drawer .attrs details").length;
+
+  /** つまみを掴んで、ドロワーの上端 / 下端の近くまで運んで離す。 */
+  const drag = async (toBottom) => {
+    const grip = document.querySelector(".drawer .attrgrip");
+    const g = grip.getBoundingClientRect();
+    const r = document.querySelector(".drawer").getBoundingClientRect();
+    const y = toBottom ? r.bottom - 20 : r.top + 20;
+    const ev = (type, cy) =>
+      new PointerEvent(type, {
+        pointerId: 151,
+        pointerType: "touch",
+        bubbles: true,
+        cancelable: true,
+        clientX: g.x + 6,
+        clientY: cy,
+      });
+    grip.dispatchEvent(ev("pointerdown", g.y + 8));
+    window.dispatchEvent(ev("pointermove", y));
+    const line = document.querySelector(".drawer .dropline")?.dataset.side ?? "";
+    window.dispatchEvent(ev("pointerup", y));
+    await new Promise((r2) => setTimeout(r2, 120));
+    return line;
+  };
+
+  const lineDown = await drag(true);
+  const afterDown = kids();
+  const savedDown = localStorage.getItem("macbeth.attrDock");
+  const dockAttr = document.querySelector(".drawer .attrs")?.dataset.dock ?? "";
+
+  const lineUp = await drag(false);
+  const afterUp = kids();
+  const savedUp = localStorage.getItem("macbeth.attrDock");
+
+  document.getElementById("btnPanels").click();
+  app.state.doc.objects.length = 0;
+  app.viewport.syncAll();
+  app.refresh();
+  return { before, folds, lineDown, afterDown, savedDown, dockAttr, lineUp, afterUp, savedUp };
+});
+check(
+  "アトリビュート欄を一覧の下へ運べる",
+  attrDock.before.join(",") === "attrs,lylist" &&
+    attrDock.folds === 0 &&
+    attrDock.lineDown === "bottom" &&
+    attrDock.afterDown.join(",") === "lylist,attrs" &&
+    attrDock.savedDown === "bottom" &&
+    attrDock.dockAttr === "bottom" &&
+    attrDock.lineUp === "top" &&
+    attrDock.afterUp.join(",") === "attrs,lylist" &&
+    attrDock.savedUp === "top",
+  `${attrDock.before.join(" → ")} / 折りたたみ ${attrDock.folds} 個 / ` +
+    `下へ運ぶと ${attrDock.afterDown.join(" → ")}（線 ${attrDock.lineDown}・控え ${attrDock.savedDown}）/ ` +
+    `上へ戻すと ${attrDock.afterUp.join(" → ")}（控え ${attrDock.savedUp}）`,
+);
+
 /* 44. ツール列のグループ（`21` の 4 章） */
 
 /* 44-1. ボタンは 7 つ、右のオプションパネルは無い */

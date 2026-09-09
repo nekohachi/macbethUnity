@@ -68,8 +68,8 @@ export interface PanelHost {
   onRename(object: SceneObject, name: string): void;
   /** アトリビュート欄の見出しをダブルタップ。行の入力を開く（`25` の T3）。 */
   onRenamePrompt(object: SceneObject): void;
-  /** 折りたたみの開閉が変わった。覚えておく（`25` の T3）。 */
-  onAttrFold(): void;
+  /** アトリビュート欄の置き場所（`26` の T4）。一覧の上か下か。 */
+  onAttrDock(side: "top" | "bottom"): void;
   /** 不透明度（`25` の T4）。引いている間と、離したとき。 */
   onOpacityInput(object: SceneObject, value: number): void;
   onOpacityCommit(object: SceneObject): void;
@@ -174,6 +174,24 @@ function paramRow(
   parent.appendChild(row);
 }
 
+/** つまみの点 6 つ。アウトライナの行とアトリビュート欄で使い回す。 */
+function gripDots(): string {
+  return (
+    '<svg viewBox="0 0 8 12" fill="currentColor" width="8" height="12">' +
+    [
+      [2, 2],
+      [6, 2],
+      [2, 6],
+      [6, 6],
+      [2, 10],
+      [6, 10],
+    ]
+      .map(([cx, cy]) => `<circle cx="${cx}" cy="${cy}" r="1"/>`)
+      .join("") +
+    "</svg>"
+  );
+}
+
 function checkbox(parent: HTMLElement, label: string, on: boolean, toggle: (v: boolean) => void): void {
   const b = el("button", "chk");
   b.setAttribute("aria-pressed", String(on));
@@ -195,6 +213,8 @@ export interface OptionsState {
   canGrow: boolean;
   /** SHF で足した数（アトリビュート欄の見出しに出す）。 */
   alsoCount: number;
+  /** アトリビュート欄の置き場所（`26` の T4）。 */
+  attrDock: "top" | "bottom";
   cut: { snapStep: number; edgeFlow: boolean };
   bevel: { width: number; segments: number };
   /** ベベルを確定した直後か。作り直せる間だけ出す。 */
@@ -1031,38 +1051,42 @@ export function uvSnapSection(uv: NonNullable<OptionsState["uv"]>, state: Option
  * 行の「>」で開く形をやめて、**いつも同じ場所に、選んでいるものの値**を出す。
  * 折りたたみの開閉は `opened` に覚える（呼び出し側が `localStorage` に残す）。
  */
-export function attributeSection(state: OptionsState, host: PanelHost, opened: Set<string>): HTMLElement {
+export function attributeSection(state: OptionsState, host: PanelHost): HTMLElement {
   const wrap = el("div", "attrs");
+  wrap.dataset.dock = state.attrDock;
+  // つまみは選択の有無に関わらず出す（空でも置き場所は変えられる）
+  const head = el("div", "attr-head");
+  const grip = el("button", "attrgrip");
+  grip.title = "ドラッグで一覧の上 / 下へ";
+  grip.innerHTML = gripDots();
+  attachAttrDock(grip, host);
+  head.appendChild(grip);
+
   const o = state.selected;
   if (!o) {
+    wrap.appendChild(head);
     wrap.appendChild(el("div", "empty", "オブジェクトを選ぶと、\nここに値が出ます"));
     return wrap;
   }
 
-  const head = el("div", "attr-head");
   const name = el("div", "attr-title", o.name);
   if (state.alsoCount) name.appendChild(el("span", undefined, `+${state.alsoCount}`));
   head.appendChild(name);
   head.addEventListener("dblclick", () => host.onRenamePrompt(o));
   wrap.appendChild(head);
 
-  /** 折りたためる区画。開閉は名前で覚える。 */
-  const fold = (key: string, title: string, badge: string, openByDefault: boolean): HTMLElement => {
-    const f = foldedSection(title, badge);
-    const details = f.wrap.querySelector("details") as HTMLDetailsElement;
-    details.open = opened.has(key) || (openByDefault && !opened.has(`!${key}`));
-    details.addEventListener("toggle", () => {
-      opened.delete(key);
-      opened.delete(`!${key}`);
-      opened.add(details.open ? key : `!${key}`);
-      host.onAttrFold();
-    });
-    wrap.appendChild(f.wrap);
-    return f.body;
+  /**
+   * 区画（`26` の T4）。折りたたまない。
+   * 開け閉めを覚えるより、いつも同じ場所に同じ順で出ているほうが速い。
+   */
+  const fold = (_key: string, title: string, badge: string): HTMLElement => {
+    const s = section(title, badge);
+    wrap.appendChild(s);
+    return s;
   };
 
   // トランスフォーム（移動 / 回転 / スケール）
-  const t = fold("xform", "トランスフォーム", "TRANSFORM", true);
+  const t = fold("xform", "トランスフォーム", "TRANSFORM");
   const ts = section("", "");
   ts.firstElementChild?.remove();
   tripleRow(ts, "移動", o.transform.position as [number, number, number], 3, (axis, v) =>
@@ -1075,7 +1099,7 @@ export function attributeSection(state: OptionsState, host: PanelHost, opened: S
   t.appendChild(ts);
 
   // 表示（不透明度・表示・ロック）
-  const d = fold("show", "表示", "DISPLAY", true);
+  const d = fold("show", "表示", "DISPLAY");
   const ds = el("div", "sect");
   paramRow(ds, {
     label: "不透明度",
@@ -1093,7 +1117,7 @@ export function attributeSection(state: OptionsState, host: PanelHost, opened: S
 
   // 入力ノード（パラメトリックのときだけ）
   if (o.parametric && PRIMITIVES[o.kind]) {
-    const p = fold("input", "入力ノード", PRIMITIVES[o.kind].en.toUpperCase(), true);
+    const p = fold("input", "入力ノード", PRIMITIVES[o.kind].en.toUpperCase());
     const ps = el("div", "sect");
     for (const spec of PRIMITIVES[o.kind].params) {
       paramRow(ps, {
@@ -1109,10 +1133,9 @@ export function attributeSection(state: OptionsState, host: PanelHost, opened: S
     p.appendChild(ps);
   }
 
-  // メッシュの情報（既定は閉じている）
-  const m = fold("mesh", "メッシュ", "MESH", false);
+  // メッシュの情報。区画にせず 1 行のヒントにする（`26` の T4）
   const stats = o.mesh.stats();
-  m.appendChild(el("div", "hint", `頂点 ${stats.vertices} · エッジ ${stats.edges} · 面 ${stats.faces}`));
+  wrap.appendChild(el("div", "hint attr-stats", `頂点 ${stats.vertices} · エッジ ${stats.edges} · 面 ${stats.faces}`));
 
   return wrap;
 }
@@ -1177,19 +1200,7 @@ export function renderLayers(
     // 並び替えのつまみ。長押しはメニューに使うので、入れ替えはここからだけ（`24` の T2）
     const grip = el("button", "lygrip");
     grip.title = "ドラッグで並び替え";
-    grip.innerHTML =
-      '<svg viewBox="0 0 8 12" fill="currentColor" width="8" height="12">' +
-      [
-        [2, 2],
-        [6, 2],
-        [2, 6],
-        [6, 6],
-        [2, 10],
-        [6, 10],
-      ]
-        .map(([cx, cy]) => `<circle cx="${cx}" cy="${cy}" r="1"/>`)
-        .join("") +
-      "</svg>";
+    grip.innerHTML = gripDots();
     attachOutlinerGrip(grip, row, host);
     row.appendChild(grip);
 
@@ -1197,6 +1208,65 @@ export function renderLayers(
     wrap.appendChild(row);
     body.appendChild(wrap);
   }
+}
+
+/**
+ * アトリビュート欄のつまみ（`26` の T4）。
+ *
+ * 掴んで上下に運ぶと、欄が一覧の**上か下か**に移る。判定は「離した位置が
+ * ドロワーの縦の中央より上か下か」。運んでいる間は欄を薄くして、落ちる側に
+ * 線を出す（`.dropline`）。
+ *
+ * 欄は描き直しで入れ替わるので、掴んだ要素ではなく**ドロワーの矩形**で見る。
+ */
+function attachAttrDock(grip: HTMLElement, host: PanelHost): void {
+  let pid: number | null = null;
+  let drawer: HTMLElement | null = null;
+  let attrs: HTMLElement | null = null;
+  let line: HTMLElement | null = null;
+
+  const listen = (on: boolean) => {
+    const fn = on ? window.addEventListener : window.removeEventListener;
+    fn("pointermove", onMove as EventListener);
+    fn("pointerup", onUp as EventListener);
+    fn("pointercancel", onUp as EventListener);
+  };
+  const sideAt = (clientY: number): "top" | "bottom" => {
+    const r = drawer?.getBoundingClientRect();
+    return !r || clientY < r.top + r.height / 2 ? "top" : "bottom";
+  };
+  const paint = (side: "top" | "bottom") => {
+    if (!drawer) return;
+    if (!line) {
+      line = el("div", "dropline");
+      drawer.appendChild(line);
+    }
+    line.dataset.side = side;
+  };
+  const onMove = (e: PointerEvent) => {
+    if (e.pointerId !== pid) return;
+    paint(sideAt(e.clientY));
+  };
+  const onUp = (e: PointerEvent) => {
+    if (e.pointerId !== pid) return;
+    pid = null;
+    listen(false);
+    attrs?.classList.remove("moving");
+    line?.remove();
+    line = null;
+    host.onAttrDock(sideAt(e.clientY));
+  };
+
+  grip.addEventListener("pointerdown", (e) => {
+    e.stopPropagation();
+    e.preventDefault();
+    pid = e.pointerId;
+    drawer = grip.closest(".drawer");
+    attrs = grip.closest(".attrs");
+    attrs?.classList.add("moving");
+    listen(true);
+    paint(sideAt(e.clientY));
+  });
 }
 
 /**
