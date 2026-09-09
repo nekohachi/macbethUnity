@@ -164,16 +164,30 @@ export function captureDeltas(smooth: Mesh, edited: Mesh, frames = buildFrames(s
   }
   const n = smooth.vertexCount;
   const out = new Float32Array(n * 3);
-  for (let v = 0; v < n; v++) {
-    const dx = edited.positions[v * 3] - smooth.positions[v * 3];
-    const dy = edited.positions[v * 3 + 1] - smooth.positions[v * 3 + 1];
-    const dz = edited.positions[v * 3 + 2] - smooth.positions[v * 3 + 2];
-    const o = v * 9;
-    out[v * 3] = dx * frames[o] + dy * frames[o + 1] + dz * frames[o + 2];
-    out[v * 3 + 1] = dx * frames[o + 3] + dy * frames[o + 4] + dz * frames[o + 5];
-    out[v * 3 + 2] = dx * frames[o + 6] + dy * frames[o + 7] + dz * frames[o + 8];
-  }
+  for (let v = 0; v < n; v++) captureDeltaAt(smooth, edited, frames, v, out);
   return out;
+}
+
+/**
+ * 頂点 1 つぶんのデルタを `out` に書く。delta = Tᵀ (P − S)。
+ *
+ * ストロークの 1 コマは触った頂点しか変えないので、全部取り直さずにこれを使う
+ * （`33` の T2）。**式はここ 1 つだけ。** 全体版（`captureDeltas`）もこれを呼ぶ。
+ */
+export function captureDeltaAt(
+  smooth: Mesh,
+  edited: Mesh,
+  frames: Frames,
+  v: number,
+  out: Float32Array,
+): void {
+  const dx = edited.positions[v * 3] - smooth.positions[v * 3];
+  const dy = edited.positions[v * 3 + 1] - smooth.positions[v * 3 + 1];
+  const dz = edited.positions[v * 3 + 2] - smooth.positions[v * 3 + 2];
+  const o = v * 9;
+  out[v * 3] = dx * frames[o] + dy * frames[o + 1] + dz * frames[o + 2];
+  out[v * 3 + 1] = dx * frames[o + 3] + dy * frames[o + 4] + dz * frames[o + 5];
+  out[v * 3 + 2] = dx * frames[o + 6] + dy * frames[o + 7] + dz * frames[o + 8];
 }
 
 /**
@@ -315,11 +329,20 @@ export class Multires {
 
   /** 動いた頂点の周りだけ、上のレベルへ順に伝えていく。 */
   private updateFrom(base: Mesh, moved: Iterable<number>): void {
+    this.propagate(0, base, moved);
+  }
+
+  /**
+   * `from` 番目の段から上へ、動いた頂点の周りだけ伝えていく。
+   *
+   * `below` は `from` の 1 つ下の段のメッシュ、`changed` はそこで動いた頂点。
+   * レベル 0 を動かしたとき（`from = 0`）も、レベル L で彫ったとき
+   * （`from = L`）も同じ道を通る。
+   */
+  private propagate(from: number, below: Mesh, changed: Iterable<number>): void {
     const stack = this.stack;
     if (!stack) return;
-    let below = base;
-    let changed: Iterable<number> = moved;
-    for (let i = 0; i < stack.length; i++) {
+    for (let i = from; i < stack.length; i++) {
       const level = stack[i];
       // 差分更新に入って初めて計画が要る。ここで作る（`32` の T2）
       level.below = below;
@@ -399,6 +422,33 @@ export class Multires {
     const frames = cache.frames ?? cache.framePlan.build(cache.smooth);
     this.deltas[level - 1] = captureDeltas(cache.smooth, edited, frames);
     this.stack = null;
+  }
+
+  /**
+   * レベル L を**その場で彫った**ぶんだけ取り込む（`33` の T2）。
+   *
+   * `level(L)` が返すメッシュの座標を**呼ぶ側がすでに書き換えている**前提で、
+   * `verts` のデルタだけを取り直す。S(L) も接空間の基底も変わらないので
+   * （動かしたのは P であって S ではない）、**控えは捨てない**。
+   * これが 1 コマごとに呼べる道。`sculpt` は全部取り直して控えも捨てるので、
+   * ストロークには使えない。
+   *
+   * L より上に段があれば、そこへ伝える。いちばん上なら何もしない。
+   */
+  sculptAt(level: number, verts: Iterable<number>): void {
+    if (level < 1 || level > this.deltas.length) throw new Error(`レベル ${level} はありません`);
+    const stack = this.ensure();
+    const cache = stack[level - 1];
+    const frames = (cache.frames ??= cache.framePlan.build(cache.smooth));
+    const delta = (this.deltas[level - 1] ??= new Float32Array(cache.smooth.vertexCount * 3));
+    let any = false;
+    for (const v of verts) {
+      if (v < 0 || v >= cache.smooth.vertexCount) continue;
+      captureDeltaAt(cache.smooth, cache.mesh, frames, v, delta);
+      any = true;
+    }
+    // 上の段へ。P(L) が変わったので、S(L+1) から作り直す
+    if (any && level < stack.length) this.propagate(level, cache.mesh, verts);
   }
 
   /** 上位レベルを捨てる。トポロジを変える前に呼ぶ。 */

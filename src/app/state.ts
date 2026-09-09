@@ -4,7 +4,7 @@
  * core は状態を持たない純粋な関数とデータ構造なので、どのオブジェクトが
  * 選ばれていて、どのモードで、どのツールなのかは全部ここに集める。
  */
-import { Document, type CameraBookmark, type SampleSpace, type SceneObject } from "../core/index.js";
+import { Document, type BrushKind, type CameraBookmark, type SampleSpace, type SceneObject } from "../core/index.js";
 import type { CheckerPattern } from "./render/checker.js";
 
 export type Mode = "model" | "uv" | "sculpt" | "material";
@@ -94,10 +94,9 @@ export interface SpringGauge {
 
 export type GaugeDef = AbsoluteGauge | SpringGauge;
 
-/** ブラシの種類（`33` の T2）。 */
-export type BrushKind = "standard" | "move" | "smooth";
+export type { BrushKind };
 
-/** ブラシの状態（`33` の T1）。 */
+/** ブラシの状態（`33` の T1）。種類は core と同じものを使う。 */
 export interface BrushState {
   kind: BrushKind;
   /** 0〜1。 */

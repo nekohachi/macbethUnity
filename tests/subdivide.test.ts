@@ -187,7 +187,7 @@ describe("組み立て（assembleQuads）", () => {
   const cases: Array<[string, () => Mesh]> = [
     ["立方体", () => PRIMITIVES.cube.build(defaultParams("cube"))],
     ["球（極に三角形）", () => PRIMITIVES.sphere.build({ ...defaultParams("sphere"), sdAxis: 10, sdHeight: 7 })],
-    ["平面（境界あり）", () => PRIMITIVES.plane.build({ ...defaultParams("plane"), sdWidth: 4, sdHeight: 3 })],
+    ["平面（境界あり）", () => PRIMITIVES.plane.build({ ...defaultParams("plane"), sdW: 4, sdH: 3 })],
     ["円柱（三角形と四角形）", () => PRIMITIVES.cylinder.build({ ...defaultParams("cylinder"), sdAxis: 8 })],
   ];
 

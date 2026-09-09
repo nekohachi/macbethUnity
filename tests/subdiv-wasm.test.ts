@@ -60,7 +60,7 @@ describe("wasm の細分割", () => {
 
   it("平面（境界のあるメッシュ）が JS 版と一致する", async () => {
     if (!mod) return;
-    const p = PRIMITIVES.plane.build({ ...defaultParams("plane"), sdWidth: 5, sdHeight: 4 });
+    const p = PRIMITIVES.plane.build({ ...defaultParams("plane"), sdW: 5, sdH: 4 });
     const got = await catmullClarkWasm(p);
     expect(got).not.toBeNull();
     expectSame(got!, catmullClark(p));
