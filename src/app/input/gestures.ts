@@ -99,6 +99,20 @@ interface PointerRecord {
   x0: number;
   y0: number;
   type: string;
+  /** 筆圧 0〜1。`pressureOf` で均したもの。 */
+  pressure: number;
+}
+
+/**
+ * 筆圧を 0〜1 で取る（`33` の T1）。
+ *
+ * マウスと、筆圧を返さないペンは押している間 **0.5** として扱う
+ * （`e.pressure` は仕様上、押していれば 0.5、押していなければ 0 になる）。
+ * ここ 1 か所で均しておかないと、呼ぶ側それぞれで 0 の扱いがぶれる。
+ */
+export function pressureOf(e: PointerEvent): number {
+  if (e.pointerType === "mouse") return 0.5;
+  return e.pressure > 0 ? Math.min(1, e.pressure) : 0.5;
 }
 
 type GestureMode = "idle" | "tumble" | "pan" | "dolly" | "twofinger" | "threefinger" | "tool" | "marking";
@@ -366,6 +380,7 @@ export class GestureRouter {
       x0: e.clientX,
       y0: e.clientY,
       type: e.pointerType,
+      pressure: pressureOf(e),
     });
     this.tapDown(e);
 
@@ -462,6 +477,7 @@ export class GestureRouter {
     }
     const px = rec.x;
     const py = rec.y;
+    rec.pressure = pressureOf(e);
     rec.x = e.clientX;
     rec.y = e.clientY;
     // 長押しは「指がその場に留まっていること」が条件。

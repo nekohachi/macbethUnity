@@ -60,7 +60,7 @@ import {
   type GestureHandlers,
 } from "./input/gestures.js";
 import { Picker, type ScreenPoint } from "./render/picking.js";
-import { asMb, canAddLevel, estimateBytes, facesAt, levelCount, levelsOf, warmUpLevels } from "./levels.js";
+import { asMb, canAddLevel, estimateBytes, facesAt, fitBrushRadius, levelCount, levelsOf, warmUpLevels } from "./levels.js";
 import { forgetStamps, stampsFor } from "./stamps.js";
 import { STANDARD_VIEWS, Viewport, type LayoutKind, type ViewName } from "./render/viewport.js";
 import {
@@ -387,6 +387,24 @@ export class App {
   runEditForTest(kind: EditKind): void {
     this.activateEdit(kind, true);
   }
+
+  /**
+   * ブラシの半径を、選んでいるオブジェクトの大きさに合わせる（`33` の T1）。
+   *
+   * 半径はワールド単位なので、初期値をオブジェクトから決めないと、小さい像では
+   * 全体が一撃で動き、大きい像では何も起きない。**一度合わせたら覚える**ので、
+   * 同じオブジェクトでは呼び直さない（ユーザーが決めた値を消さないため）。
+   */
+  private fitBrushToSelection(): void {
+    const o = this.state.selected;
+    if (!o || this.brushFittedFor === o.id) return;
+    this.brushFittedFor = o.id;
+    this.state.brush.radius = fitBrushRadius(o);
+    for (const g of this.gauges) g.paint();
+  }
+
+  /** ブラシの半径を合わせ済みのオブジェクト。 */
+  private brushFittedFor: string | null = null;
 
   /** 通し確認から指紋を見る（`32` の T4。S3 のベイクが使う入口）。 */
   stampsForTest(): { topology: string; base: string; high: string; uv: string } | null {
@@ -2349,6 +2367,7 @@ export class App {
       void warmUpLevels();
       // 段の上げ下げはオブジェクト単位。コンポーネント選択は持ち込まない
       this.setCompMode("object");
+      this.fitBrushToSelection();
     }
     // モードで見せる段が変わる（スカルプトは activeLevel、それ以外は 0）
     for (const o of this.state.doc.objects) {
@@ -5283,6 +5302,12 @@ export class App {
     // ジオメトリが変わっている可能性があるので、ホバーの表示は消す。
     // 次にポインタが動いた時点で出し直される
     this.preselect.clear();
+    if (this.state.mode === "sculpt") {
+      // 選び直したら半径を合わせ直す（同じものなら何もしない）
+      this.fitBrushToSelection();
+      // ALT を押している間だけ反転（`33` の T1）
+      this.state.brush.invert = this.state.modOn("alt");
+    }
     this.viewport.applyDisplayAll();
     this.refreshManipulator();
     this.hud.refreshStats();

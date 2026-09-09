@@ -592,6 +592,69 @@ check(
   `控えが効く ${stamps.cached} / base が変わる ${stamps.baseChanged} / topology は同じ ${stamps.topoSame} / 戻ると同じ ${stamps.backToFirst}`,
 );
 
+/* 17g. ブラシの強度とソフト選択の強度は別物（`33` の T1） */
+const brushSplit = await page.evaluate(() => {
+  const app = window.macbeth;
+  app.setMode("model");
+  app.state.soft.strength = 0.2;
+  app.state.soft.radius = 1.5;
+  app.setMode("sculpt");
+  // スカルプトのゲージ（強度・サイズ）を動かす。state.gauge が今のモードのものを返す
+  app.state.gauge("g1").set(app.state, 0.9);
+  app.state.gauge("g2").set(app.state, 2.5);
+  const afterSculpt = { soft: { ...app.state.soft }, brush: { ...app.state.brush } };
+  // 逆にモデリングのソフト選択を動かす
+  app.setMode("model");
+  app.state.gauge("g1").set(app.state, 0.4);
+  const afterModel = { soft: { ...app.state.soft }, brush: { ...app.state.brush } };
+  return { afterSculpt, afterModel };
+});
+check(
+  "ブラシの強度とソフト選択の強度は別物",
+  brushSplit.afterSculpt.brush.strength === 0.9 &&
+    brushSplit.afterSculpt.brush.radius === 2.5 &&
+    brushSplit.afterSculpt.soft.strength === 0.2 &&
+    brushSplit.afterSculpt.soft.radius === 1.5 &&
+    brushSplit.afterModel.soft.strength === 0.4 &&
+    brushSplit.afterModel.brush.strength === 0.9,
+  `ブラシを動かしても ソフト ${brushSplit.afterSculpt.soft.strength}/${brushSplit.afterSculpt.soft.radius} のまま · ` +
+    `ソフトを動かしても ブラシ ${brushSplit.afterModel.brush.strength} のまま`,
+);
+
+/* 17h. ブラシの半径はオブジェクトの大きさに合う（`33` の T1） */
+const brushFit = await page.evaluate(() => {
+  const app = window.macbeth;
+  const core = window.macbethCore;
+  app.setMode("model");
+  const keep = [...app.state.doc.objects];
+  const small = app.state.doc.addMesh(core.PRIMITIVES.cube.build(core.defaultParams("cube")), "S");
+  const big = app.state.doc.addMesh(core.PRIMITIVES.cube.build(core.defaultParams("cube")), "B");
+  for (let v = 0; v < big.mesh.vertexCount; v++) {
+    const p = big.mesh.getPosition(v);
+    big.mesh.setPosition(v, p[0] * 20, p[1] * 20, p[2] * 20);
+  }
+  app.viewport.syncAll();
+  app.state.select(small);
+  app.setMode("sculpt");
+  const forSmall = app.state.brush.radius;
+  app.state.select(big);
+  app.refresh();
+  const forBig = app.state.brush.radius;
+  // 片づけ
+  app.setMode("model");
+  app.state.doc.objects.length = 0;
+  app.state.doc.objects.push(...keep);
+  app.viewport.syncAll();
+  app.state.select(keep[0] ?? null);
+  app.refresh();
+  return { forSmall, forBig };
+});
+check(
+  "ブラシの半径はオブジェクトの大きさに合う",
+  brushFit.forSmall > 0 && brushFit.forBig > brushFit.forSmall * 10,
+  `小さい立方体 ${brushFit.forSmall.toFixed(3)} → 20 倍の立方体 ${brushFit.forBig.toFixed(3)}`,
+);
+
 /* 18. 縦持ちでもビューポートが縦一杯（右のドック列は空なので場所を取らない。`24` の T1） */
 await page.setViewportSize({ width: 744, height: 1133 }); // iPad mini の縦
 await page.waitForTimeout(200);
@@ -6177,11 +6240,17 @@ const heavy = await page.evaluate(async () => {
 });
 check(
   "10 万三角形でも軽い",
-  // 上限は実測の 1.5 倍まで締めた（`29` の B-T6）。CI の Chromium は
-  // swiftshader なので実機はこれより速い
+  // 上限は実測の 1.5 倍まで締めてあった（`29` の B-T6）。CI の Chromium は
+  // swiftshader なので実機はこれより速い。
+  //
+  // **2026-09-09 に上限をゆるめた。** レイ 130ms・ホバー 600ms では、
+  // **コードを変えていない HEAD でも落ちる**ようになったため（同じ日のうちに
+  // ホバーが 387〜522ms から 714〜744ms へ動いた。3 回ずつ測って確かめた）。
+  // 共有の仮想機なので、その日の混み具合で倍ちかく動く。
+  // ここは「うっかり 2 倍遅くしていないか」を見る門なので、そのぶん広げる。
   heavy.tris > 100000 &&
-    heavy.pick < 130 &&
-    heavy.hover < 600 &&
+    heavy.pick < 250 &&
+    heavy.hover < 1100 &&
     heavy.tweak < 700 &&
     heavy.frame < 60 &&
     heavy.undo < 60 &&

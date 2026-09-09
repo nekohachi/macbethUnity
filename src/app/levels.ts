@@ -114,3 +114,31 @@ export function asMb(bytes: number): string {
   if (bytes < 1048576) return `${Math.round(bytes / 1024)} KB`;
   return `${Math.round(bytes / 1048576)} MB`;
 }
+
+/**
+ * オブジェクトの大きさからブラシの半径を決める（`33` の T1）。
+ *
+ * 半径はワールド単位なので、小さい像と大きい像で同じ数字では使えない。
+ * 対角の 8% を初期値にする。**選び直したときだけ**呼ぶこと（ユーザーが
+ * ゲージで決めた値を毎回上書きしてはいけない）。
+ */
+export function fitBrushRadius(o: SceneObject): number {
+  const p = o.mesh.positions;
+  if (!p.length) return 0.4;
+  let minX = Infinity,
+    minY = Infinity,
+    minZ = Infinity,
+    maxX = -Infinity,
+    maxY = -Infinity,
+    maxZ = -Infinity;
+  for (let v = 0; v < p.length; v += 3) {
+    if (p[v] < minX) minX = p[v];
+    if (p[v] > maxX) maxX = p[v];
+    if (p[v + 1] < minY) minY = p[v + 1];
+    if (p[v + 1] > maxY) maxY = p[v + 1];
+    if (p[v + 2] < minZ) minZ = p[v + 2];
+    if (p[v + 2] > maxZ) maxZ = p[v + 2];
+  }
+  const diagonal = Math.hypot(maxX - minX, maxY - minY, maxZ - minZ);
+  return Math.max(0.01, Math.min(10, diagonal * 0.08));
+}

@@ -94,6 +94,40 @@ export interface SpringGauge {
 
 export type GaugeDef = AbsoluteGauge | SpringGauge;
 
+/** ブラシの種類（`33` の T2）。 */
+export type BrushKind = "standard" | "move" | "smooth";
+
+/** ブラシの状態（`33` の T1）。 */
+export interface BrushState {
+  kind: BrushKind;
+  /** 0〜1。 */
+  strength: number;
+  /** ワールド単位。画面の px ではない。 */
+  radius: number;
+  /** ALT を押している間だけ立つ。Standard は凹み、Move と Smooth では効かない。 */
+  invert: boolean;
+  /** 筆圧を半径に効かせる。 */
+  pressureSize: boolean;
+  /** 筆圧を強度に効かせる。 */
+  pressureStrength: boolean;
+  /** ローカル X で鏡映（`33` の T4）。 */
+  symmetryX: boolean;
+}
+
+/**
+ * 筆圧から、実際に使う半径と強度を出す（`33` の T1）。
+ *
+ * カーブの調整 UI は S2-4。いまは決め打ち。強度を 2 乗にしてあるのは、
+ * 軽く触れたときに効きすぎないようにするため。
+ */
+export function brushAt(b: BrushState, pressure: number): { radius: number; strength: number } {
+  const p = pressure > 0 ? Math.min(1, pressure) : 0.5;
+  return {
+    radius: b.radius * (b.pressureSize ? 0.35 + 0.65 * p : 1),
+    strength: b.strength * (b.pressureStrength ? p * p : 1),
+  };
+}
+
 /** モードごとにゲージの意味が置き換わる。強度と範囲という役割は変えない（docs/09）。 */
 export const GAUGES: Record<Mode, { g1: GaugeDef; g2: GaugeDef }> = {
   model: {
@@ -105,15 +139,27 @@ export const GAUGES: Record<Mode, { g1: GaugeDef; g2: GaugeDef }> = {
     g2: gauge("範囲", "ソフト選択 範囲", 0.05, 6, 0.05, "radius"),
   },
   sculpt: {
-    g1: gauge("強度", "ブラシ強度", 0, 1, 0.01, "strength"),
-    g2: gauge("サイズ", "ブラシサイズ", 0.05, 6, 0.05, "radius"),
+    g1: gauge("強度", "ブラシ強度", 0, 1, 0.01, "strength", "brush"),
+    g2: gauge("サイズ", "ブラシサイズ", 0.01, 10, 0.01, "radius", "brush"),
   },
   material: {
-    g1: gauge("不透明", "不透明度", 0, 1, 0.01, "strength"),
-    g2: gauge("サイズ", "ブラシサイズ", 0.05, 6, 0.05, "radius"),
+    g1: gauge("不透明", "不透明度", 0, 1, 0.01, "strength", "brush"),
+    g2: gauge("サイズ", "ブラシサイズ", 0.01, 10, 0.01, "radius", "brush"),
   },
 };
 
+/**
+ * ふつうのゲージを 1 つ作る。
+ *
+ * `into` で**どこへ書くか**を選ぶ。モデリングと UV は `soft`（ソフト選択）、
+ * スカルプトとマテリアルは `brush`（ブラシ）。**混ぜない**（`33` の T1）。
+ *
+ * **`s[into][key]` と書かないこと。** `AppState` を変数のキーで引くと、
+ * その形が壊れて（V8 が辞書モードへ落として）**そこから先の全部が遅くなる**。
+ * ゲージの `get` は `refresh()` のたびに走る＝ホバーのたびに走るので、
+ * これをやったとき 10 万三角形のホバー 60 回が 529ms → 741ms になった。
+ * 下のように枝で分けると 249ms（元より速い）。`29` の B-T6 の門が拾った。
+ */
 function gauge(
   label: string,
   full: string,
@@ -121,6 +167,7 @@ function gauge(
   max: number,
   step: number,
   key: "strength" | "radius",
+  into: "soft" | "brush" = "soft",
 ): AbsoluteGauge {
   return {
     kind: "absolute",
@@ -129,9 +176,10 @@ function gauge(
     min,
     max,
     step,
-    get: (s) => s.soft[key],
+    get: (s) => (into === "brush" ? s.brush[key] : s.soft[key]),
     set: (s, v) => {
-      s.soft[key] = v;
+      if (into === "brush") s.brush[key] = v;
+      else s.soft[key] = v;
     },
   };
 }
@@ -206,6 +254,25 @@ export class AppState {
   fingerCam = false;
 
   soft = { strength: 0, radius: 1.0 };
+  /**
+   * ブラシ（`33` の T1）。**ソフト選択とは別に持つ。**
+   *
+   * ここを `soft` と共有していたせいで、スカルプトでブラシサイズを変えると
+   * モデリングのソフト選択の範囲まで変わっていた。
+   *
+   * `radius` は**ワールド単位**（画面の px ではない）。カメラを寄せても効き方が
+   * 変わらないほうが彫りやすい。オブジェクトを選んだときに、その大きさから
+   * 決め直す（`app.fitBrushRadius`）。
+   */
+  brush: BrushState = {
+    kind: "standard",
+    strength: 0.5,
+    radius: 0.4,
+    invert: false,
+    pressureSize: true,
+    pressureStrength: true,
+    symmetryX: true,
+  };
   toolOpts = { extrudeDist: 0.35 };
   /** 頂点まわり。mergeDist は距離マージのしきい値、extrudeWidth は尖らせるときの根元の太さ。 */
   vertexOpts = { mergeDist: 0.05, extrudeWidth: 0.25 };
