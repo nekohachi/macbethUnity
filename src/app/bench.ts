@@ -14,7 +14,16 @@
  * 大きさを選び直せる。**100 万四角形は計算の途中で 1GB を大きく越える**ので、
  * iPad mini のような端末では途中でタブが落ちる。落ちたら小さい方で測る。
  */
-import { PRIMITIVES, buildBvh, catmullClark, defaultParams, refitBvh, Multires, type Mesh } from "../core/index.js";
+import {
+  PRIMITIVES,
+  buildBvh,
+  catmullClark,
+  defaultParams,
+  estimateLevelBytes,
+  refitBvh,
+  Multires,
+  type Mesh,
+} from "../core/index.js";
 import type { App } from "./app.js";
 import { el } from "./ui/dom.js";
 import { buildFromGeometry, loadWasm, subdivGeometry, type WasmModule } from "./wasm/index.js";
@@ -202,10 +211,12 @@ export async function runBench(app: App, quick: boolean, size?: number): Promise
   }
 
   /* B2 — 接空間デルタの取り直し（動いた頂点のぶんだけ） */
+  // 段のボタンが実際に通る道で測る（`32` の T5）。wasm があればそれで組む
   const base = sphere(baseSize.axis, baseSize.height);
-  const multi = new Multires(base);
+  const multi = new Multires(base, wasm ? { subdivide: (m) => buildFromGeometry(m, subdivGeometry(wasm, m)!) } : {});
   multi.divide();
   multi.divide();
+  const heapBefore = heapMb();
   const b2build = timeIt(1, () => void multi.levels());
   const top = multi.level(2);
   await add({
@@ -213,7 +224,18 @@ export async function runBench(app: App, quick: boolean, size?: number): Promise
     label: `レベル 2 まで組む（${faces(top.faceCount)}）`,
     value: b2build,
     unit: "ms",
-    note: `ベース ${base.faceCount} 面`,
+    note: `ベース ${base.faceCount} 面 · ${wasm ? "wasm" : "js"}`,
+  });
+
+  // 推定と実測を並べる。ずれていたら estimateLevelBytes の係数を直す（`32` の T5）
+  const guess = estimateLevelBytes(multi.level(1).faceCount) + estimateLevelBytes(top.faceCount);
+  const actual = heapMb() - heapBefore;
+  await add({
+    key: "B2c",
+    label: "レベル 2 までの推定メモリ",
+    value: guess / 1048576,
+    unit: "MB",
+    note: actual > 0 ? `実測 ${actual.toFixed(0)} MB（推定の ${(guess / 1048576 / actual).toFixed(1)} 倍）` : "実測は取れない",
   });
 
   // ベースの頂点を 1 万個動かして、その周りだけ上へ伝える（ストロークの 1 コマ）
@@ -346,7 +368,7 @@ export async function runBench(app: App, quick: boolean, size?: number): Promise
         dpr: window.devicePixelRatio,
         quick,
         man,
-        rows: rows.map((r) => ({ key: r.key, label: r.label, value: +r.value.toFixed(2), unit: r.unit, target: r.target })),
+        rows: rows.map((r) => ({ key: r.key, label: r.label, value: +r.value.toFixed(2), unit: r.unit, target: r.target, note: r.note || undefined })),
       },
       null,
       1,
