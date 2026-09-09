@@ -34,6 +34,7 @@ import {
   applyTransform,
   buildObjectView,
   disposeObject3D,
+  disposeViewMaterials,
   heatColors,
   positionGeometry,
   surfaceGeometry,
@@ -320,6 +321,7 @@ export class Viewport {
     if (old) {
       this.root.remove(old.group);
       disposeObject3D(old.group);
+      disposeViewMaterials(old);
     }
     const view = buildObjectView(o, this.shadingAngle);
     this.root.add(view.group);
@@ -334,6 +336,7 @@ export class Viewport {
       if (!alive.has(id)) {
         this.root.remove(view.group);
         disposeObject3D(view.group);
+        disposeViewMaterials(view);
         this.views.delete(id);
       }
     }
@@ -374,12 +377,26 @@ export class Viewport {
     view.surface.visible = d !== "wire";
     // チェッカーは UV をそのまま貼る。歪みと継ぎ目が目で分かる
     if (d === "heat") this.applyHeat(view);
-    view.surface.material =
+    // 不透明度が 1 未満なら、そのオブジェクトだけの材質にする（`25` の T4）。
+    // 共有の MAT.surf を透明にすると全部が透けるので、複製を 1 つ持つ。
+    const opacity = view.object.opacity;
+    const mat =
       d === "checker"
         ? (view.checker ??= checkerMaterial(this.state.checker.cells, this.state.checker.pattern))
         : d === "heat"
           ? (view.heat ??= heatMaterial())
-          : MAT.surf;
+          : opacity < 1
+            ? (view.faded ??= MAT.surf.clone())
+            : MAT.surf;
+    if (mat !== MAT.surf) {
+      // 裏の面が先に描かれて手前が消えるのを避けるため、透けているあいだは深度を書かない
+      mat.transparent = opacity < 1;
+      mat.opacity = opacity;
+      mat.depthWrite = opacity >= 1;
+      mat.side = this.state.cullBack ? FrontSide : DoubleSide;
+      mat.needsUpdate = true;
+    }
+    view.surface.material = mat;
     view.wire.visible = d === "wire" || d === "shadedWire" || selected;
     view.wire.material = !selected
       ? MAT.wire
@@ -404,7 +421,7 @@ export class Viewport {
     MAT.surf.side = side;
     MAT.surf.needsUpdate = true;
     for (const view of this.views.values()) {
-      for (const m of [view.checker, view.heat]) {
+      for (const m of [view.checker, view.heat, view.faded]) {
         if (!m) continue;
         m.side = side;
         m.needsUpdate = true;

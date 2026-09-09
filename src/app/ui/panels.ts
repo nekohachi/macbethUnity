@@ -135,12 +135,15 @@ function paramRow(
     min: number;
     max: number;
     step: number;
+    /** 行に付ける目印。他所から値をそろえたいときに使う（`25` の T4 の不透明度）。 */
+    key?: string;
     format?: (v: number) => string;
     onInput: (v: number) => void;
     onCommit?: () => void;
   },
 ): void {
   const row = el("div", "row");
+  if (options.key) row.dataset.param = options.key;
   row.appendChild(el("label", undefined, options.label));
   const num = el("input", "num") as HTMLInputElement;
   num.type = "text";
@@ -1070,6 +1073,7 @@ export function attributeSection(state: OptionsState, host: PanelHost, opened: S
   const ds = el("div", "sect");
   paramRow(ds, {
     label: "不透明度",
+    key: "opacity",
     value: o.opacity,
     min: 0,
     max: 1,
@@ -1146,13 +1150,11 @@ export function renderLayers(
 
     const eye = el("button", "eye");
     eye.setAttribute("aria-pressed", String(o.visible));
-    eye.title = o.visible ? "隠す" : "表示する";
+    eye.title = o.visible ? "隠す（長押しで不透明度）" : "表示する（長押しで不透明度）";
     eye.innerHTML = iconSvg(o.visible ? ICONS.eye : ICONS.eyeOff);
-    eye.addEventListener("pointerdown", (e) => e.stopPropagation());
-    eye.addEventListener("click", (e) => {
-      e.stopPropagation();
-      host.onVisible(o, !o.visible);
-    });
+    // 不透明度のぶんだけ薄くする。0 でも目は開いたままで、「非表示」と見分けがつく
+    eye.style.opacity = String(0.4 + 0.6 * o.opacity);
+    attachEyeOpacity(eye, o, host, o === selected);
     row.appendChild(eye);
 
     const lock = el("button", "lock");
@@ -1189,6 +1191,126 @@ export function renderLayers(
     wrap.appendChild(row);
     body.appendChild(wrap);
   }
+}
+
+/**
+ * 目のアイコン（`25` の T4）。
+ *
+ * - タップ = 表示 / 非表示（今までどおり）
+ * - **長押し（420ms）** = 行の上に横スライダーが出る。**指を離さずに左右**で不透明度。
+ *   離すと閉じて履歴に 1 段
+ *
+ * スライダーは `document.body` に置く。行は描き直しで入れ替わるが、
+ * ポップと購読はそれに巻き込まれない（つまみの並び替えと同じ考え方）。
+ */
+function attachEyeOpacity(eye: HTMLElement, o: SceneObject, host: PanelHost, primary: boolean): void {
+  const HOLD_MS = 420;
+  const MOVE_PX = 12;
+  /** 端から端まで動かすのに要る距離。指 1 本ぶんの往復で 0〜1 になる。 */
+  const SPAN_PX = 160;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let pid: number | null = null;
+  let sx = 0;
+  let sy = 0;
+  let base = 1;
+  let pop: HTMLElement | null = null;
+  let fill: HTMLElement | null = null;
+  let label: HTMLElement | null = null;
+  /** ポップを出した。離しても表示 / 非表示は切り替えない。 */
+  let suppressClick = false;
+
+  const listen = (on: boolean) => {
+    const fn = on ? window.addEventListener : window.removeEventListener;
+    fn("pointermove", onMove as EventListener);
+    fn("pointerup", onUp as EventListener);
+    fn("pointercancel", onUp as EventListener);
+  };
+
+  const show = (value: number) => {
+    if (fill) fill.style.width = `${(value * 100).toFixed(1)}%`;
+    if (label) label.textContent = `不透明度 ${Math.round(value * 100)}%`;
+    eye.style.opacity = String(0.4 + 0.6 * value);
+    pop?.setAttribute("data-value", value.toFixed(3));
+    // アトリビュート欄が同じオブジェクトを出しているなら、そちらの数字も一緒に動かす
+    if (!primary) return;
+    const row = document.querySelector<HTMLElement>('.attrs .row[data-param="opacity"]');
+    const num = row?.querySelector<HTMLInputElement>("input.num");
+    const slider = row?.querySelector<HTMLInputElement>("input.slider");
+    if (num) num.value = value.toFixed(2);
+    if (slider) slider.value = String(value);
+  };
+
+  const open = () => {
+    suppressClick = true;
+    base = o.opacity;
+    pop = el("div", "opacity-pop");
+    label = el("div", "oplabel");
+    const bar = el("div", "opbar");
+    fill = el("div", "opfill");
+    bar.appendChild(fill);
+    pop.append(label, bar);
+    document.body.appendChild(pop);
+    // 行の上に出す。画面の外へはみ出さないよう左右だけ寄せる
+    const r = eye.getBoundingClientRect();
+    const w = 168;
+    const left = Math.max(6, Math.min(window.innerWidth - w - 6, r.left + r.width / 2 - w / 2));
+    pop.style.width = `${w}px`;
+    pop.style.left = `${left}px`;
+    pop.style.top = `${Math.max(6, r.top - 46)}px`;
+    show(base);
+  };
+
+  const close = () => {
+    pop?.remove();
+    pop = fill = label = null;
+  };
+
+  const onMove = (e: PointerEvent) => {
+    if (e.pointerId !== pid) return;
+    if (pop) {
+      const v = Math.max(0, Math.min(1, base + (e.clientX - sx) / SPAN_PX));
+      host.onOpacityInput(o, v);
+      show(v);
+      return;
+    }
+    if (Math.hypot(e.clientX - sx, e.clientY - sy) > MOVE_PX && timer !== null) {
+      clearTimeout(timer);
+      timer = null;
+    }
+  };
+
+  const onUp = (e: PointerEvent) => {
+    if (e.pointerId !== pid) return;
+    if (timer !== null) clearTimeout(timer);
+    timer = null;
+    pid = null;
+    listen(false);
+    if (pop) {
+      close();
+      host.onOpacityCommit(o);
+    }
+  };
+
+  eye.addEventListener("contextmenu", (e) => e.preventDefault());
+  eye.addEventListener("pointerdown", (e) => {
+    // 行の選択・長押しメニューには渡さない
+    e.stopPropagation();
+    pid = e.pointerId;
+    sx = e.clientX;
+    sy = e.clientY;
+    suppressClick = false;
+    listen(true);
+    timer = setTimeout(open, HOLD_MS);
+  });
+  eye.addEventListener("click", (e) => {
+    e.stopPropagation();
+    // 長押しで不透明度を触ったあとの離しは、表示 / 非表示にしない
+    if (suppressClick) {
+      suppressClick = false;
+      return;
+    }
+    host.onVisible(o, !o.visible);
+  });
 }
 
 /**

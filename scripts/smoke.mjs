@@ -4766,6 +4766,86 @@ check(
   `「${attrs.title}」/ 区画 ${attrs.heads.join(" · ")} / 行の「>」 ${attrs.noMore} 個 / パラメータ ${attrs.paramMoved} / 空 「${attrs.emptyText.replace("\n", " ")}」`,
 );
 
+/* 43z-15. 目の長押しで不透明度（`25` の T4） */
+const fade = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const core = window.macbethCore;
+  app.state.doc.objects.length = 0;
+  const cube = app.state.doc.addObject("cube");
+  const other = app.state.doc.addObject("sphere");
+  other.transform.position = [3, 0, 0];
+  app.viewport.syncAll();
+  app.state.select(cube);
+  app.refresh();
+  if (!document.querySelector(".drawer.open")) document.getElementById("btnPanels").click();
+  await new Promise((r) => setTimeout(r, 250));
+
+  // 一覧は追加の逆順なので、立方体は下の行
+  const rows = [...document.querySelectorAll(".drawer .lyrow")];
+  const eye = rows.find((r) => r.dataset.id === cube.id).querySelector(".eye");
+  const b = eye.getBoundingClientRect();
+  const x = b.x + b.width / 2;
+  const y = b.y + b.height / 2;
+  const ev = (type, cx) =>
+    new PointerEvent(type, { pointerId: 41, pointerType: "touch", bubbles: true, cancelable: true, clientX: cx, clientY: y });
+
+  // 長押しでポップが出る
+  eye.dispatchEvent(ev("pointerdown", x));
+  await new Promise((r) => setTimeout(r, 450));
+  const popped = !!document.querySelector(".opacity-pop");
+  // 左へ 60px 引くと薄くなる（右は濃く。既定が 1 なので下げて確かめる）
+  window.dispatchEvent(ev("pointermove", x - 60));
+  const label = document.querySelector(".opacity-pop .oplabel")?.textContent ?? "";
+  window.dispatchEvent(ev("pointerup", x - 60));
+  await new Promise((r) => setTimeout(r, 60));
+  const closed = !document.querySelector(".opacity-pop");
+  const faded = cube.opacity;
+  const visible = cube.visible;
+
+  // 3D の材質が透ける。共有の材質は巻き込まない
+  const view = app.viewport.viewOf(cube);
+  const mat = view?.surface?.material;
+  const transparent = !!mat && mat.transparent === true && Math.abs(mat.opacity - faded) < 1e-6;
+  // 共有の材質は巻き込まない。隣の球は透けないまま
+  const om = app.viewport.viewOf(other)?.surface?.material;
+  const sharedKept = !!om && om.transparent === false && om.opacity === 1;
+
+  // 透けていても選べる
+  app.state.select(null);
+  app.state.select(cube);
+  const selectable = app.state.selected === cube;
+
+  // .mbz に残る
+  const back = core.unpackMbz(core.packMbz(app.state.doc)).document;
+  const round = back.objects.find((o) => o.id === cube.id).opacity;
+
+  // 取り消しで戻る
+  app.history.undo();
+  await new Promise((r) => setTimeout(r, 60));
+  const undone = app.state.doc.find(cube.id)?.opacity;
+
+  document.getElementById("btnPanels").click();
+  app.state.doc.objects.length = 0;
+  app.viewport.syncAll();
+  app.refresh();
+  return { popped, closed, faded, visible, transparent, sharedKept, selectable, round, undone, label, count: app.state.doc.objects.length };
+});
+check(
+  "目の長押しで不透明度",
+  fade.popped &&
+    fade.closed &&
+    fade.faded < 1 &&
+    fade.faded > 0 &&
+    fade.visible &&
+    fade.transparent &&
+    fade.sharedKept &&
+    fade.selectable &&
+    Math.abs(fade.round - fade.faded) < 1e-3 &&
+    fade.undone === 1,
+  `ポップ ${fade.popped} → 「${fade.label}」/ 不透明度 ${fade.faded.toFixed(2)}（表示は ${fade.visible}）/ ` +
+    `材質が透ける ${fade.transparent} / 選べる ${fade.selectable} / .mbz ${fade.round.toFixed(2)} / 取り消し ${fade.undone}`,
+);
+
 /* 44. ツール列のグループ（`21` の 4 章） */
 
 /* 44-1. ボタンは 7 つ、右のオプションパネルは無い */

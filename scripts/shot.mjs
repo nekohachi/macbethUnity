@@ -560,6 +560,38 @@ const scenes = {
     await new Promise((r) => setTimeout(r, 300));
   },
 
+  /** `25` の T4: 目を長押しして不透明度を下げたところ。手前の立方体ごしに球が見える。 */
+  "25-t4-opacity": async () => {
+    const app = window.macbeth;
+    app.state.doc.objects.length = 0;
+    const sphere = app.state.doc.addObject("sphere");
+    const cube = app.state.doc.addObject("cube");
+    cube.transform.position = [0.35, 0.25, 1.5];
+    cube.transform.scale = [1.5, 1.5, 1.5];
+    app.viewport.syncAll();
+    app.setCompMode("object");
+    app.state.select(cube);
+    app.viewport.cam.target.set(0, 0.2, 0.4);
+    app.viewport.cam.distance = 7.4;
+    app.viewport.applyCamera();
+    app.refresh();
+    document.getElementById("btnPanels").click();
+    await new Promise((r) => setTimeout(r, 300));
+
+    // 本物の経路で長押し。指は離さないので、スライダーが出たまま写る
+    const row = [...document.querySelectorAll(".drawer .lyrow")].find((r) => r.dataset.id === cube.id);
+    const eye = row.querySelector(".eye");
+    const b = eye.getBoundingClientRect();
+    const x = b.x + b.width / 2;
+    const y = b.y + b.height / 2;
+    const ev = (type, cx) =>
+      new PointerEvent(type, { pointerId: 61, pointerType: "touch", bubbles: true, cancelable: true, clientX: cx, clientY: y });
+    eye.dispatchEvent(ev("pointerdown", x));
+    await new Promise((r) => setTimeout(r, 480));
+    window.dispatchEvent(ev("pointermove", x - 100));
+    await new Promise((r) => setTimeout(r, 120));
+  },
+
   /** `23` の T4: ブリッジの分割数 3。上下の縁の間に輪が 2 本入る。 */
   "23-t4-bridge": async () => {
     const app = window.macbeth;

@@ -170,6 +170,8 @@ export interface ObjectView {
   checker?: MeshPhongMaterial;
   /** ヒートマップ表示の材質。初めて使うときに作る。 */
   heat?: MeshBasicMaterial;
+  /** 不透明度が 1 未満のときの材質（`25` の T4）。共有の `MAT.surf` を複製して使う。 */
+  faded?: MeshPhongMaterial;
   wire: LineSegments;
   points: Points;
   tri: { tri: Uint32Array; triToFace: Uint32Array };
@@ -195,6 +197,18 @@ export function buildObjectView(o: SceneObject, smoothAngle: number): ObjectView
 
   group.updateMatrixWorld();
   return { object: o, group, surface, wire, points, tri, edges };
+}
+
+/**
+ * その ObjectView だけが持っている材質を捨てる（`25` の T4）。
+ * `MAT.surf` などの共有分は触らない。`disposeObject3D` はジオメトリしか見ないので、
+ * 作り直しのたびに複製が積み上がらないよう、view を捨てるときに合わせて呼ぶ。
+ */
+export function disposeViewMaterials(view: ObjectView): void {
+  view.checker?.dispose();
+  view.heat?.dispose();
+  view.faded?.dispose();
+  view.checker = view.heat = view.faded = undefined;
 }
 
 export function disposeObject3D(node: Object3D): void {
