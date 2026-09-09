@@ -4971,6 +4971,116 @@ check(
     `ひねり 回転 ${threeWay.spread.rotation.toFixed(3)}・スケール ${threeWay.spread.scale[0].toFixed(2)}`,
 );
 
+/* 43z-13d. ALT + ひねりで手前 / 奥へ回る（`26` の T3） */
+const altTwist = await page.evaluate(async (center) => {
+  const app = window.macbeth;
+  app.state.doc.objects.length = 0;
+  const object = app.state.doc.addObject("cube");
+  app.viewport.syncAll();
+  app.setCompMode("object");
+  app.state.select(object);
+  app.setView("front");
+  app.viewport.frameSelected();
+  app.refresh();
+  await new Promise((r) => setTimeout(r, 80));
+
+  const canvas = document.getElementById("gl");
+  const fire = (type, id, x, y) =>
+    canvas.dispatchEvent(
+      new PointerEvent(type, {
+        pointerId: id,
+        pointerType: "touch",
+        isPrimary: id === 141,
+        clientX: x,
+        clientY: y,
+        buttons: type === "pointerup" ? 0 : 1,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const turn = (p, deg) => {
+    const a = (deg * Math.PI) / 180;
+    const dx = p.x - center.x;
+    const dy = p.y - center.y;
+    return { x: center.x + dx * Math.cos(a) - dy * Math.sin(a), y: center.y + dx * Math.sin(a) + dy * Math.cos(a) };
+  };
+  const topOnScreen = () => {
+    const view = app.viewport.viewOf(object);
+    view.group.updateMatrixWorld();
+    const v = app.viewport.cam.target.clone().set(0, 0.5, 0);
+    v.applyMatrix4(view.group.matrixWorld).project(app.viewport.camera);
+    const rect = app.viewport.paneRect(0);
+    return { x: ((v.x + 1) / 2) * rect.w, y: ((-v.y + 1) / 2) * rect.h };
+  };
+
+  /** 指 3 本をその並びで置いてひねる。返すのは回転軸と角度。 */
+  const twist = async (vertical) => {
+    object.transform.rotation = [0, 0, 0, 1];
+    app.viewport.syncAll();
+    app.refresh();
+    // 親指と対。並びが縦なら上下に、横なら左右に離す
+    const grip = vertical
+      ? [
+          { x: center.x, y: center.y + 60 },
+          { x: center.x - 7, y: center.y - 60 },
+          { x: center.x + 7, y: center.y - 60 },
+        ]
+      : [
+          { x: center.x - 60, y: center.y },
+          { x: center.x + 60, y: center.y - 7 },
+          { x: center.x + 60, y: center.y + 7 },
+        ];
+    const before = topOnScreen();
+    grip.forEach((p, i) => fire("pointerdown", 141 + i, p.x, p.y));
+    for (let step = 1; step <= 10; step++) {
+      grip.forEach((p, i) => {
+        const t = turn(p, 3.6 * step);
+        fire("pointermove", 141 + i, t.x, t.y);
+      });
+      await wait(8);
+    }
+    const pop = document.querySelector(".twist-pop")?.textContent ?? "";
+    const after = topOnScreen();
+    const q = [...object.transform.rotation];
+    grip.forEach((p, i) => fire("pointerup", 141 + i, p.x, p.y));
+    await wait(40);
+    const len = Math.hypot(q[0], q[1], q[2]);
+    return {
+      pop,
+      angle: (2 * Math.atan2(len, q[3]) * 180) / Math.PI,
+      // どの軸が立っているか
+      axis: len < 1e-9 ? "-" : ["X", "Y", "Z"][q.findIndex((v, i) => i < 3 && Math.abs(v) > 0.99 * len)] ?? "?",
+      down: after.y - before.y,
+    };
+  };
+
+  app.state.mods.alt = "on";
+  const vertical = await twist(true);
+  const horizontal = await twist(false);
+  app.state.mods.alt = "off";
+  const plain = await twist(true);
+
+  app.state.select(null);
+  app.state.doc.objects.length = 0;
+  app.viewport.syncAll();
+  app.setView("persp");
+  app.refresh();
+  return { vertical, horizontal, plain };
+}, ON_MESH);
+check(
+  "ALT + ひねりで手前 / 奥へ回る",
+  altTwist.vertical.axis === "X" &&
+    altTwist.vertical.angle > 10 &&
+    altTwist.vertical.down > 2 &&
+    altTwist.vertical.pop.includes("X") &&
+    altTwist.horizontal.axis === "Y" &&
+    altTwist.horizontal.angle > 10 &&
+    altTwist.plain.axis === "Z",
+  `ALT 縦 ${altTwist.vertical.axis} ${altTwist.vertical.angle.toFixed(0)}°（上面が下へ ${altTwist.vertical.down.toFixed(0)}px）/ ` +
+    `ALT 横 ${altTwist.horizontal.axis} ${altTwist.horizontal.angle.toFixed(0)}° / ALT なし ${altTwist.plain.axis}`,
+);
+
 /* 43z-14. アトリビュート欄がアウトライナの上に出る（`25` の T3） */
 const attrs = await page.evaluate(async () => {
   const app = window.macbeth;

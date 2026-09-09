@@ -710,6 +710,63 @@ const scenes = {
     await new Promise((r) => setTimeout(r, 200));
   },
 
+  /** `26` の T3: ALT + ひねり。指を縦に並べると手前へ倒れる。 */
+  "26-t3-alt-twist": async () => {
+    const app = window.macbeth;
+    app.state.doc.objects.length = 0;
+    const object = app.state.doc.addObject("cube");
+    app.viewport.syncAll();
+    app.setCompMode("object");
+    app.state.select(object);
+    app.viewport.frameSelected();
+    app.viewport.cam.distance = 6;
+    app.viewport.applyCamera();
+    app.setDisplay("shadedWire");
+    // ALT のラッチを入れる（クラスターの ALT と同じ）
+    app.state.mods.alt = "on";
+    app.refresh();
+    await new Promise((r) => setTimeout(r, 120));
+
+    const pane = document.getElementById("pane3d").getBoundingClientRect();
+    const center = { x: pane.left + pane.width / 2, y: pane.top + pane.height / 2 };
+    const canvas = document.getElementById("gl");
+    const fire = (type, id, x, y) =>
+      canvas.dispatchEvent(
+        new PointerEvent(type, {
+          pointerId: id,
+          pointerType: "touch",
+          isPrimary: id === 141,
+          clientX: x,
+          clientY: y,
+          buttons: type === "pointerup" ? 0 : 1,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    // 指を縦に並べる（親指が下、対が上）
+    const grip = [
+      { x: center.x, y: center.y + 70 },
+      { x: center.x - 8, y: center.y - 70 },
+      { x: center.x + 8, y: center.y - 70 },
+    ];
+    const turn = (p, deg) => {
+      const a = (deg * Math.PI) / 180;
+      const dx = p.x - center.x;
+      const dy = p.y - center.y;
+      return { x: center.x + dx * Math.cos(a) - dy * Math.sin(a), y: center.y + dx * Math.sin(a) + dy * Math.cos(a) };
+    };
+    grip.forEach((p, i) => fire("pointerdown", 141 + i, p.x, p.y));
+    for (let step = 1; step <= 12; step++) {
+      grip.forEach((p, i) => {
+        const t = turn(p, 4 * step);
+        fire("pointermove", 141 + i, t.x, t.y);
+      });
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    // 指は離さない（札を出したまま撮る）
+    await new Promise((r) => setTimeout(r, 200));
+  },
+
   /** `23` の T4: ブリッジの分割数 3。上下の縁の間に輪が 2 本入る。 */
   "23-t4-bridge": async () => {
     const app = window.macbeth;
