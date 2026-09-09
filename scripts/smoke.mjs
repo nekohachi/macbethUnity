@@ -655,6 +655,107 @@ check(
   `小さい立方体 ${brushFit.forSmall.toFixed(3)} → 20 倍の立方体 ${brushFit.forBig.toFixed(3)}`,
 );
 
+/* 17i. ストロークで盛り上がり、取り消すと戻る（`33` の T3） */
+const strokeCheck = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const core = window.macbethCore;
+  app.setMode("model");
+  const keep = [...app.state.doc.objects];
+  // frameSelected でカメラを動かすので、あとで戻せるように控える
+  // （あとの項目は画面の決まった場所をクリックするので、視点が変わると外れる）
+  const camBefore = app.viewport.saveLayout();
+  // ほかのものが手前にあるとレイがそちらに当たるので、いったん場面を空にする
+  app.state.doc.objects.length = 0;
+  const ball = app.state.doc.addMesh(
+    core.PRIMITIVES.sphere.build({ ...core.defaultParams("sphere"), sdAxis: 24, sdHeight: 16 }),
+    "Sculpt",
+  );
+  app.viewport.syncAll();
+  app.state.select(ball);
+  app.setMode("sculpt");
+  await app.levelForTest("add");
+  await app.levelForTest("add");
+  app.viewport.frameSelected();
+  app.refresh();
+  await new Promise((r) => setTimeout(r, 120));
+
+  const paneRect = document.getElementById("pane3d").getBoundingClientRect();
+  const probe = app.strokeForTest({ x: paneRect.width / 2, y: paneRect.height / 2 });
+  const level0Before = ball.mesh.positions.slice();
+  const shownBefore = ball.shown(app.state.shownLevel(ball)).positions.slice();
+
+  // 画面の真ん中をなぞる
+  const pane = document.getElementById("pane3d").getBoundingClientRect();
+  const gl = document.getElementById("gl");
+  const cx = pane.left + pane.width / 2;
+  const cy = pane.top + pane.height / 2;
+  const ev = (type, x, y) =>
+    new PointerEvent(type, {
+      pointerId: 77, pointerType: "pen", bubbles: true, cancelable: true,
+      clientX: x, clientY: y, pressure: 0.8, buttons: type === "pointerup" ? 0 : 1,
+    });
+  gl.dispatchEvent(ev("pointerdown", cx, cy));
+  for (let i = 1; i <= 8; i++) gl.dispatchEvent(ev("pointermove", cx + i * 2, cy));
+  gl.dispatchEvent(ev("pointerup", cx + 16, cy));
+  await new Promise((r) => setTimeout(r, 60));
+
+  const shownAfter = ball.shown(app.state.shownLevel(ball)).positions;
+  let movedCount = 0;
+  let biggest = 0;
+  for (let i = 0; i < shownBefore.length; i += 3) {
+    const d = Math.hypot(shownAfter[i] - shownBefore[i], shownAfter[i+1] - shownBefore[i+1], shownAfter[i+2] - shownBefore[i+2]);
+    if (d > 1e-6) movedCount++;
+    biggest = Math.max(biggest, d);
+  }
+  // レベル 0 は 1 つも動いていない
+  let level0Moved = 0;
+  for (let i = 0; i < level0Before.length; i++) {
+    if (Math.abs(ball.mesh.positions[i] - level0Before[i]) > 1e-9) level0Moved++;
+  }
+  const entry = app.history.lastEntry();
+
+  app.history.undo();
+  const undone = ball.shown(app.state.shownLevel(ball)).positions;
+  let backOff = 0;
+  for (let i = 0; i < shownBefore.length; i++) backOff = Math.max(backOff, Math.abs(undone[i] - shownBefore[i]));
+
+  app.history.redo();
+  const redone = ball.shown(app.state.shownLevel(ball)).positions;
+  let redoOff = 0;
+  for (let i = 0; i < shownAfter.length; i++) redoOff = Math.max(redoOff, Math.abs(redone[i] - shownAfter[i]));
+
+  // 片づけ
+  app.setMode("model");
+  app.state.doc.objects.length = 0;
+  app.state.doc.objects.push(...keep);
+  app.viewport.syncAll();
+  app.viewport.restoreLayout(camBefore);
+  app.state.select(keep[0] ?? null);
+  app.setCompMode("object");
+  app.state.comp.clear();
+  app.history.clear();
+  app.refresh();
+  return { probe, level: ball.activeLevel, movedCount, biggest, level0Moved, entry, backOff, redoOff, hint: document.getElementById("hudHint").textContent };
+});
+check(
+  "ストロークで盛り上がり、レベル 0 は動かず、取り消すと戻る",
+  strokeCheck.movedCount > 5 &&
+    strokeCheck.biggest > 1e-4 &&
+    strokeCheck.level0Moved === 0 &&
+    strokeCheck.backOff < 1e-6 &&
+    strokeCheck.redoOff < 1e-6,
+  `${strokeCheck.movedCount} 頂点が動く（最大 ${strokeCheck.biggest.toFixed(4)}）/ レベル 0 は ${strokeCheck.level0Moved} 頂点 / ` +
+    `取り消しで戻る ${strokeCheck.backOff < 1e-6} / やり直せる ${strokeCheck.redoOff < 1e-6} / ` +
+    `段 ${strokeCheck.level} · 彫れる ${strokeCheck.probe.canSculpt} · 当たり ${strokeCheck.probe.hit ? "あり" : "なし"}`,
+);
+
+/* 17j. ストロークの履歴は差分で小さい（`33` の T3） */
+check(
+  "ストロークの履歴は差分",
+  strokeCheck.entry?.kind === "sculpt" && strokeCheck.entry.bytes < 10240,
+  `${strokeCheck.entry?.kind} ${strokeCheck.entry?.bytes} バイト`,
+);
+
 /* 18. 縦持ちでもビューポートが縦一杯（右のドック列は空なので場所を取らない。`24` の T1） */
 await page.setViewportSize({ width: 744, height: 1133 }); // iPad mini の縦
 await page.waitForTimeout(200);

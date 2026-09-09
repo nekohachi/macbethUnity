@@ -66,4 +66,6 @@ export const MAT = {
   cutLine: new LineBasicMaterial({ color: 0xffe14a }),
   cutPt: new PointsMaterial({ color: 0xffe14a, size: 9, sizeAttenuation: false }),
   pivot: new LineBasicMaterial({ color: 0xf2d97a }),
+  /** 筆の円（`33` の T3）。面に埋もれないよう深度を見ない。 */
+  brush: new LineBasicMaterial({ color: 0x7fd4ff, depthTest: false, transparent: true, opacity: 0.9 }),
 };

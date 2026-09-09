@@ -451,6 +451,23 @@ export class Multires {
     if (any && level < stack.length) this.propagate(level, cache.mesh, verts);
   }
 
+  /**
+   * デルタを**外から書き換えたあと**、その頂点の形を作り直す（`33` の T3）。
+   *
+   * `sculptAt` の逆向き。履歴を戻す / やり直すときに使う（デルタを書き戻してから
+   * これを呼ぶと、形がその通りになる）。上に段があれば伝える。
+   */
+  rebuildDetail(level: number, verts: Iterable<number>): void {
+    if (level < 1 || level > this.deltas.length) return;
+    const stack = this.ensure();
+    const cache = stack[level - 1];
+    const delta = this.deltas[level - 1];
+    if (!delta) return;
+    const frames = (cache.frames ??= cache.framePlan.build(cache.smooth));
+    writeDetail(cache.mesh, cache.smooth, frames, delta, verts);
+    if (level < stack.length) this.propagate(level, cache.mesh, verts);
+  }
+
   /** 上位レベルを捨てる。トポロジを変える前に呼ぶ。 */
   dropAbove(level: number): void {
     this.deltas.length = Math.max(0, level);

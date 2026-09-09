@@ -952,11 +952,60 @@ export class Viewport {
    */
   seamProvider: (() => Set<string> | null) | null = null;
 
+  /**
+   * 筆の円を出す（`33` の T3）。**これが無いとサイズが分からない。**
+   *
+   * 面に沿わせず、当たった点の法線に垂直な平らな輪にする。彫っている最中に
+   * 面へ貼り直すと重いし、輪が歪んで太さが読み取れなくなる。
+   */
+  showBrushCursor(o: SceneObject, at: readonly [number, number, number], radius: number): void {
+    const mesh = this.meshOf(o);
+    // 当たった点の近くの向き。細かく合わせる必要はないので、
+    // いちばん近い頂点の法線ではなく、点から中心へのおおまかな向きで足りる
+    const normal = nearestNormal(mesh, at);
+    const [ux, uy, uz] = perpendicular(normal);
+    const vx = normal[1] * uz - normal[2] * uy;
+    const vy = normal[2] * ux - normal[0] * uz;
+    const vz = normal[0] * uy - normal[1] * ux;
+    const steps = 48;
+    const pts: number[] = [];
+    for (let i = 0; i <= steps; i++) {
+      const a = (i / steps) * Math.PI * 2;
+      const c = Math.cos(a) * radius;
+      const s = Math.sin(a) * radius;
+      pts.push(at[0] + ux * c + vx * s, at[1] + uy * c + vy * s, at[2] + uz * c + vz * s);
+    }
+    if (!this.brushCursor) {
+      this.brushCursor = new Line(positionGeometry(pts), MAT.brush);
+      this.brushCursor.renderOrder = 6;
+      this.overlay.add(this.brushCursor);
+    } else {
+      this.brushCursor.geometry.dispose();
+      this.brushCursor.geometry = positionGeometry(pts);
+      if (!this.brushCursor.parent) this.overlay.add(this.brushCursor);
+    }
+    applyTransform(this.brushCursor, o.transform);
+    this.brushCursor.visible = true;
+  }
+
+  /** 筆の円を消す。 */
+  hideBrushCursor(): void {
+    if (this.brushCursor) this.brushCursor.visible = false;
+  }
+
+  private brushCursor: Line | null = null;
+
   rebuildOverlay(): void {
     for (const c of this.overlay.children.slice()) {
+      // 筆の円は毎コマ作り直さない。ここでは外すだけで捨てない
+      if (c === this.brushCursor) {
+        this.overlay.remove(c);
+        continue;
+      }
       this.overlay.remove(c);
       disposeObject3D(c);
     }
+    if (this.brushCursor?.visible) this.overlay.add(this.brushCursor);
     const o = this.state.selected;
     const view = o ? this.views.get(o.id) : undefined;
     if (!o || !view) return;
@@ -1090,4 +1139,39 @@ export class Viewport {
   stop(): void {
     cancelAnimationFrame(this.frame);
   }
+}
+
+/** 点にいちばん近い頂点の、おおまかな法線（筆の円の向き。`33` の T3）。 */
+function nearestNormal(mesh: Mesh, at: readonly [number, number, number]): [number, number, number] {
+  let best = -1;
+  let bestD = Infinity;
+  const p = mesh.positions;
+  for (let v = 0; v < mesh.vertexCount; v++) {
+    const d = (p[v * 3] - at[0]) ** 2 + (p[v * 3 + 1] - at[1]) ** 2 + (p[v * 3 + 2] - at[2]) ** 2;
+    if (d < bestD) {
+      bestD = d;
+      best = v;
+    }
+  }
+  if (best < 0) return [0, 1, 0];
+  // その頂点に触る面の法線の和。面を引くのは高いので、
+  // 位置そのものを向きの当てにする（原点中心の形なら十分。歪んでも輪が少し傾くだけ）
+  const len = Math.hypot(p[best * 3], p[best * 3 + 1], p[best * 3 + 2]);
+  if (len < 1e-9) return [0, 1, 0];
+  return [p[best * 3] / len, p[best * 3 + 1] / len, p[best * 3 + 2] / len];
+}
+
+/** その向きに垂直な単位ベクトルを 1 本。 */
+function perpendicular(n: readonly [number, number, number]): [number, number, number] {
+  const ax = Math.abs(n[0]) < 0.9 ? 1 : 0;
+  const ux = n[1] * (ax ? 0 : 1) - n[2] * 0;
+  void ux;
+  // 軸に平行でないほうの基準軸と外積を取る
+  const rx = ax ? 1 : 0;
+  const ry = ax ? 0 : 1;
+  const cx = n[1] * 0 - n[2] * ry;
+  const cy = n[2] * rx - n[0] * 0;
+  const cz = n[0] * ry - n[1] * rx;
+  const len = Math.hypot(cx, cy, cz) || 1;
+  return [cx / len, cy / len, cz / len];
 }

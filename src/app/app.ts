@@ -60,7 +60,9 @@ import {
   type GestureHandlers,
 } from "./input/gestures.js";
 import { Picker, type ScreenPoint } from "./render/picking.js";
+import { StrokeDriver, strokeHint } from "./stroke.js";
 import { asMb, canAddLevel, estimateBytes, facesAt, fitBrushRadius, levelCount, levelsOf, warmUpLevels } from "./levels.js";
+import { pressureOf } from "./input/gestures.js";
 import { forgetStamps, stampsFor } from "./stamps.js";
 import { STANDARD_VIEWS, Viewport, type LayoutKind, type ViewName } from "./render/viewport.js";
 import {
@@ -74,6 +76,7 @@ import {
 } from "./render/manipulator.js";
 import {
   AppState,
+  brushAt,
   type CompMode,
   type Display,
   type EditKind,
@@ -389,6 +392,21 @@ export class App {
   }
 
   /**
+   * 筆の円を出す（`33` の T3）。**これが無いとサイズが分からない。**
+   * 当たっていなければ消す。
+   */
+  private showBrushCursor(p: ScreenPoint): void {
+    const o = this.state.selected;
+    const at = this.stroke.hitLocal(p);
+    if (!o || !at) {
+      this.viewport.hideBrushCursor();
+      return;
+    }
+    const { radius } = brushAt(this.state.brush, 1);
+    this.viewport.showBrushCursor(o, at, radius);
+  }
+
+  /**
    * ブラシの半径を、選んでいるオブジェクトの大きさに合わせる（`33` の T1）。
    *
    * 半径はワールド単位なので、初期値をオブジェクトから決めないと、小さい像では
@@ -405,6 +423,11 @@ export class App {
 
   /** ブラシの半径を合わせ済みのオブジェクト。 */
   private brushFittedFor: string | null = null;
+
+  /** 通し確認からストロークの様子を見る（`33` の T3）。 */
+  strokeForTest(p: ScreenPoint): { canSculpt: boolean; hit: [number, number, number] | null; active: boolean } {
+    return { canSculpt: this.stroke.canSculpt(), hit: this.stroke.hitLocal(p), active: this.stroke.active };
+  }
 
   /** 通し確認から指紋を見る（`32` の T4。S3 のベイクが使う入口）。 */
   stampsForTest(): { topology: string; base: string; high: string; uv: string } | null {
@@ -508,6 +531,8 @@ export class App {
    */
   private preserve: { object: SceneObject; before: PreserveBefore; verts: number[] } | null = null;
   private raycaster = new Raycaster();
+  /** ブラシのストローク（`33` の T3）。 */
+  private stroke!: StrokeDriver;
 
   constructor() {
     const vp = byId("pane3d");
@@ -520,6 +545,8 @@ export class App {
       const o = this.state.doc.find(id);
       return o ? this.viewport.viewOf(o) : undefined;
     });
+
+    this.stroke = new StrokeDriver(this.state, this.viewport, this.picker, this.history);
 
     this.multicut = new MultiCut(this.state, this.picker, this.viewport.preview);
     this.preselect = new Preselect(this.state, this.picker, this.viewport.preselect);
@@ -559,6 +586,12 @@ export class App {
     this.history.onChange = () => {
       this.updateHistoryButtons();
       this.autosave.schedule();
+    };
+    // ストロークを戻した / やり直したとき。デルタは書き戻されているので、
+    // その頂点の形を作り直す（段は生きたまま）
+    this.history.onSculptUndo = (o, level, verts) => {
+      levelsOf(o).rebuildDetail(level, verts);
+      this.viewport.refreshPositions(o);
     };
     this.autosave.onSaved = (at) =>
       this.hud.setSaveNote(`自動保存 ${new Date(at).toLocaleTimeString("ja-JP", { timeStyle: "short" })}`);
@@ -692,10 +725,16 @@ export class App {
       toolMove: (p, e) => this.moveTool(p, e),
       toolUp: (p, e, moved) => this.finishTool(p, e, moved),
       hover: (p, e) => {
+        // スカルプトは筆の円だけ。予測線もプリセレクションも出さない
+        if (this.state.mode === "sculpt") {
+          this.showBrushCursor(p);
+          return;
+        }
         this.updateCutPreview(p, e);
         this.updatePreselect(p, e);
       },
       hoverLeave: () => {
+        this.viewport.hideBrushCursor();
         this.multicut.clear();
         this.preselect.clear();
         this.weldTarget = null;
@@ -1187,6 +1226,12 @@ export class App {
   }
 
   private startTool(p: ScreenPoint, e: PointerEvent): void {
+    // スカルプトはペン / 1 本指でそのまま彫る（`33` の T3）。
+    // 当たらなければ何も始めない（カメラにも化けさせない）
+    if (this.state.mode === "sculpt") {
+      if (!this.stroke.begin(p, pressureOf(e))) this.hud.toast(strokeHint(this.state));
+      return;
+    }
     // マルチカットは押している間ずっと予測線、離した位置で確定する
     if (this.state.tool === "multicut") {
       this.updateCutPreview(p, e);
@@ -1627,6 +1672,12 @@ export class App {
   }
 
   private moveTool(p: ScreenPoint, e: PointerEvent): void {
+    if (this.stroke.active) {
+      this.stroke.move(p, pressureOf(e));
+      this.showBrushCursor(p);
+      return;
+    }
+    if (this.state.mode === "sculpt") return;
     if (this.state.tool === "multicut") return this.updateCutPreview(p, e);
     if (this.state.tool === "bevel") return this.dragBevel(p);
     if (this.marquee) return this.updateMarquee(p);
@@ -1809,6 +1860,12 @@ export class App {
   }
 
   private finishTool(p: ScreenPoint, e: PointerEvent, moved: boolean): void {
+    if (this.stroke.active) {
+      this.stroke.end();
+      this.refresh();
+      return;
+    }
+    if (this.state.mode === "sculpt") return;
     if (this.state.tool === "multicut") {
       this.doMultiCut();
       return;

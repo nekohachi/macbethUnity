@@ -96,7 +96,7 @@ export class Picker {
     const stamp = this.facingStamp(view);
     const cached = this.facingCache;
     if (cached?.view === view && sameStamp(cached.stamp, stamp)) return cached.front;
-    const mesh = view.object.mesh;
+    const mesh = this.viewport.meshOf(view.object);
     const normalMatrix = new Matrix3().getNormalMatrix(view.group.matrixWorld);
     const normals = mesh.faceNormals();
     const front = new Uint8Array(mesh.faceCount);
@@ -133,7 +133,7 @@ export class Picker {
     view.group.updateMatrixWorld();
     const camera = this.viewport.camera;
     camera.updateMatrixWorld();
-    const mesh = view.object.mesh;
+    const mesh = this.viewport.meshOf(view.object);
     const p = mesh.positions;
     const last = p.length - 3;
     return [
@@ -151,7 +151,7 @@ export class Picker {
   }
 
   private edgeFaces(view: ObjectView): Map<string, number[]> {
-    const mesh = view.object.mesh;
+    const mesh = this.viewport.meshOf(view.object);
     const cached = this.edgeFaceCache;
     if (cached?.view === view && cached.mesh === mesh) return cached.map;
     const map = mesh.edgeFaceMap();
@@ -226,7 +226,7 @@ export class Picker {
   }
 
   projectVertex(view: ObjectView, vi: number): Screened {
-    const p = view.object.mesh.positions;
+    const p = this.viewport.meshOf(view.object).positions;
     return this.project(view, p[vi * 3], p[vi * 3 + 1], p[vi * 3 + 2]);
   }
 
@@ -256,7 +256,7 @@ export class Picker {
       const inv = invMatrix.copy(view.group.matrixWorld).invert();
       const o = rayOrigin.copy(raycaster.ray.origin).applyMatrix4(inv);
       const d = rayDir.copy(raycaster.ray.direction).transformDirection(inv);
-      const mesh = view.object.mesh;
+      const mesh = this.viewport.meshOf(view.object);
       const hit = raycastBvh(this.viewport.bvhOf(view), mesh.positions, view.tri, [o.x, o.y, o.z], [d.x, d.y, d.z]);
       if (!hit) continue;
       const face = view.tri.triToFace[hit.tri] ?? 0;
@@ -277,7 +277,7 @@ export class Picker {
    * カメラベース選択がオンなら、隠れている頂点は飛ばして次に近いものを見る。
    */
   pickVertex(view: ObjectView, p: ScreenPoint, radius: number, exclude = -1): number {
-    const faces = this.cameraBased() ? view.object.mesh.vertexFaces() : EMPTY_FACES;
+    const faces = this.cameraBased() ? this.viewport.meshOf(view.object).vertexFaces() : EMPTY_FACES;
     let best = -1;
     let bestD = radius * radius;
     for (const i of this.vertexCandidates(view, p, radius)) {
@@ -302,7 +302,7 @@ export class Picker {
    * — 縁の頂点やシルエットの外を拾えなくなるため。
    */
   private vertexCandidates(view: ObjectView, p: ScreenPoint, radius: number): Iterable<number> {
-    const mesh = view.object.mesh;
+    const mesh = this.viewport.meshOf(view.object);
     // 小さいメッシュは総当たりのほうが速い（木を引く手間のほうが大きい）
     if (mesh.vertexCount < 4000) return countUp(mesh.vertexCount);
     const hit = this.pickSurface(p);
@@ -383,8 +383,8 @@ export class Picker {
     const lo = { x: Math.min(x0, x1), y: Math.min(y0, y1) };
     const hi = { x: Math.max(x0, x1), y: Math.max(y0, y1) };
     const out: number[] = [];
-    const faces = this.cameraBased() ? view.object.mesh.vertexFaces() : EMPTY_FACES;
-    const n = view.object.mesh.vertexCount;
+    const faces = this.cameraBased() ? this.viewport.meshOf(view.object).vertexFaces() : EMPTY_FACES;
+    const n = this.viewport.meshOf(view.object).vertexCount;
     for (let i = 0; i < n; i++) {
       const s = this.projectVertex(view, i);
       if (s.z > 1 || s.x < lo.x || s.x > hi.x || s.y < lo.y || s.y > hi.y) continue;

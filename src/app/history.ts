@@ -57,6 +57,23 @@ interface PositionDiff {
   uvAfter?: Float32Array;
 }
 
+/**
+ * ストロークの差分（`33` の T3）。
+ *
+ * ストロークは**レベル 0 の座標を変えない**（動かすのはレベル L のデルタ）。
+ * だから `PositionDiff` では持てない。全複製にすると 1 本で数 MB 積むので、
+ * 触った頂点のデルタだけを前後で持つ。
+ */
+interface SculptDiff {
+  ref: SceneObject;
+  /** 彫った段。1 以上。 */
+  level: number;
+  verts: Uint32Array;
+  /** 3 × verts.length。接空間のデルタ。 */
+  before: Float32Array;
+  after: Float32Array;
+}
+
 /** トランスフォームだけの差分。オブジェクトモードのドラッグと 3 本指。 */
 interface TransformDiff {
   ref: SceneObject;
@@ -74,12 +91,21 @@ interface SelectionSnap {
 type Entry =
   | { kind: "full"; label: string; snap: Snapshot }
   | { kind: "positions"; label: string; diff: PositionDiff; sel: SelectionSnap }
-  | { kind: "transform"; label: string; diff: TransformDiff; sel: SelectionSnap };
+  | { kind: "transform"; label: string; diff: TransformDiff; sel: SelectionSnap }
+  | { kind: "sculpt"; label: string; diff: SculptDiff; sel: SelectionSnap };
 
 /** 積む前の控え。`beginPositions` / `beginTransform` からコミットまでのあいだ。 */
 type Pending =
   | { kind: "positions"; ref: SceneObject; verts: Uint32Array; before: Float32Array; uvCorners?: Uint32Array; uvBefore?: Float32Array; sel: SelectionSnap }
-  | { kind: "transform"; ref: SceneObject; before: Transform; sel: SelectionSnap };
+  | { kind: "transform"; ref: SceneObject; before: Transform; sel: SelectionSnap }
+  | {
+      kind: "sculpt";
+      ref: SceneObject;
+      level: number;
+      /** ストローク中に触った頂点。コマごとに足していく。 */
+      touched: Map<number, [number, number, number]>;
+      sel: SelectionSnap;
+    };
 
 const LIMIT = 40;
 
@@ -90,6 +116,11 @@ export class History {
   private pending: Pending | null = null;
   /** 履歴が動いたときに呼ばれる。ボタンの有効・無効と自動保存に使う。 */
   onChange: (() => void) | null = null;
+  /**
+   * ストロークを戻した / やり直したときに呼ばれる（`33` の T3）。
+   * デルタは書き戻したので、呼ばれた側は**その頂点の形を作り直す**。
+   */
+  onSculptUndo: ((o: SceneObject, level: number, verts: Uint32Array) => void) | null = null;
 
   /**
    * 何回書き換わったか（`32` の T4）。commit / undo / redo のたびに 1 つ増える。
@@ -203,6 +234,30 @@ export class History {
     this.pending = { kind: "transform", ref: o, before: cloneTransform(o.transform), sel: this.selectionSnap() };
   }
 
+  /**
+   * ストロークを始める（`33` の T3）。**ストローク 1 本で履歴 1 段。**
+   *
+   * 触った頂点は `trackSculpt` でコマごとに足していく。控えるのは
+   * **その頂点を初めて触ったときのデルタ**なので、同じ頂点を何度なぞっても
+   * 「ストロークの前」の値が残る。
+   */
+  beginSculpt(o: SceneObject, level: number): void {
+    this.pending = { kind: "sculpt", ref: o, level, touched: new Map(), sel: this.selectionSnap() };
+  }
+
+  /**
+   * ストロークの 1 コマで触った頂点を控える。**動かす前に**呼ぶこと
+   * （まだ知らない頂点だけ、そのときのデルタを覚える）。
+   */
+  trackSculpt(verts: Iterable<number>, delta: Float32Array): void {
+    const p = this.pending;
+    if (p?.kind !== "sculpt") return;
+    for (const v of verts) {
+      if (p.touched.has(v)) continue;
+      p.touched.set(v, [delta[v * 3], delta[v * 3 + 1], delta[v * 3 + 2]]);
+    }
+  }
+
   /** 控えを捨てる（何も起きなかった / 別の道へ行った）。 */
   abortPending(): void {
     this.pending = null;
@@ -225,6 +280,27 @@ export class History {
       const after = cloneTransform(p.ref.transform);
       if (sameTransform(p.before, after)) return false;
       this.push2({ kind: "transform", label, diff: { ref: p.ref, before: p.before, after }, sel: p.sel });
+      return true;
+    }
+    if (p.kind === "sculpt") {
+      const delta = deltaOf(p.ref, p.level);
+      if (!delta || !p.touched.size) return false;
+      const verts = new Uint32Array(p.touched.size);
+      const before = new Float32Array(p.touched.size * 3);
+      const after = new Float32Array(p.touched.size * 3);
+      let i = 0;
+      let moved = false;
+      for (const [v, was] of p.touched) {
+        verts[i] = v;
+        for (let k = 0; k < 3; k++) {
+          before[i * 3 + k] = was[k];
+          after[i * 3 + k] = delta[v * 3 + k];
+          if (was[k] !== delta[v * 3 + k]) moved = true;
+        }
+        i++;
+      }
+      if (!moved) return false;
+      this.push2({ kind: "sculpt", label, diff: { ref: p.ref, level: p.level, verts, before, after }, sel: p.sel });
       return true;
     }
     const after = new Float32Array(p.verts.length * 3);
@@ -272,6 +348,8 @@ export class History {
       p.ref.transform = after;
       return snap;
     }
+    // ストロークの途中でトポロジは変わらないので、ここへは来ない
+    if (p.kind === "sculpt") return this.snapshot();
     const after = new Float32Array(p.verts.length * 3);
     for (let i = 0; i < p.verts.length; i++) {
       const v = p.verts[i];
@@ -331,6 +409,21 @@ export class History {
     if (e.kind === "full") return;
     if (e.kind === "transform") {
       e.diff.ref.transform = cloneTransform(e.diff[which]);
+    } else if (e.kind === "sculpt") {
+      const d = e.diff;
+      const delta = deltaOf(d.ref, d.level);
+      if (delta) {
+        const from = d[which];
+        for (let i = 0; i < d.verts.length; i++) {
+          const v = d.verts[i];
+          if (v * 3 + 2 >= delta.length) continue;
+          delta[v * 3] = from[i * 3];
+          delta[v * 3 + 1] = from[i * 3 + 1];
+          delta[v * 3 + 2] = from[i * 3 + 2];
+        }
+        // 形を作り直す。段は生きたままでよい（デルタを書き換えただけ）
+        this.onSculptUndo?.(d.ref, d.level, d.verts);
+      }
     } else {
       const d = e.diff;
       writePositions(d.ref, d.verts, d[which]);
@@ -425,8 +518,16 @@ function sameTransform(a: Transform, b: Transform): boolean {
 }
 
 /** その段が抱えている大きさ（おおよそのバイト数）。通し確認で見る。 */
+/** そのオブジェクトのレベル L のデルタ。無ければ null。 */
+function deltaOf(o: SceneObject, level: number): Float32Array | null {
+  return o.multires.find((m) => m.level === level)?.delta ?? null;
+}
+
 function entryBytes(e: Entry): number {
   if (e.kind === "transform") return 2 * 10 * 8;
+  if (e.kind === "sculpt") {
+    return e.diff.verts.byteLength + e.diff.before.byteLength + e.diff.after.byteLength;
+  }
   if (e.kind === "positions") {
     const d = e.diff;
     return (
