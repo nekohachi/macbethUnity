@@ -342,6 +342,8 @@ export class App {
   private paramSnapshot: ReturnType<History["snapshot"]> | null = null;
   /** スライダーを指で掴んでいる最中か。掴んでいる間はパネルを描き直さない。 */
   private sliderDrag = false;
+  /** 「拡張」ゲージを引き始めたときの選択（`24` の T3）。 */
+  private growBase: number[] | null = null;
   private drag: DragState | null = null;
   /**
    * ペンと指で掴んだが、まだ動きが確かでないもの（docs/17 の 3 章）。
@@ -465,6 +467,26 @@ export class App {
     this.buildCluster();
     this.bindKeyboard();
     this.bindTopBar();
+
+    // 「拡張」ゲージ（`24` の T3）。控えた選択から段数ぶん広げ直す
+    this.state.growHooks = {
+      begin: () => {
+        this.growBase = [...this.state.comp];
+      },
+      drag: (n) => {
+        if (!this.growBase) return;
+        const r = this.selector.growOrShrinkFrom(this.growBase, n);
+        if (!r.changed) return;
+        this.viewport.applyDisplayAll();
+        this.viewport.rebuildOverlay();
+        this.refreshManipulator();
+        this.hud.refreshStats();
+        this.pushSelectionToUv();
+      },
+      end: () => {
+        this.growBase = null;
+      },
+    };
 
     // スライダーを掴んでいる間はパネルを描き直さない（`refresh` が見る）
     document.addEventListener(
@@ -3386,6 +3408,7 @@ export class App {
       tool: this.state.tool,
       selected: this.state.selected,
       soft: this.state.soft,
+      canGrow: this.state.compMode !== "object" && this.state.comp.size > 0,
       cut: this.state.cut,
       bevel: this.state.bevel,
       bevelActive: this.bevel.active,
@@ -3540,6 +3563,13 @@ export class App {
         if (!this.paramSnapshot) return;
         this.history.commit(label, this.paramSnapshot);
         this.paramSnapshot = null;
+      },
+      onGrow: (phase, n) => {
+        const hooks = this.state.growHooks;
+        if (!hooks) return;
+        if (phase === "begin") hooks.begin();
+        else if (phase === "drag") hooks.drag(n);
+        else hooks.end();
       },
       onSoftChange: (which, value) => {
         this.state.soft[which] = value;
@@ -3902,10 +3932,19 @@ export class App {
   /* ---- ゲージと修飾キー ------------------------------------------------ */
 
   private buildGauges(): void {
-    const onInput = () => this.viewport.rebuildOverlay();
+    const onInput = () => {
+      this.viewport.rebuildOverlay();
+      // 強度が 0 を跨ぐと第 2 ゲージの意味が変わる（`24` の T3）
+      for (const g of this.gauges) g.paint();
+    };
+    const onCommit = (which: "g1" | "g2") => {
+      const d = this.state.gauge(which);
+      if (d.kind === "spring" && !d.enabled(this.state)) this.hud.toast("コンポーネントを選んでください");
+      this.refresh();
+    };
     this.gauges = [
-      new Gauge(this.state, "gauge1", "g1", "g1lbl", "g1val", onInput, () => this.refresh()),
-      new Gauge(this.state, "gauge2", "g2", "g2lbl", "g2val", onInput, () => this.refresh()),
+      new Gauge(this.state, "gauge1", "g1", "g1lbl", "g1val", onInput, onCommit),
+      new Gauge(this.state, "gauge2", "g2", "g2lbl", "g2val", onInput, onCommit),
     ];
   }
 

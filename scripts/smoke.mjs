@@ -4144,6 +4144,89 @@ check(
   `SHF で +${outlinerMulti.afterShift} / なぞって ${outlinerMulti.picked} 個（光る行 ${outlinerMulti.litRows}）→ 結合で ${outlinerMulti.afterCombine} 個`,
 );
 
+/* 43z-6. レールの第 2 ゲージが範囲と拡張で切り替わる（`24` の T3） */
+const growGauge = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const objectsBefore = app.state.doc.objects.length;
+  const object = app.state.doc.addObject("sphere");
+  app.viewport.syncAll();
+  app.state.select(object);
+  app.setCompMode("face");
+  app.state.soft.strength = 0;
+  app.refresh();
+  await new Promise((r) => setTimeout(r, 60));
+
+  const label = () => document.getElementById("g2lbl").textContent;
+  const value = () => document.getElementById("g2val").textContent;
+  const offLabel = label();
+
+  // 面を 1 つ選んでからゲージを上へ引く
+  app.state.comp.clear();
+  app.state.comp.add(0);
+  app.refresh();
+  const before = app.state.comp.size;
+
+  const g = document.getElementById("gauge2");
+  const r = g.getBoundingClientRect();
+  const at = (t) => ({ clientX: r.x + r.width / 2, clientY: r.y + r.height * (1 - t) });
+  const fire = (type, t) =>
+    g.dispatchEvent(new PointerEvent(type, { pointerId: 60, pointerType: "touch", bubbles: true, cancelable: true, ...at(t) }));
+  fire("pointerdown", 0.5);
+  fire("pointermove", 0.75); // +4 段くらい
+  const grown = app.state.comp.size;
+  const shownWhileDragging = value();
+  fire("pointermove", 0.5); // 中央へ戻す
+  const backToOne = app.state.comp.size;
+  fire("pointerup", 0.5);
+  const afterRelease = value();
+
+  // 「選択」のカットインには 強度 / 範囲 / 拡張 の 3 本がある
+  const b = document.querySelector('#dockLeft .ibtn[data-group="select"]');
+  const br = b.getBoundingClientRect();
+  for (const type of ["pointerdown", "pointerup"]) {
+    const ev = new PointerEvent(type, {
+      pointerId: 62,
+      pointerType: "mouse",
+      bubbles: true,
+      cancelable: true,
+      clientX: br.x + br.width / 2,
+      clientY: br.y + br.height / 2,
+    });
+    (type === "pointerdown" ? b : window).dispatchEvent(ev);
+  }
+  await new Promise((r2) => setTimeout(r2, 120));
+  const cutin = document.querySelector(".cutin");
+  const sliders = cutin ? [...cutin.querySelectorAll(".row label")].map((l) => l.textContent) : [];
+  const hasSpring = !!cutin?.querySelector(".slider.spring");
+  document.body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, clientX: 2, clientY: 2 }));
+
+  // 強度を上げると「範囲」に戻る
+  app.state.soft.strength = 0.5;
+  app.refresh();
+  const onLabel = label();
+
+  app.state.soft.strength = 0;
+  app.setCompMode("object");
+  app.state.select(null);
+  app.state.doc.objects.length = objectsBefore;
+  app.viewport.syncAll();
+  app.refresh();
+  return { offLabel, onLabel, before, grown, backToOne, shownWhileDragging, afterRelease, sliders, hasSpring };
+});
+check(
+  "レールの第 2 ゲージが範囲と拡張で切り替わる",
+  growGauge.offLabel === "拡張" &&
+    growGauge.onLabel === "範囲" &&
+    growGauge.before === 1 &&
+    growGauge.grown > 1 &&
+    growGauge.backToOne === 1 &&
+    growGauge.afterRelease === "0" &&
+    growGauge.hasSpring,
+  `強度 0 で「${growGauge.offLabel}」→ 面 ${growGauge.before} → 引いて ${growGauge.grown}（表示 ${growGauge.shownWhileDragging}）→ ` +
+    `中央で ${growGauge.backToOne} → 離して ${growGauge.afterRelease} / 強度 0.5 で「${growGauge.onLabel}」 / ` +
+    `カットイン ${growGauge.sliders.join(" · ")}`,
+);
+
 /* 44. ツール列のグループ（`21` の 4 章） */
 
 /* 44-1. ボタンは 7 つ、右のオプションパネルは無い */

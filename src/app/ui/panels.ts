@@ -16,6 +16,8 @@ export interface PanelHost {
   /** 離したとき。ここで履歴に積む。 */
   onParamCommit(object: SceneObject, label: string): void;
   onSoftChange(which: "strength" | "radius", value: number): void;
+  /** 選択の拡張 / 縮小（`24` の T3）。バネ式なので begin → drag → end で呼ぶ。 */
+  onGrow(phase: "begin" | "drag" | "end", n: number): void;
   onExtrudeDistChange(value: number): void;
   onVertexOptChange(key: "mergeDist" | "extrudeWidth", value: number): void;
   onSnapChange(key: "kind" | "step", value: string | number): void;
@@ -171,6 +173,8 @@ export interface OptionsState {
   tool: string;
   selected: SceneObject | null;
   soft: { strength: number; radius: number };
+  /** 拡張が効く状態か（コンポーネントを選んでいる）。 */
+  canGrow: boolean;
   cut: { snapStep: number; edgeFlow: boolean };
   bevel: { width: number; segments: number };
   /** ベベルを確定した直後か。作り直せる間だけ出す。 */
@@ -575,6 +579,56 @@ export function vertexSection(state: OptionsState, host: PanelHost): HTMLElement
   return s;
 }
 
+/**
+ * バネ式の横スライダー（`24` の T3）。中央が 0 で、離すと中央へ戻る。
+ * レールの「拡張」ゲージと同じもの。カットインからも触れるように置く。
+ */
+function springRow(
+  parent: HTMLElement,
+  options: {
+    label: string;
+    steps: number;
+    enabled: boolean;
+    begin(): void;
+    drag(n: number): void;
+    end(): void;
+  },
+): void {
+  const row = el("div", "row");
+  row.appendChild(el("label", undefined, options.label));
+  const num = el("input", "num") as HTMLInputElement;
+  num.type = "text";
+  num.readOnly = true;
+  num.value = "0";
+  row.appendChild(num);
+
+  const slider = el("input", "slider spring") as HTMLInputElement;
+  slider.type = "range";
+  slider.min = String(-options.steps);
+  slider.max = String(options.steps);
+  slider.step = "1";
+  slider.value = "0";
+  slider.disabled = !options.enabled;
+  const reset = () => {
+    slider.value = "0";
+    num.value = "0";
+  };
+  slider.addEventListener("pointerdown", () => options.begin());
+  slider.addEventListener("input", () => {
+    const n = Number(slider.value);
+    num.value = n > 0 ? `+${n}` : String(n);
+    options.drag(n);
+  });
+  for (const t of ["pointerup", "pointercancel", "change"] as const) {
+    slider.addEventListener(t, () => {
+      options.end();
+      reset();
+    });
+  }
+  row.appendChild(slider);
+  parent.appendChild(row);
+}
+
 export function softSelectSection(state: OptionsState, host: PanelHost): HTMLElement {
   const s = section("ソフト選択", "SOFT SELECT");
   paramRow(s, {
@@ -593,6 +647,22 @@ export function softSelectSection(state: OptionsState, host: PanelHost): HTMLEle
     step: 0.05,
     onInput: (v) => host.onSoftChange("radius", v),
   });
+  // 拡張はレールの第 2 ゲージと同じもの。強度が 0 のときはレールにも出る
+  springRow(s, {
+    label: "拡張",
+    steps: 8,
+    enabled: state.canGrow,
+    begin: () => host.onGrow("begin", 0),
+    drag: (n) => host.onGrow("drag", n),
+    end: () => host.onGrow("end", 0),
+  });
+  s.appendChild(
+    el(
+      "div",
+      "hint",
+      "強度が 0 のときは、左レールの 2 本目が「拡張」になります。\n離すと中央へ戻ります（選択はそのまま）。",
+    ),
+  );
   return s;
 }
 

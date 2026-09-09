@@ -331,6 +331,44 @@ const scenes = {
     await new Promise((r) => setTimeout(r, 500));
   },
 
+  /** `24` の T3: 強度 0 のとき第 2 ゲージは「拡張」。引くと選択が広がる。 */
+  "24-t3-grow": async () => {
+    const app = window.macbeth;
+    app.state.doc.objects.length = 0;
+    const object = app.state.doc.addObject("sphere");
+    app.viewport.syncAll();
+    app.state.select(object);
+    app.setCompMode("face");
+    app.state.soft.strength = 0;
+    app.state.comp.clear();
+    app.state.comp.add(60);
+    app.viewport.frameSelected();
+    app.refresh();
+    await new Promise((r) => setTimeout(r, 60));
+    // 「選択」のカットインを出して、拡張のスライダーも見せる
+    const b = document.querySelector('#dockLeft .ibtn[data-group="select"]');
+    const r = b.getBoundingClientRect();
+    for (const type of ["pointerdown", "pointerup"]) {
+      const e = new PointerEvent(type, {
+        pointerId: 5,
+        pointerType: "mouse",
+        bubbles: true,
+        cancelable: true,
+        clientX: r.x + r.width / 2,
+        clientY: r.y + r.height / 2,
+      });
+      (type === "pointerdown" ? b : window).dispatchEvent(e);
+    }
+    await new Promise((r2) => setTimeout(r2, 120));
+    // ゲージを 3 段ぶん引いたところ
+    const g = document.getElementById("gauge2");
+    const gr = g.getBoundingClientRect();
+    const at = (t) => ({ clientX: gr.x + gr.width / 2, clientY: gr.y + gr.height * (1 - t) });
+    g.dispatchEvent(new PointerEvent("pointerdown", { pointerId: 61, pointerType: "touch", bubbles: true, cancelable: true, ...at(0.5) }));
+    g.dispatchEvent(new PointerEvent("pointermove", { pointerId: 61, pointerType: "touch", bubbles: true, ...at(0.69) }));
+    await new Promise((r2) => setTimeout(r2, 120));
+  },
+
   /** `23` の T4: ブリッジの分割数 3。上下の縁の間に輪が 2 本入る。 */
   "23-t4-bridge": async () => {
     const app = window.macbeth;

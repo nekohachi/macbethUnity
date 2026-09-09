@@ -354,6 +354,28 @@ export class Selector {
     };
   }
 
+  /**
+   * 控えた選択から n 段ぶん広げ直す（`24` の T3 の「拡張」ゲージ）。
+   * n が負なら狭める。毎回控えから計算し直すので、行って戻れば元に戻る。
+   */
+  growOrShrinkFrom(base: number[], n: number): SelectResult {
+    const o = this.state.selected;
+    if (!o || this.state.compMode === "object" || !base.length) {
+      return { changed: false, objectChanged: false, message: "コンポーネントを選択してください" };
+    }
+    const comp = this.state.comp;
+    comp.clear();
+    for (const i of base) comp.add(i);
+    for (let k = 0; k < Math.abs(n); k++) {
+      if (!this.growOrShrink(n > 0).changed) break;
+    }
+    return {
+      changed: true,
+      objectChanged: false,
+      message: n === 0 ? `選択 ${comp.size}` : `${n > 0 ? "拡張" : "縮小"} ${n > 0 ? "+" : ""}${n} — ${comp.size}`,
+    };
+  }
+
   /** 境界（面を 1 枚しか持たないエッジ）を選ぶ。 */
   selectBoundary(): SelectResult {
     const o = this.state.selected;

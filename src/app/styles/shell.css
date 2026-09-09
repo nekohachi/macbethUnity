@@ -68,6 +68,10 @@ button{font-family:inherit; font-size:inherit; color:inherit; background:none; b
 .gauge .fill{position:absolute; left:0; right:0; bottom:0; background:linear-gradient(180deg,var(--accent) 0%,var(--accent-dim) 100%)}
 .gauge .knob{position:absolute; left:-1px; right:-1px; height:3px; background:#dfe8ef}
 .gauge[data-off="true"]{opacity:.35}
+/* バネ式（拡張）は中央が 0。目印の線を引く（24 の T3） */
+.gauge[data-spring="true"]::before{content:""; position:absolute; left:0; right:0; top:50%;
+  height:1px; background:var(--line); opacity:.9}
+.slider.spring{accent-color:var(--accent)}
 .hbtns{display:flex; flex-direction:column; gap:5px; width:100%; align-items:center; flex:0 0 auto}
 .bigbtn{width:52px; height:44px; display:grid; place-items:center; background:var(--panel);
   border:1px solid var(--line); border-radius:var(--radius); color:var(--text-dim)}

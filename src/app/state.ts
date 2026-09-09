@@ -30,7 +30,9 @@ export interface Mods {
   alt: ModState;
 }
 
-export interface GaugeDef {
+/** ふつうのゲージ。下から上へ min〜max の値を取る。 */
+export interface AbsoluteGauge {
+  kind: "absolute";
   label: string;
   full: string;
   min: number;
@@ -39,6 +41,28 @@ export interface GaugeDef {
   get(s: AppState): number;
   set(s: AppState, v: number): void;
 }
+
+/**
+ * バネ式のゲージ（`24` の T3）。中央が 0 で、離すと中央へ戻る。
+ * 絶対値ではなく「今の状態から何段」という相対値を扱うもの。
+ */
+export interface SpringGauge {
+  kind: "spring";
+  label: string;
+  full: string;
+  /** 端まで引いたときの段数。中央から上下に ±steps。 */
+  steps: number;
+  /** 効く状態か。false なら薄く見せて、触っても何もしない。 */
+  enabled(s: AppState): boolean;
+  /** 押した瞬間。今の状態を控える。 */
+  begin(s: AppState): void;
+  /** 引いている間。n は −steps〜+steps の整数。毎回控えから計算し直す。 */
+  drag(s: AppState, n: number): void;
+  /** 離したとき。控えを捨てる。 */
+  end(s: AppState): void;
+}
+
+export type GaugeDef = AbsoluteGauge | SpringGauge;
 
 /** モードごとにゲージの意味が置き換わる。強度と範囲という役割は変えない（docs/09）。 */
 export const GAUGES: Record<Mode, { g1: GaugeDef; g2: GaugeDef }> = {
@@ -67,8 +91,9 @@ function gauge(
   max: number,
   step: number,
   key: "strength" | "radius",
-): GaugeDef {
+): AbsoluteGauge {
   return {
+    kind: "absolute",
     label,
     full,
     min,
@@ -80,6 +105,22 @@ function gauge(
     },
   };
 }
+
+/**
+ * 選択の拡張 / 縮小（Maya の Grow / Shrink）。ソフト選択を切っているときの
+ * 第 2 ゲージ（`24` の T3）。中身は app が差し込む（選択の広げ方は state の
+ * 仕事ではない）。
+ */
+export const GROW_GAUGE: SpringGauge = {
+  kind: "spring",
+  label: "拡張",
+  full: "選択を拡張 / 縮小",
+  steps: 8,
+  enabled: (s) => s.compMode !== "object" && s.comp.size > 0,
+  begin: (s) => s.growHooks?.begin(),
+  drag: (s, n) => s.growHooks?.drag(n),
+  end: (s) => s.growHooks?.end(),
+};
 
 export class AppState {
   doc = new Document();
@@ -194,7 +235,19 @@ export class AppState {
     return this.doc.cameraBookmarks;
   }
 
+  /**
+   * 「拡張」ゲージの中身。app が差し込む（`24` の T3）。
+   * begin で今の選択を控え、drag で控えから n 段ぶん広げ直す。
+   */
+  growHooks: { begin(): void; drag(n: number): void; end(): void } | null = null;
+
+  /**
+   * そのゲージの意味。モデリングの第 2 ゲージだけは、
+   * **ソフト選択を切っていると「拡張」になる**（`24` の T3）。
+   * 範囲は効いているときにしか意味が無く、切っている間は死んだ場所だった。
+   */
   gauge(which: "g1" | "g2"): GaugeDef {
+    if (which === "g2" && this.mode === "model" && this.soft.strength <= 0) return GROW_GAUGE;
     return GAUGES[this.mode][which];
   }
 
