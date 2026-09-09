@@ -339,3 +339,23 @@ button{font-family:inherit; font-size:inherit; color:inherit; background:none; b
 .act.mode svg{width:16px; height:16px; flex:0 0 auto}
 .act.mode .en{margin-left:auto; font-size:9px; letter-spacing:.06em; text-transform:uppercase; color:var(--text-faint)}
 .act.mode[aria-pressed="true"] .en{color:#a9cde6}
+
+/* ---------- 左利き（24 の T4） ---------- */
+/* 画面を左右で鏡映しにする。上段（読む順）とサークルメニュー（指の位置に出る）はそのまま */
+:root[data-hand="left"] .stage{flex-direction:row-reverse}
+:root[data-hand="left"] .rail{border-right:0; border-left:1px solid var(--line)}
+:root[data-hand="left"] .dock{border-right:0; border-left:1px solid var(--line)}
+:root[data-hand="left"] .dock-right{border-left:0; border-right:1px solid var(--line)}
+/* 縦持ちは列の順を入れ替える */
+:root[data-hand="left"] .stage.portrait .rail{grid-column:3}
+:root[data-hand="left"] .stage.portrait .dock[data-zone="left"]{grid-column:2}
+:root[data-hand="left"] .stage.portrait .vp{grid-column:1}
+/* ビューポートの中身 */
+:root[data-hand="left"] .cluster{left:auto; right:12px}
+:root[data-hand="left"] .hud-stats{left:auto; right:10px; justify-items:end}
+:root[data-hand="left"] .hud-mode{right:auto; left:12px; text-align:left}
+:root[data-hand="left"] .hud-hint{left:12px; right:150px; text-align:right}
+/* アウトライナは左から出る */
+:root[data-hand="left"] .drawer{right:auto; left:0; border-left:0; border-right:1px solid var(--line);
+  transform:translateX(-100%); box-shadow:12px 0 32px rgba(0,0,0,.35)}
+:root[data-hand="left"] .drawer.open{transform:none}

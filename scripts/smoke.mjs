@@ -4227,6 +4227,64 @@ check(
     `カットイン ${growGauge.sliders.join(" · ")}`,
 );
 
+/* 43z-7. 上段の「表示」: ヒント / ポリゴンカウント / 左利き（`24` の T4） */
+const viewMenu = await page.evaluate(async () => {
+  const app = window.macbeth;
+  document.getElementById("viewBtn").click();
+  await new Promise((r) => setTimeout(r, 80));
+  const items = [...document.querySelectorAll('.panel.floating[data-menu="view"] .chk')];
+  const labels = items.map((b) => b.textContent);
+
+  // 操作のヒントを切る
+  items.find((b) => b.textContent.includes("操作のヒント"))?.click();
+  await new Promise((r) => setTimeout(r, 60));
+  const hintEmpty = document.getElementById("hudHint").innerHTML === "";
+  // トーストは出る（消えると空に戻る）
+  app.setDisplay(app.state.display === "wire" ? "shadedWire" : "wire");
+  const toastShown = document.getElementById("hudHint").innerHTML.length > 0;
+
+  // ポリゴンカウントを切る
+  items.find((b) => b.textContent.includes("ポリゴンカウント"))?.click();
+  await new Promise((r) => setTimeout(r, 60));
+  const statsHidden = document.getElementById("hudStats").hidden;
+
+  // 左利きにすると、ツール列がビューポートの右へ回る
+  items.find((b) => b.textContent.includes("左利き"))?.click();
+  await new Promise((r) => setTimeout(r, 200));
+  const dock = document.getElementById("dockLeft").getBoundingClientRect();
+  const gl = document.getElementById("gl").getBoundingClientRect();
+  const cluster = document.querySelector(".cluster").getBoundingClientRect();
+  const mirrored = dock.left >= gl.right - 2 && cluster.left > gl.left + gl.width / 2;
+  const hand = document.documentElement.dataset.hand;
+
+  // 戻す
+  items.find((b) => b.textContent.includes("左利き"))?.click();
+  items.find((b) => b.textContent.includes("操作のヒント"))?.click();
+  items.find((b) => b.textContent.includes("ポリゴンカウント"))?.click();
+  document.getElementById("viewBtn").click();
+  await new Promise((r) => setTimeout(r, 200));
+  const back = {
+    hand: document.documentElement.dataset.hand,
+    stats: !document.getElementById("hudStats").hidden,
+    hint: document.getElementById("hudHint").innerHTML.length > 0,
+  };
+  return { labels, hintEmpty, toastShown, statsHidden, mirrored, hand, back };
+});
+check(
+  "表示メニュー: ヒントとポリゴンカウントを消せる、左利きで鏡映し",
+  viewMenu.labels.length === 4 &&
+    viewMenu.hintEmpty &&
+    viewMenu.toastShown &&
+    viewMenu.statsHidden &&
+    viewMenu.mirrored &&
+    viewMenu.hand === "left" &&
+    viewMenu.back.hand === "right" &&
+    viewMenu.back.stats &&
+    viewMenu.back.hint,
+  `${viewMenu.labels.join(" · ")} / ヒント空 ${viewMenu.hintEmpty}（トーストは出る ${viewMenu.toastShown}）/ ` +
+    `カウント消える ${viewMenu.statsHidden} / 左利きで鏡映し ${viewMenu.mirrored} → 戻す ${viewMenu.back.hand}`,
+);
+
 /* 44. ツール列のグループ（`21` の 4 章） */
 
 /* 44-1. ボタンは 7 つ、右のオプションパネルは無い */

@@ -15,6 +15,7 @@ const DISPLAY_NAME: Record<string, string> = {
   shadedWire: "SHADED+WIRE",
   smooth: "SMOOTH",
   checker: "CHECKER",
+  heat: "HEAT",
 };
 
 export class Hud {
@@ -26,6 +27,8 @@ export class Hud {
   uvNote: { charts: number; maxStretch: number; unit: string } | null = null;
 
   refreshStats(): void {
+    // ポリゴンカウントは上段の「表示」で消せる（`24` の T4）
+    byId("hudStats").hidden = !this.state.ui.stats;
     const s = this.state.doc.stats();
     let edges = 0;
     for (const o of this.state.doc.objects) edges += o.mesh.stats().edges;
@@ -67,6 +70,12 @@ export class Hud {
   defaultHint(): void {
     if (this.toastTimer !== null) clearTimeout(this.toastTimer);
     this.toastTimer = null;
+    // 操作のヒントは上段の「表示」で消せる（`24` の T4）。
+    // 消していてもトーストは出て、消えたあとは空になる
+    if (!this.state.ui.hints) {
+      byId("hudHint").innerHTML = "";
+      return;
+    }
     byId("hudHint").innerHTML =
       (this.state.fingerCam
         ? "指1本 <kbd>タンブル</kbd> · ペン <kbd>ツール</kbd>"

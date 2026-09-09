@@ -513,7 +513,8 @@ export class App {
     if (!restored) this.state.doc.addObject("cube");
     this.state.select(this.state.doc.objects[0] ?? null);
     this.viewport.syncAll();
-    // 前回の表示の設定を反映する（`23` の T6）
+    // 前回の表示の設定を反映する（`23` の T6、`24` の T4）
+    this.applyHand();
     this.viewport.setGridVisible(this.state.showGrid);
     this.viewport.applyCulling();
     // 起動時の画角はプロトタイプと同じ既定値のまま。F を押せば選択に寄る
@@ -3140,7 +3141,8 @@ export class App {
         onTap: () => this.toggleSnap(),
       },
       { kind: "separator" },
-      { kind: "label", text: "表示" },
+      // 上段の「表示」（画面の好み）と混ざらないように「シェーディング」（`24` の T4）
+      { kind: "label", text: "シェード" },
       {
         kind: "button",
         id: "display",
@@ -3384,7 +3386,9 @@ export class App {
     const r = anchor.getBoundingClientRect();
     const pop = el("div", "cutin wide");
     pop.dataset.gauge = id;
-    pop.style.left = `${r.right + 8}px`;
+    // 左利きではツール列が右にあるので、カットインは左へ開く（`24` の T4）
+    if (this.state.ui.leftHanded) pop.style.left = `${Math.max(8, r.left - 8 - 236)}px`;
+    else pop.style.left = `${r.right + 8}px`;
     // ボタンの高さを中心に置いて、画面からはみ出さないところまで戻す
     pop.style.top = `${Math.max(8, Math.min(window.innerHeight - 120, r.top))}px`;
     pop.style.maxHeight = `${window.innerHeight - Math.max(8, r.top) - 16}px`;
@@ -3523,11 +3527,14 @@ export class App {
     let from: { x: number; y: number; id: number } | null = null;
     vp.addEventListener("pointerdown", (e) => {
       const r = vp.getBoundingClientRect();
-      from = e.pointerType === "touch" && e.clientX > r.right - 24 ? { x: e.clientX, y: e.clientY, id: e.pointerId } : null;
+      // 右利きは右端から左へ、左利きは左端から右へ（`24` の T4）
+      const nearEdge = this.state.ui.leftHanded ? e.clientX < r.left + 24 : e.clientX > r.right - 24;
+      from = e.pointerType === "touch" && nearEdge ? { x: e.clientX, y: e.clientY, id: e.pointerId } : null;
     });
     vp.addEventListener("pointermove", (e) => {
       if (!from || e.pointerId !== from.id) return;
-      if (from.x - e.clientX > 40 && Math.abs(e.clientY - from.y) < 60) {
+      const pulled = this.state.ui.leftHanded ? e.clientX - from.x : from.x - e.clientX;
+      if (pulled > 40 && Math.abs(e.clientY - from.y) < 60) {
         from = null;
         if (!this.drawer?.classList.contains("open")) this.toggleLayers();
       }
@@ -3867,6 +3874,12 @@ export class App {
     this.state.preserveUvs = read("preserveUvs") !== "false";
     const step = Number(read("rotateStep"));
     if (Number.isFinite(step) && step >= 0) this.state.rotateStep = step;
+    try {
+      const ui = JSON.parse(read("ui") ?? "null") as Partial<AppState["ui"]> | null;
+      if (ui) this.state.ui = { ...this.state.ui, ...ui };
+    } catch {
+      /* 保存が壊れていても既定で始める */
+    }
     this.state.cullBack = read("cullBack") === "true";
     this.state.showGrid = read("showGrid") !== "false";
     const segs = Number(read("bridgeSegments"));
@@ -4106,6 +4119,8 @@ export class App {
     // モード切替。タップで下に一覧が開く（`23` の T1）
     byId("modeBtn").addEventListener("click", (e) => this.openModeMenu(e.currentTarget as HTMLElement));
     byId("fileBtn").addEventListener("click", (e) => this.openFileMenu(e.currentTarget as HTMLElement));
+    // 画面の好み（`24` の T4）
+    byId("viewBtn").addEventListener("click", (e) => this.openViewMenu(e.currentTarget as HTMLElement));
     document.addEventListener("pointerdown", (e) => {
       if (!this.popup) return;
       const target = e.target as Node;
@@ -4120,6 +4135,72 @@ export class App {
     this.popup = null;
     this.popupAnchor = null;
     closeRadial();
+  }
+
+  /**
+   * 上段の「表示」（`24` の T4）。画面の好みだけを集めたところ。
+   * シェーディング（ツール列の「表示」グループ）とは別もの。
+   */
+  private openViewMenu(anchor: HTMLElement): void {
+    if (this.popup?.dataset.menu === "view") {
+      this.closePopup();
+      return;
+    }
+    this.closePopup();
+    const r = anchor.getBoundingClientRect();
+    const pop = el("div", "panel floating");
+    pop.dataset.menu = "view";
+    pop.style.left = `${r.left}px`;
+    pop.style.top = `${r.bottom + 2}px`;
+    const body = el("div", "pbody");
+    const item = (label: string, on: boolean, toggle: (v: boolean) => void) => {
+      const b = el("button", "act chk");
+      b.setAttribute("aria-pressed", String(on));
+      b.appendChild(el("i"));
+      b.appendChild(el("span", undefined, label));
+      b.addEventListener("click", () => {
+        const next = b.getAttribute("aria-pressed") !== "true";
+        b.setAttribute("aria-pressed", String(next));
+        toggle(next);
+      });
+      body.appendChild(b);
+    };
+    item("操作のヒント", this.state.ui.hints, (v) => {
+      this.state.ui.hints = v;
+      this.rememberUi();
+      this.hud.defaultHint();
+    });
+    item("ポリゴンカウント", this.state.ui.stats, (v) => {
+      this.state.ui.stats = v;
+      this.rememberUi();
+      this.hud.refreshStats();
+    });
+    // グリッドは「表示」グループのカットインと同じ状態（`23` の T6）
+    item("グリッド", this.state.showGrid, (v) => {
+      this.state.showGrid = v;
+      this.remember("showGrid", v);
+      this.viewport.setGridVisible(v);
+    });
+    item("左利き", this.state.ui.leftHanded, (v) => {
+      this.state.ui.leftHanded = v;
+      this.rememberUi();
+      this.applyHand();
+    });
+    pop.appendChild(body);
+    document.body.appendChild(pop);
+    this.popup = pop;
+    this.popupAnchor = anchor;
+  }
+
+  /** 左利きなら画面を左右鏡映しにする（`24` の T4）。中身は `shell.css`。 */
+  private applyHand(): void {
+    document.documentElement.dataset.hand = this.state.ui.leftHanded ? "left" : "right";
+    this.viewport.resize();
+    this.uv?.resize();
+  }
+
+  private rememberUi(): void {
+    this.remember("ui", JSON.stringify(this.state.ui));
   }
 
   private openFileMenu(anchor: HTMLElement): void {

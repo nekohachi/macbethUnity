@@ -369,6 +369,41 @@ const scenes = {
     await new Promise((r2) => setTimeout(r2, 120));
   },
 
+  /** `24` の T4: 左利き。画面が左右鏡映しになる。 */
+  "24-t4-left": async () => {
+    const app = window.macbeth;
+    app.state.doc.objects.length = 0;
+    const object = app.state.doc.addObject("cylinder");
+    app.viewport.syncAll();
+    app.state.select(object);
+    app.setCompMode("face");
+    app.state.comp.clear();
+    for (let f = 0; f < 6; f++) app.state.comp.add(f);
+    app.viewport.frameSelected();
+    app.refresh();
+    document.getElementById("viewBtn").click();
+    await new Promise((r) => setTimeout(r, 80));
+    const items = [...document.querySelectorAll('.panel.floating[data-menu="view"] .chk')];
+    items.find((b) => b.textContent.includes("左利き"))?.click();
+    await new Promise((r) => setTimeout(r, 250));
+    document.getElementById("viewBtn").click();
+    // ツール列のカットインが左へ開くところも見せる
+    const b = document.querySelector('#dockLeft .ibtn[data-group="xform"]');
+    const r = b.getBoundingClientRect();
+    for (const type of ["pointerdown", "pointerup"]) {
+      const e = new PointerEvent(type, {
+        pointerId: 5,
+        pointerType: "mouse",
+        bubbles: true,
+        cancelable: true,
+        clientX: r.x + r.width / 2,
+        clientY: r.y + r.height / 2,
+      });
+      (type === "pointerdown" ? b : window).dispatchEvent(e);
+    }
+    await new Promise((r2) => setTimeout(r2, 150));
+  },
+
   /** `23` の T4: ブリッジの分割数 3。上下の縁の間に輪が 2 本入る。 */
   "23-t4-bridge": async () => {
     const app = window.macbeth;

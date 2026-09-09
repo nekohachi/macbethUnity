@@ -221,6 +221,11 @@ export class AppState {
    * `localStorage` に残す。
    */
   checker: { cells: number; pattern: CheckerPattern } = { cells: 8, pattern: "checker" };
+  /**
+   * 画面まわりの好み（`24` の T4）。上段の「表示」から触る。
+   * `localStorage` に残す。
+   */
+  ui = { hints: true, stats: true, leftHanded: false };
   /** 裏面を描かない（`23` の T6）。既定はオフ（両面）。 */
   cullBack = false;
   /** 床のグリッドを出す（`23` の T6）。既定はオン。 */

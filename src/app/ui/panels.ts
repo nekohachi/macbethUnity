@@ -774,7 +774,7 @@ export function checkerSection(state: OptionsState, host: PanelHost): HTMLElemen
 }
 
 export function displaySection(state: OptionsState, host: PanelHost): HTMLElement {
-  const s = section("表示", "DISPLAY");
+  const s = section("シェーディング", "SHADING");
   paramRow(s, {
     label: "スムージング角度",
     value: state.smoothAngle,
@@ -785,6 +785,7 @@ export function displaySection(state: OptionsState, host: PanelHost): HTMLElemen
     onInput: (v) => host.onSmoothAngleChange(v),
   });
   checkbox(s, "裏面を描かない", state.cullBack, (v) => host.onDisplayToggle("cullBack", v));
+  // グリッドは上段の「表示」にも同じものがある（`24` の T4）
   checkbox(s, "グリッド", state.showGrid, (v) => host.onDisplayToggle("showGrid", v));
   checkbox(s, "歪みを色で（ヒートマップ）", state.uvHeat, (v) => host.onUvHeatChange(v));
   s.appendChild(
