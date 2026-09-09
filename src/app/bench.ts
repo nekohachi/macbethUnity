@@ -68,6 +68,19 @@ function sphere(axis: number, height: number): Mesh {
   return PRIMITIVES.sphere.build({ ...defaultParams("sphere"), sdAxis: axis, sdHeight: height });
 }
 
+/**
+ * メッシュが実際に抱えている typed array の合計（バイト）。
+ *
+ * `performance.memory` と違って**どの端末でも正確**。JS の入れ物の分は入って
+ * いないので、`estimateLevelBytes` の見積もりはこれより大きくなるのが正しい。
+ */
+function meshBytes(mesh: Mesh): number {
+  let total = mesh.positions.byteLength + mesh.faceOffsets.byteLength + mesh.faceCorners.byteLength;
+  total += mesh.polygroup.byteLength + mesh.materialId.byteLength;
+  for (const uv of mesh.uvSets.values()) total += uv.byteLength;
+  return total;
+}
+
 /** いま使っている JS ヒープ（MB）。取れない端末（Safari）では 0。 */
 function heapMb(): number {
   const m = (performance as { memory?: { usedJSHeapSize: number } }).memory;
@@ -218,6 +231,7 @@ export async function runBench(app: App, quick: boolean, size?: number): Promise
   multi.divide();
   const heapBefore = heapMb();
   const b2build = timeIt(1, () => void multi.levels());
+  const heapAfter = heapMb();
   const top = multi.level(2);
   await add({
     key: "B2a",
@@ -228,14 +242,22 @@ export async function runBench(app: App, quick: boolean, size?: number): Promise
   });
 
   // 推定と実測を並べる。ずれていたら estimateLevelBytes の係数を直す（`32` の T5）
+  //
+  // ヒープの差だけを見ると、組んでいる間に前の行のゴミが掃除されて**負になる**
+  // （実機で「実測は取れない」と出た）。Safari はそもそも数字を出さない。
+  // なので **typed array の実サイズ**（どの端末でも正確に数えられる）を主に出し、
+  // ヒープの差は取れたときだけ添える。
   const guess = estimateLevelBytes(multi.level(1).faceCount) + estimateLevelBytes(top.faceCount);
-  const actual = heapMb() - heapBefore;
+  const held = meshBytes(multi.level(1)) + meshBytes(top);
+  const heapDelta = heapAfter - heapBefore;
+  const parts = [`実データ ${(held / 1048576).toFixed(0)} MB（推定はその ${(guess / held).toFixed(1)} 倍）`];
+  if (heapDelta > 0) parts.push(`ヒープ +${heapDelta.toFixed(0)} MB`);
   await add({
     key: "B2c",
     label: "レベル 2 までの推定メモリ",
     value: guess / 1048576,
     unit: "MB",
-    note: actual > 0 ? `実測 ${actual.toFixed(0)} MB（推定の ${(guess / 1048576 / actual).toFixed(1)} 倍）` : "実測は取れない",
+    note: parts.join(" · "),
   });
 
   // ベースの頂点を 1 万個動かして、その周りだけ上へ伝える（ストロークの 1 コマ）
