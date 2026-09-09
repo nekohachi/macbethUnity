@@ -869,7 +869,9 @@ export class App {
         objectView.group.updateMatrixWorld();
       }
     } else {
-      this.viewport.refreshPositions(o);
+      // ドラッグ中は動いた頂点だけ書き換える（`29` の B-T6）。
+      // 法線は離したときに直す
+      this.viewport.refreshMoved(o, this.movedVerts(drag.target));
     }
     this.viewport.rebuildOverlay();
     this.refreshManipulator();
@@ -939,6 +941,8 @@ export class App {
     this.gestureMoved = false;
     this.gestureLabel = "変形";
     this.hideTwist();
+    // 動かしている間は法線を据え置いていたので、離したところで作り直す（`29` の B-T6）
+    if (moved && this.state.selected) this.viewport.refreshPositions(this.state.selected);
     this.commitPreserve();
     if (moved) this.commitDragHistory(label);
     else {
@@ -1622,7 +1626,7 @@ export class App {
         view.group.updateMatrixWorld();
       }
     } else {
-      this.viewport.refreshPositions(o);
+      this.viewport.refreshMoved(o, this.movedVerts(this.drag?.target ?? null));
     }
     this.viewport.rebuildOverlay();
     this.refreshManipulator();
@@ -1813,6 +1817,8 @@ export class App {
       this.drag = null;
       this.manipulator.hot = -1;
       this.preselect.clear();
+      // 法線を作り直す（動かしている間は据え置いていた。`29` の B-T6）
+      if (moved && this.state.selected) this.viewport.refreshPositions(this.state.selected);
       this.commitPreserve();
       // 動かさずに離したなら、何も変えていないので選択として扱う。
       // マニピュレータの中心は選択の中心に出るので、これがないと

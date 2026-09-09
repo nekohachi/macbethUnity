@@ -14,6 +14,7 @@ export * from "./connect.js";
 export * from "./slide.js";
 export * from "./objectOps.js";
 export * from "./transfer.js";
+export * from "./bvh.js";
 export * from "./uv/index.js";
 export * from "./selection.js";
 export * from "./subdivide.js";

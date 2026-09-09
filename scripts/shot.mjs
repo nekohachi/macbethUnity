@@ -885,6 +885,54 @@ const scenes = {
     await new Promise((r) => setTimeout(r, 300));
   },
 
+  /** `29` の B-T6: 10 万三角形の球をツイークしたところ。 */
+  "29-t6-100k": async () => {
+    const app = window.macbeth;
+    app.state.doc.objects.length = 0;
+    const o = app.state.doc.addObject("sphere");
+    o.params.sdAxis = 320;
+    o.params.sdHeight = 160;
+    o.rebuild();
+    app.viewport.syncAll();
+    app.state.select(o);
+    app.setCompMode("face");
+    app.viewport.frameSelected();
+    app.viewport.cam.distance = 3.4;
+    app.viewport.applyCamera();
+    app.setDisplay("shadedWire");
+    app.viewport.cam.distance = 4.2;
+    app.viewport.applyCamera();
+    app.refresh();
+    await new Promise((r) => setTimeout(r, 300));
+
+    // 真ん中の面をつかんで引き出す（本物の経路）
+    const pane = document.getElementById("pane3d").getBoundingClientRect();
+    const gl = document.getElementById("gl");
+    const cx = pane.left + pane.width / 2;
+    const cy = pane.top + pane.height / 2;
+    const ev = (type, x, y) =>
+      new PointerEvent(type, { pointerId: 192, pointerType: "pen", bubbles: true, cancelable: true, clientX: x, clientY: y, buttons: type === "pointerup" ? 0 : 1 });
+    gl.dispatchEvent(ev("pointerdown", cx, cy));
+    gl.dispatchEvent(ev("pointerup", cx, cy));
+    await new Promise((r) => setTimeout(r, 150));
+    // ソフト選択を効かせて、動かしたところが分かるようにする
+    app.state.soft.strength = 1;
+    app.state.soft.radius = 1.1;
+    gl.dispatchEvent(ev("pointerdown", cx, cy));
+    for (let i = 1; i <= 20; i++) {
+      gl.dispatchEvent(ev("pointermove", cx + i * 5, cy - i * 8));
+      await new Promise((r) => setTimeout(r, 8));
+    }
+    gl.dispatchEvent(ev("pointerup", cx + 100, cy - 160));
+    await new Promise((r) => setTimeout(r, 200));
+    // 選択の緑を外す（10 万本だと形が見えなくなる）。ワイヤの細かさは残す
+    app.setCompMode("object");
+    app.state.select(null);
+    app.state.soft.strength = 0;
+    app.refresh();
+    await new Promise((r) => setTimeout(r, 300));
+  },
+
   /** `23` の T4: ブリッジの分割数 3。上下の縁の間に輪が 2 本入る。 */
   "23-t4-bridge": async () => {
     const app = window.macbeth;

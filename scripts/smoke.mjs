@@ -5950,6 +5950,95 @@ check(
     `取り消しで戻る ${diffHistory.backHome < 1e-6} / 押し出しは ${diffHistory.full?.kind} ${Math.round((diffHistory.full?.bytes ?? 0) / 1024)}KB / 戻る ${diffHistory.backFaces}`,
 );
 
+/* 43z-27. 10 万三角形でも軽い（`29` の B-T6。S1 の門） */
+const heavy = await page.evaluate(async () => {
+  const app = window.macbeth;
+  app.state.doc.objects.length = 0;
+  const o = app.state.doc.addObject("sphere");
+  o.params.sdAxis = 320;
+  o.params.sdHeight = 160;
+  o.rebuild();
+  const tris = o.mesh.triangulate().tri.length / 3;
+  app.viewport.syncAll();
+  app.state.select(o);
+  app.setCompMode("vertex");
+  app.viewport.frameSelected();
+  app.refresh();
+  await new Promise((r) => setTimeout(r, 300));
+
+  const pane = document.getElementById("pane3d").getBoundingClientRect();
+  const gl = document.getElementById("gl");
+  const cx = pane.left + pane.width / 2;
+  const cy = pane.top + pane.height / 2;
+  const picker = app.pickerForTest();
+  const ms = (fn) => {
+    const t0 = performance.now();
+    fn();
+    return performance.now() - t0;
+  };
+
+  // 面のレイキャスト 200 回
+  const pick = ms(() => {
+    for (let i = 0; i < 200; i++) {
+      picker.pickSurface({ x: pane.width / 2 + (i % 20) - 10, y: pane.height / 2 + ((i / 20) | 0) - 5 });
+    }
+  });
+
+  // ホバー（ペンを動かす）60 回。プリセレクションが毎回走る
+  const t0 = performance.now();
+  for (let i = 0; i < 60; i++) {
+    gl.dispatchEvent(
+      new PointerEvent("pointermove", { pointerId: 191, pointerType: "pen", bubbles: true, clientX: cx + (i % 20) - 10, clientY: cy + ((i / 20) | 0) - 5 }),
+    );
+  }
+  await new Promise((r) => setTimeout(r, 0));
+  const hover = performance.now() - t0;
+
+  // 面を 1 つ選んでツイーク（30 コマ）
+  app.setCompMode("face");
+  const ev = (type, x, y) =>
+    new PointerEvent(type, { pointerId: 192, pointerType: "pen", bubbles: true, cancelable: true, clientX: x, clientY: y, buttons: type === "pointerup" ? 0 : 1 });
+  gl.dispatchEvent(ev("pointerdown", cx, cy));
+  gl.dispatchEvent(ev("pointerup", cx, cy));
+  await new Promise((r) => setTimeout(r, 120));
+  const t1 = performance.now();
+  gl.dispatchEvent(ev("pointerdown", cx, cy));
+  for (let i = 1; i <= 30; i++) gl.dispatchEvent(ev("pointermove", cx + i, cy - i));
+  gl.dispatchEvent(ev("pointerup", cx + 30, cy - 30));
+  const tweak = performance.now() - t1;
+  await new Promise((r) => setTimeout(r, 150));
+  const entry = app.history.lastEntry();
+
+  const frame = ms(() => app.viewport.frameSelected());
+  const undo = ms(() => {
+    app.history.undo();
+    app.history.redo();
+  });
+
+  app.setCompMode("object");
+  app.state.select(null);
+  app.state.doc.objects.length = 0;
+  app.viewport.syncAll();
+  app.refresh();
+  return { tris, pick, hover, tweak, frame, undo, entry };
+});
+check(
+  "10 万三角形でも軽い",
+  // 上限は実測の 1.5 倍まで締めた（`29` の B-T6）。CI の Chromium は
+  // swiftshader なので実機はこれより速い
+  heavy.tris > 100000 &&
+    heavy.pick < 130 &&
+    heavy.hover < 600 &&
+    heavy.tweak < 700 &&
+    heavy.frame < 60 &&
+    heavy.undo < 60 &&
+    heavy.entry?.kind === "positions" &&
+    heavy.entry.bytes < 8192,
+  `${heavy.tris} 三角形 / レイ 200 回 ${heavy.pick.toFixed(0)}ms · ホバー 60 回 ${heavy.hover.toFixed(0)}ms · ` +
+    `ツイーク 30 コマ ${heavy.tweak.toFixed(0)}ms · フレーム ${heavy.frame.toFixed(0)}ms · 取り消し ${heavy.undo.toFixed(0)}ms / ` +
+    `履歴 ${heavy.entry?.kind} ${heavy.entry?.bytes}B`,
+);
+
 /* 44. ツール列のグループ（`21` の 4 章） */
 
 /* 44-1. ボタンは 7 つ、右のオプションパネルは無い */

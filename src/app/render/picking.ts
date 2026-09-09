@@ -4,8 +4,8 @@
  * 面はレイキャスト、頂点とエッジは画面に投影してから距離で判定する。
  * Maya と同じく、近ければ拾えるようにピクセル半径で許容する。
  */
-import { Matrix3, Raycaster, Vector2, Vector3 } from "three";
-import { edgeKey, type SceneObject } from "../../core/index.js";
+import { Matrix3, Matrix4, Raycaster, Vector2, Vector3 } from "three";
+import { edgeKey, raycastBvh, trianglesNear, type SceneObject } from "../../core/index.js";
 import type { ObjectView } from "./meshView.js";
 import type { Viewport } from "./viewport.js";
 
@@ -38,6 +38,18 @@ export interface SurfaceHit {
 
 const raycaster = new Raycaster();
 const scratch = new Vector3();
+/** ローカル空間へ持ち込んだレイ（`29` の B-T5）。毎回作らない。 */
+const invMatrix = new Matrix4();
+const rayOrigin = new Vector3();
+const rayDir = new Vector3();
+const scratchRight = new Vector3();
+const scratchB = new Vector3();
+const scratchProject = new Vector3();
+
+/** 0 から n − 1 まで。候補を絞れないときに使う。 */
+function* countUp(n: number): Iterable<number> {
+  for (let i = 0; i < n; i++) yield i;
+}
 
 /** 面が「カメラを向いている」とみなす最小の余弦。真横の面を落とすためのもの。 */
 const FACING_EPS = 1e-6;
@@ -235,21 +247,29 @@ export class Picker {
           !this.viewport.isolatedOut(v.object) &&
           (!exclude || v.object !== exclude),
       );
-    const hits = raycaster.intersectObjects(
-      views.map((v) => v.surface),
-      false,
-    );
-    // カメラベース選択がオンなら、裏を向いた面は飛ばして次に手前のものを見る
-    for (const hit of hits) {
-      const view = views.find((v) => v.surface === hit.object);
-      if (!view) continue;
-      // 三角形の番号から元の面へ戻す（三角形分割は面の順で並んでいる）
-      const triIndex = hit.faceIndex ?? 0;
-      const face = view.tri.triToFace[triIndex] ?? 0;
+
+    // 三角形の木で当てる（`29` の B-T5）。総当たりだと 10 万三角形で目に見えて遅い。
+    // 木はオブジェクトのローカル空間なので、レイのほうを持ち込む
+    let best: SurfaceHit | null = null;
+    for (const view of views) {
+      view.group.updateMatrixWorld();
+      const inv = invMatrix.copy(view.group.matrixWorld).invert();
+      const o = rayOrigin.copy(raycaster.ray.origin).applyMatrix4(inv);
+      const d = rayDir.copy(raycaster.ray.direction).transformDirection(inv);
+      const mesh = view.object.mesh;
+      const hit = raycastBvh(this.viewport.bvhOf(view), mesh.positions, view.tri, [o.x, o.y, o.z], [d.x, d.y, d.z]);
+      if (!hit) continue;
+      const face = view.tri.triToFace[hit.tri] ?? 0;
+      // カメラベース選択がオンなら、裏を向いた面は拾わない
       if (!this.faceVisible(view, face)) continue;
-      return { object: view.object, view, face, point: hit.point.clone(), distance: hit.distance };
+      // ローカルの当たった点をワールドへ戻して、他のオブジェクトと比べる
+      const local = scratch.copy(o).addScaledVector(d, hit.t);
+      const world = local.applyMatrix4(view.group.matrixWorld);
+      const distance = world.distanceTo(raycaster.ray.origin);
+      if (best && best.distance <= distance) continue;
+      best = { object: view.object, view, face, point: world.clone(), distance };
     }
-    return null;
+    return best;
   }
 
   /**
@@ -260,8 +280,7 @@ export class Picker {
     const faces = this.cameraBased() ? view.object.mesh.vertexFaces() : EMPTY_FACES;
     let best = -1;
     let bestD = radius * radius;
-    const n = view.object.mesh.vertexCount;
-    for (let i = 0; i < n; i++) {
+    for (const i of this.vertexCandidates(view, p, radius)) {
       if (i === exclude) continue;
       const s = this.projectVertex(view, i);
       if (s.z > 1) continue;
@@ -272,6 +291,56 @@ export class Picker {
       best = i;
     }
     return best;
+  }
+
+  /**
+   * 半径の中に入りうる頂点だけを返す（`29` の B-T5）。
+   *
+   * まず面に当てて、当たった点のまわり **radius ピクセルぶんのワールド半径**に
+   * 触れる三角形を木から拾い、その頂点だけを候補にする。10 万頂点でも
+   * 数十個しか投影しない。**面に当たらなければ（メッシュの外を触った）全部返す**
+   * — 縁の頂点やシルエットの外を拾えなくなるため。
+   */
+  private vertexCandidates(view: ObjectView, p: ScreenPoint, radius: number): Iterable<number> {
+    const mesh = view.object.mesh;
+    // 小さいメッシュは総当たりのほうが速い（木を引く手間のほうが大きい）
+    if (mesh.vertexCount < 4000) return countUp(mesh.vertexCount);
+    const hit = this.pickSurface(p);
+    if (!hit || hit.view !== view) return countUp(mesh.vertexCount);
+    view.group.updateMatrixWorld();
+    const local = scratch.copy(hit.point).applyMatrix4(invMatrix.copy(view.group.matrixWorld).invert());
+    // 画面の radius ピクセルが、その点でどれだけのワールド距離にあたるか
+    const world = this.pixelsToWorld(view, hit.point, radius);
+    if (!(world > 0)) return countUp(mesh.vertexCount);
+    const tris = trianglesNear(this.viewport.bvhOf(view), [local.x, local.y, local.z], world);
+    if (!tris.length) return countUp(mesh.vertexCount);
+    const out = new Set<number>();
+    for (const t of tris) {
+      out.add(view.tri.tri[t * 3]);
+      out.add(view.tri.tri[t * 3 + 1]);
+      out.add(view.tri.tri[t * 3 + 2]);
+    }
+    return out;
+  }
+
+  /**
+   * その点で画面 `px` ピクセルが何ワールド単位にあたるか。
+   * カメラの右方向へ 1 動かして、画面で何 px 動くかから割り出す。
+   */
+  private pixelsToWorld(view: ObjectView, world: Vector3, px: number): number {
+    const camera = this.viewport.camera;
+    const right = scratchRight.setFromMatrixColumn(camera.matrixWorld, 0);
+    const a = this.projectWorld(world);
+    const b = this.projectWorld(scratchB.copy(world).add(right));
+    void view;
+    const d = Math.hypot(b.x - a.x, b.y - a.y);
+    return d > 1e-6 ? px / d : 0;
+  }
+
+  /** ワールドの点を画面座標へ。 */
+  private projectWorld(world: Vector3): { x: number; y: number } {
+    const v = scratchProject.copy(world).project(this.viewport.camera);
+    return { x: ((v.x + 1) / 2) * this.width, y: ((-v.y + 1) / 2) * this.height };
   }
 
   /**

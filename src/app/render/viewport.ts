@@ -25,17 +25,19 @@ import {
   Scene,
   Vector3,
   WebGLRenderTarget,
+  type BufferAttribute,
   WebGLRenderer,
   type Camera,
   type MeshBasicMaterial,
   type MeshPhongMaterial,
 } from "three";
-import type { PaneLayout, SceneObject } from "../../core/index.js";
+import { buildBvh, refitBvh, refitBvhPartial, type Bvh, type PaneLayout, type SceneObject } from "../../core/index.js";
 import { defaultCamOpts, type AppState, type PaneLike } from "../state.js";
 import { MAT, checkerMaterial, heatMaterial } from "./materials.js";
 import {
   applyTransform,
   buildObjectView,
+  buildVertexSlots,
   disposeObject3D,
   disposeViewMaterials,
   heatColors,
@@ -658,6 +660,14 @@ export class Viewport {
     return canvas.toDataURL("image/png");
   }
 
+  /**
+   * そのオブジェクトの三角形の木（`29` の B-T5）。初めて要るときに作る。
+   * トポロジが変わると view ごと作り直されるので、木も自然に作り直される。
+   */
+  bvhOf(view: ObjectView): Bvh {
+    return (view.bvh ??= buildBvh(view.object.mesh.positions, view.tri));
+  }
+
   allViews(): ObjectView[] {
     return [...this.views.values()];
   }
@@ -696,12 +706,20 @@ export class Viewport {
     return this.state.display === "shaded" ? 0 : this.state.smoothAngle;
   }
 
-  /** 座標だけ動いた場合の軽い更新。トポロジが変わっていないときに使う。 */
+  /**
+   * 座標だけ動いた場合の更新。トポロジが変わっていないときに使う。
+   *
+   * ジオメトリを作り直すので、法線も正しくなる代わりに O(コーナー数) かかる
+   * （10 万三角形で 80ms ほど）。**ドラッグの最中は `refreshMoved` を使い、
+   * 離したときに 1 回だけこちらを通す**（`29` の B-T6）。
+   */
   refreshPositions(o: SceneObject): void {
     const view = this.views.get(o.id);
     if (!view) return this.rebuildObject(o);
     applyTransform(view.group, o.transform);
     view.group.updateMatrixWorld();
+    // 木の形はそのまま、境界箱だけ取り直す（`29` の B-T5）
+    if (view.bvh) refitBvh(view.bvh, o.mesh.positions, view.tri);
     view.surface.geometry.dispose();
     view.surface.geometry = surfaceGeometry(o.mesh, view.tri, this.shadingAngle);
     view.wire.geometry.dispose();
@@ -709,6 +727,47 @@ export class Viewport {
     view.points.geometry.dispose();
     view.points.geometry = positionGeometry(o.mesh.positions);
     if (this.state.display === "heat") this.applyHeat(view);
+  }
+
+  /**
+   * ドラッグの最中の更新（`29` の B-T6）。**動いた頂点の分だけ**書き換える。
+   *
+   * 10 万三角形で 80ms → 1ms 以下になる。代わりに**法線は据え置き**なので、
+   * 陰影は動かしている間だけ少し古い。離したときに `refreshPositions` で直る。
+   * 木も触れた三角形だけ取り直す。
+   */
+  refreshMoved(o: SceneObject, verts: Iterable<number>): void {
+    const view = this.views.get(o.id);
+    if (!view) return this.rebuildObject(o);
+    applyTransform(view.group, o.transform);
+    view.group.updateMatrixWorld();
+    const slots = (view.slots ??= buildVertexSlots(o.mesh.vertexCount, view.tri, view.edges));
+    // 頂点が増減していれば表が合わない。素直に作り直す
+    if (slots.surfaceOffsets.length !== o.mesh.vertexCount + 1) return this.refreshPositions(o);
+
+    const surface = view.surface.geometry.getAttribute("position") as BufferAttribute;
+    const wire = view.wire.geometry.getAttribute("position") as BufferAttribute;
+    const points = view.points.geometry.getAttribute("position") as BufferAttribute;
+    const touched: number[] = [];
+    for (const v of verts) {
+      if (v < 0 || v >= o.mesh.vertexCount) continue;
+      const x = o.mesh.positions[v * 3];
+      const y = o.mesh.positions[v * 3 + 1];
+      const z = o.mesh.positions[v * 3 + 2];
+      for (let i = slots.surfaceOffsets[v]; i < slots.surfaceOffsets[v + 1]; i++) {
+        const at = slots.surfaceSlots[i];
+        surface.setXYZ(at, x, y, z);
+        touched.push((at / 3) | 0);
+      }
+      for (let i = slots.wireOffsets[v]; i < slots.wireOffsets[v + 1]; i++) {
+        wire.setXYZ(slots.wireSlots[i], x, y, z);
+      }
+      if (v < points.count) points.setXYZ(v, x, y, z);
+    }
+    surface.needsUpdate = true;
+    wire.needsUpdate = true;
+    points.needsUpdate = true;
+    if (view.bvh && touched.length) refitBvhPartial(view.bvh, o.mesh.positions, view.tri, touched);
   }
 
   /** 面ごとの歪みを頂点色にして積む（`23` の T2）。 */

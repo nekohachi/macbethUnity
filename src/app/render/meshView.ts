@@ -17,7 +17,7 @@ import {
   Quaternion,
   Vector3,
 } from "three";
-import type { Mesh, SceneObject, Transform } from "../../core/index.js";
+import type { Bvh, Mesh, SceneObject, Transform } from "../../core/index.js";
 import { heatColor } from "../uv/heat.js";
 import { MAT } from "./materials.js";
 
@@ -184,6 +184,51 @@ export interface ObjectView {
   points: Points;
   tri: { tri: Uint32Array; triToFace: Uint32Array };
   edges: Array<[number, number]>;
+  /**
+   * 三角形の境界箱の木（`29` の B-T5）。初めて要るときに作る。
+   * 座標だけ変わったら `refitBvh`、トポロジが変わったら作り直す。
+   */
+  bvh?: Bvh;
+  /** 頂点 → 描画バッファの位置（`29` の B-T6）。動いた分だけ書き換えるのに使う。 */
+  slots?: VertexSlots;
+}
+
+/**
+ * 頂点から、描画バッファのどこを書けばよいかの表（`29` の B-T6）。
+ *
+ * 面のジオメトリは三角形ごとに頂点を複製した非インデックス形式なので、
+ * 1 つの頂点が何か所にも現れる。ドラッグのたびに全部作り直すと 10 万三角形で
+ * 80ms かかるが、この表があれば動いた頂点の分だけ書けば済む。
+ * CSR（offsets + 中身）で持つ。トポロジが変わると view ごと作り直される。
+ */
+export interface VertexSlots {
+  /** 面のジオメトリ。`surfaceOffsets[v]`〜`[v+1]` が `surfaceSlots` の範囲。 */
+  surfaceOffsets: Uint32Array;
+  surfaceSlots: Uint32Array;
+  /** ワイヤのジオメトリ。同じ形。 */
+  wireOffsets: Uint32Array;
+  wireSlots: Uint32Array;
+}
+
+/** 頂点 → バッファの位置の表を作る。O(コーナー数)。ドラッグの初めに 1 回だけ。 */
+export function buildVertexSlots(
+  vertexCount: number,
+  tri: { tri: Uint32Array },
+  edges: Array<[number, number]>,
+): VertexSlots {
+  const csr = (count: number, at: (i: number) => number): [Uint32Array, Uint32Array] => {
+    const offsets = new Uint32Array(vertexCount + 1);
+    for (let i = 0; i < count; i++) offsets[at(i) + 1]++;
+    for (let v = 0; v < vertexCount; v++) offsets[v + 1] += offsets[v];
+    const slots = new Uint32Array(count);
+    const cursor = Uint32Array.from(offsets.subarray(0, vertexCount));
+    for (let i = 0; i < count; i++) slots[cursor[at(i)]++] = i;
+    return [offsets, slots];
+  };
+  const [surfaceOffsets, surfaceSlots] = csr(tri.tri.length, (i) => tri.tri[i]);
+  // ワイヤは 1 本につき 2 点。i 番目の点は edges[i >> 1] の a か b
+  const [wireOffsets, wireSlots] = csr(edges.length * 2, (i) => edges[i >> 1][i & 1]);
+  return { surfaceOffsets, surfaceSlots, wireOffsets, wireSlots };
 }
 
 export function buildObjectView(o: SceneObject, smoothAngle: number): ObjectView {

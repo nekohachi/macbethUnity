@@ -26,17 +26,40 @@ export class Hud {
   /** UV モードのときに出す情報。島の数と歪み。 */
   uvNote: { charts: number; maxStretch: number; unit: string } | null = null;
 
+  /**
+   * ポリゴンカウントの控え（`29` の B-T6）。
+   *
+   * 数を出すにはエッジを数え直す必要があり、10 万三角形で 1 回 40ms かかる。
+   * ドラッグの最中は毎フレーム呼ばれるので、**トポロジが変わっていなければ
+   * 前の数をそのまま使う**。座標が動いても数は変わらない。
+   */
+  private statsCache: { key: string; html: string } | null = null;
+
+  /** 数が変わりうるか。オブジェクトの数と、各メッシュの大きさだけ見る。 */
+  private statsKey(): string {
+    let key = "";
+    for (const o of this.state.doc.objects) key += `${o.id}:${o.mesh.vertexCount}/${o.mesh.cornerCount}/${o.mesh.faceCount};`;
+    return key;
+  }
+
   refreshStats(): void {
     // ポリゴンカウントは上段の「表示」で消せる（`24` の T4）
     byId("hudStats").hidden = !this.state.ui.stats;
-    const s = this.state.doc.stats();
-    let edges = 0;
-    for (const o of this.state.doc.objects) edges += o.mesh.stats().edges;
-    byId("hudStats").innerHTML =
-      `<i>Verts</i><span>${s.vertices}</span>` +
-      `<i>Edges</i><span>${edges}</span>` +
-      `<i>Faces</i><span>${s.faces}</span>` +
-      `<i>Tris</i><span>${s.triangles}</span>`;
+    const key = this.statsKey();
+    if (this.statsCache?.key !== key) {
+      const s = this.state.doc.stats();
+      let edges = 0;
+      for (const o of this.state.doc.objects) edges += o.mesh.stats().edges;
+      this.statsCache = {
+        key,
+        html:
+          `<i>Verts</i><span>${s.vertices}</span>` +
+          `<i>Edges</i><span>${edges}</span>` +
+          `<i>Faces</i><span>${s.faces}</span>` +
+          `<i>Tris</i><span>${s.triangles}</span>`,
+      };
+    }
+    byId("hudStats").innerHTML = this.statsCache.html;
 
     // オンにしたままの修飾は消し忘れやすいので、常に見えるところへ出す
     const mods = this.state.activeMods();
