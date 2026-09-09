@@ -19,7 +19,7 @@
  * 全体を計算し直していては触れない（docs/08 の V6）。
  */
 import { Mesh } from "./mesh.js";
-import { SubdivPlan } from "./subdivide.js";
+import { catmullClark, SubdivPlan } from "./subdivide.js";
 
 /** 頂点ごとの接空間基底。9 × 頂点数（接線 t、従法線 b、法線 n の順）。 */
 export type Frames = Float32Array;
@@ -217,8 +217,12 @@ export function applyDeltas(smooth: Mesh, delta: Float32Array): Mesh {
  * 返るのは [レベル0, レベル1, ...]。deltas[i] はレベル i+1 のデルタ。
  * デルタが無いレベルは滑らかな面そのもの。
  */
-export function evaluateLevels(base: Mesh, deltas: Array<Float32Array | null>): Mesh[] {
-  const stack = new Multires(base);
+export function evaluateLevels(
+  base: Mesh,
+  deltas: Array<Float32Array | null>,
+  options: MultiresOptions = {},
+): Mesh[] {
+  const stack = new Multires(base, options);
   for (let i = 0; i < deltas.length; i++) {
     stack.divide();
     stack.deltas[i] = deltas[i];
@@ -228,8 +232,14 @@ export function evaluateLevels(base: Mesh, deltas: Array<Float32Array | null>): 
 
 /** レベル 1 つぶんの控え。トポロジが変わらないかぎり使い回す。 */
 interface LevelCache {
-  /** 1 つ下のレベルから、このレベルへの細分割。 */
-  plan: SubdivPlan;
+  /**
+   * 1 つ下のレベルから、このレベルへの細分割。**差分更新のときだけ要る**ので
+   * 遅延で作る（`32` の T2）。作るのに 25 万四角形で数秒かかるため、
+   * レベルを見せるだけなら払わない。
+   */
+  plan: SubdivPlan | null;
+  /** `plan` を作った元。遅延で作るときに要る。 */
+  below: Mesh;
   /** S(L)。ディテールを乗せる前の滑らかな面。 */
   smooth: Mesh;
   framePlan: FramePlan;
@@ -237,6 +247,18 @@ interface LevelCache {
   frames: Frames | null;
   /** P(L)。ディテールを乗せたあと。 */
   mesh: Mesh;
+}
+
+/** `Multires` の作り方。 */
+export interface MultiresOptions {
+  /**
+   * 1 レベルぶんの細分割。渡さなければ `catmullClark`（JS 版）。
+   *
+   * **core は wasm を知らない。** 速い実装を使いたい呼び出し側が、ここに
+   * 同じ約束の関数を差す（`32` の T2）。差した関数は JS 版と 1 ビットも
+   * 違わない結果を返すこと（`tests/subdiv-wasm.test.ts` がそれを守っている）。
+   */
+  subdivide?: (mesh: Mesh) => Mesh;
 }
 
 /**
@@ -250,8 +272,14 @@ export class Multires {
   /** deltas[i] はレベル i+1 の接空間デルタ。 */
   readonly deltas: Array<Float32Array | null> = [];
   private stack: LevelCache[] | null = null;
+  private readonly subdivide: (mesh: Mesh) => Mesh;
 
-  constructor(private baseMesh: Mesh) {}
+  constructor(
+    private baseMesh: Mesh,
+    options: MultiresOptions = {},
+  ) {
+    this.subdivide = options.subdivide ?? ((m) => catmullClark(m));
+  }
 
   get base(): Mesh {
     return this.baseMesh;
@@ -293,8 +321,11 @@ export class Multires {
     let changed: Iterable<number> = moved;
     for (let i = 0; i < stack.length; i++) {
       const level = stack[i];
-      const sub = level.plan.affected(changed);
-      level.plan.positions(below, level.smooth.positions, sub);
+      // 差分更新に入って初めて計画が要る。ここで作る（`32` の T2）
+      level.below = below;
+      const plan = this.planOf(level);
+      const sub = plan.affected(changed);
+      plan.positions(below, level.smooth.positions, sub);
       const delta = this.deltas[i];
       if (delta && level.frames) {
         // 基底は「面を共有する頂点」まで変わるので、そのぶん広げてから乗せ直す
@@ -314,23 +345,27 @@ export class Multires {
     }
   }
 
-  /** 控えを作り直す。 */
+  /** 控えを作り直す。`plan` は作らない（差分更新のときに作る）。 */
   private rebuild(): LevelCache[] {
     const stack: LevelCache[] = [];
     let current = this.baseMesh;
     for (let i = 0; i < this.deltas.length; i++) {
-      const plan = new SubdivPlan(current);
-      const smooth = plan.build(current);
+      const smooth = this.subdivide(current);
       const framePlan = new FramePlan(smooth);
       const delta = this.deltas[i];
       const frames = delta ? framePlan.build(smooth) : null;
       const mesh = smooth.clone();
       if (delta && frames) writeDetail(mesh, smooth, frames, delta);
-      stack.push({ plan, smooth, framePlan, frames, mesh });
+      stack.push({ plan: null, below: current, smooth, framePlan, frames, mesh });
       current = mesh;
     }
     this.stack = stack;
     return stack;
+  }
+
+  /** その段の細分割の計画。差分更新のときに初めて作る。 */
+  private planOf(level: LevelCache): SubdivPlan {
+    return (level.plan ??= new SubdivPlan(level.below));
   }
 
   private ensure(): LevelCache[] {
@@ -371,4 +406,20 @@ export class Multires {
     this.deltas.length = Math.max(0, level);
     this.stack = null;
   }
+}
+
+/**
+ * レベル 1 つぶんの推定メモリ（バイト。`32` の T3、`03` の 3.3）。
+ *
+ * 内訳は四角形 1 つあたり:
+ *   `Mesh`        座標 12B/頂点（頂点 ≈ 面数）+ コーナー 4B × 4 + UV 8B × 4 = 60B
+ *   滑らかな面    同じものをもう 1 枚持つ（S(L)。デルタを乗せる前）  = 60B
+ *   デルタと基底  12B/頂点 + 接空間の基底 24B/頂点                   = 36B
+ *   描画          三角形の索引 24B + 法線 12B + ワイヤ 8B × 2        = 52B
+ * 合わせて 208B。実測で直すこと（ベンチの「いちばん使ったメモリ」と照らす）。
+ *
+ * **レベルを 1 つ上げると 4 倍になる。** ここを見せずに上げさせると落ちる。
+ */
+export function estimateLevelBytes(faceCount: number): number {
+  return faceCount * 208;
 }

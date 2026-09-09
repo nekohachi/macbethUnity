@@ -13,6 +13,7 @@
  */
 import { Mesh } from "./mesh.js";
 import { PRIMITIVES, defaultParams, type PrimitiveParams } from "./primitives.js";
+import type { Multires } from "./multires.js";
 import { topologyHash } from "./io/hash.js";
 import { reconcile, type UvRecipe } from "./uv/recipe.js";
 
@@ -112,6 +113,12 @@ export class SceneObject {
    * 見た目の控えなので `.mbz` には入れない（開き直せば作り直せる）。
    */
   uvHeat: Float32Array | null = null;
+  /**
+   * 生きたマルチ解像度スタック（`32` の T2）。**`.mbz` にも履歴にも入れない。**
+   * 真は `multires`（デルタ）で、これはそこから作り直せる控え。
+   * トポロジが変わったときと履歴を戻したときは `invalidateLevels()` で捨てる。
+   */
+  stack: Multires | null = null;
 
   constructor(kind: string, id: string, name?: string) {
     this.id = id;
@@ -131,6 +138,22 @@ export class SceneObject {
     if (def) this.mesh = def.build(this.params);
   }
 
+  /**
+   * 表示するメッシュ（`32` の T2）。`level` を渡さなければ `activeLevel`。
+   *
+   * レベル 0 か、スタックが無ければ `mesh`（レベル 0）。モデリングモードは
+   * 常にレベル 0 を見せるので、呼ぶ側が 0 を渡す。
+   */
+  shown(level = this.activeLevel): Mesh {
+    if (level <= 0 || !this.stack) return this.mesh;
+    return this.stack.level(Math.min(level, this.stack.levelCount));
+  }
+
+  /** 生きたスタックを捨てる。デルタから作り直せるので、いつ捨ててもよい。 */
+  invalidateLevels(): void {
+    this.stack = null;
+  }
+
   /** トポロジを変えた。上位レベルとスカルプトレイヤーは対応関係を失うので破棄する（docs/03）。 */
   markTopologyChanged(): {
     droppedLevels: number;
@@ -146,6 +169,7 @@ export class SceneObject {
     this.multires = [];
     this.sculptLayers = [];
     this.activeLevel = 0;
+    this.invalidateLevels();
     // UV は全部捨てずに、対応が取れなくなった分だけ落とす（`15` の 2.4）
     const uv = this.uv
       ? reconcile(this.uv, this.mesh)

@@ -9,7 +9,7 @@
 import { describe, expect, it } from "vitest";
 import { PRIMITIVES, defaultParams } from "../src/core/primitives.js";
 import { Mesh, edgeKey } from "../src/core/mesh.js";
-import { SubdivPlan, subdivide } from "../src/core/subdivide.js";
+import { SubdivPlan, catmullClark, subdivide } from "../src/core/subdivide.js";
 import { Multires, buildFrames } from "../src/core/multires.js";
 
 const cube = () => PRIMITIVES.cube.build(defaultParams("cube"));
@@ -454,5 +454,80 @@ describe("V6. 差分更新", () => {
     let worst = 0;
     for (let i = 0; i < a.length; i++) worst = Math.max(worst, Math.abs(a[i] - b[i]));
     expect(worst).toBeLessThan(1e-6);
+  });
+});
+
+/**
+ * `32` の T2。core は wasm を知らないまま、速い細分割を差せること。
+ * 差した関数が本当に使われていること、差さないときと結果が変わらないことを見る。
+ */
+describe("V7. 細分割の差し込み口", () => {
+  const cube = (): Mesh => PRIMITIVES.cube.build(defaultParams("cube"));
+
+  it("JS の catmullClark を明示的に差しても、差さないときと完全一致する", () => {
+    const plain = new Multires(cube());
+    const given = new Multires(cube(), { subdivide: (m) => catmullClark(m) });
+    for (let i = 0; i < 3; i++) {
+      plain.divide();
+      given.divide();
+    }
+    const a = plain.levels();
+    const b = given.levels();
+    expect(b.length).toBe(a.length);
+    for (let i = 0; i < a.length; i++) {
+      expect([...b[i].positions]).toEqual([...a[i].positions]);
+      expect([...b[i].faceCorners]).toEqual([...a[i].faceCorners]);
+    }
+  });
+
+  it("差した関数が本当に使われる（わざとずらすと結果が変わる）", () => {
+    let calls = 0;
+    const shifted = new Multires(cube(), {
+      subdivide: (m) => {
+        calls++;
+        const out = catmullClark(m);
+        out.positions[0] += 5;
+        return out;
+      },
+    });
+    shifted.divide();
+    const plain = new Multires(cube());
+    plain.divide();
+    // divide() では組まない。初めて中身を見たときに組む（遅延）
+    expect(calls).toBe(0);
+    expect(shifted.level(1).positions[0]).toBeCloseTo(plain.level(1).positions[0] + 5, 6);
+    expect(calls).toBe(1);
+  });
+
+  it("計画は遅延で作られ、あとから差分更新しても全体計算と一致する", () => {
+    const move = (m: Mesh): Mesh => {
+      const out = m.clone();
+      const p = out.getPosition(3);
+      out.setPosition(3, p[0] + 0.3, p[1] + 0.2, p[2] - 0.1);
+      return out;
+    };
+    const incremental = new Multires(cube());
+    const whole = new Multires(cube());
+    for (let i = 0; i < 2; i++) {
+      incremental.divide();
+      whole.divide();
+    }
+    // 先に levels() を呼ぶ（この時点では計画を作っていない）
+    incremental.levels();
+    incremental.setBase(move(incremental.base), [3]);
+    whole.setBase(move(whole.base));
+    const a = incremental.level(2);
+    const b = whole.level(2);
+    expect([...a.positions]).toEqual([...b.positions]);
+  });
+
+  it("デルタを乗せたあとでも差し込み口が効く", () => {
+    const stack = new Multires(cube(), { subdivide: (m) => catmullClark(m) });
+    stack.divide();
+    stack.divide();
+    const top = stack.level(2).clone();
+    top.setPosition(0, top.positions[0] + 0.4, top.positions[1], top.positions[2]);
+    stack.sculpt(2, top);
+    expect(stack.level(2).positions[0]).toBeCloseTo(top.positions[0], 5);
   });
 });

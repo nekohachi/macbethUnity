@@ -323,6 +323,8 @@ export class History {
     } else {
       const d = e.diff;
       writePositions(d.ref, d.verts, d[which]);
+      // レベル 0 の座標が変わったので、上の段は組み直し（`32` の T2）
+      d.ref.invalidateLevels();
       const uv = d.uvCorners ? d.ref.mesh.uvSets.get(UV_SET) : undefined;
       const from = which === "before" ? d.uvBefore : d.uvAfter;
       if (d.uvCorners && from && uv) {
@@ -366,6 +368,8 @@ export class History {
       o.multires = s.multires.slice();
       o.sculptLayers = s.sculptLayers.slice();
       o.paintLayers = s.paintLayers.slice();
+      // 生きたスタックはデルタから作り直せる控えなので、戻したら捨てる（`32` の T2）
+      o.invalidateLevels();
       return o;
     });
     this.restoreSelection(snap);

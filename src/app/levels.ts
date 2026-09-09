@@ -1,0 +1,108 @@
+/**
+ * サブディビジョンレベルの出し入れ（`32` の T3。`03` の 3.3）。
+ *
+ * `app.ts` を太らせないために、レベルまわりはここへ寄せる。
+ *
+ * 真は `o.multires`（レベルごとのデルタ）。`o.stack` は生きた `Multires` で、
+ * デルタから作り直せる控え。**`.mbz` にも履歴にも入らない。**
+ *
+ * 細分割は wasm があればそれを使う（`30` の T3）。無ければ JS の
+ * `catmullClark` に落ちる。どちらで組んだかは `usingWasm()` で分かる。
+ */
+import { Multires, catmullClark, estimateLevelBytes, type Mesh, type SceneObject } from "../core/index.js";
+import { buildFromGeometry, loadWasm, subdivGeometry, type WasmModule } from "./wasm/index.js";
+
+/** 読み込みが済んだ wasm。まだなら null。 */
+let wasm: WasmModule | null = null;
+let asked = false;
+
+/**
+ * wasm を読み始める。スカルプトに入ったときに 1 度だけ呼ぶ。
+ * 読めても読めなくても、レベルの操作はできる（JS に落ちるだけ）。
+ */
+export async function warmUpLevels(): Promise<void> {
+  if (asked) return;
+  asked = true;
+  wasm = await loadWasm();
+}
+
+/** いま細分割に wasm を使えるか。HUD に出す。 */
+export function usingWasm(): boolean {
+  return wasm !== null;
+}
+
+/**
+ * 1 レベルぶんの細分割。wasm があればそれ、無ければ JS。
+ *
+ * wasm がメモリ不足で返せなかったときも JS に落ちる。結果は 1 ビットも
+ * 同じなので（`tests/subdiv-wasm.test.ts`）、途中で切り替わっても構わない。
+ */
+function subdivideOne(mesh: Mesh): Mesh {
+  if (wasm) {
+    const g = subdivGeometry(wasm, mesh);
+    if (g) return buildFromGeometry(mesh, g);
+  }
+  return catmullClark(mesh);
+}
+
+/**
+ * 生きたスタックを用意する。`o.multires` の中身と食い違っていれば作り直す。
+ *
+ * `o.stack.deltas` と `o.multires` は**別の配列**にする。履歴が
+ * `multires.slice()` で控えるので、同じものを指すとずれるため。
+ */
+export function levelsOf(o: SceneObject): Multires {
+  const want = o.multires.length;
+  let stack = o.stack;
+  if (stack && (stack.base !== o.mesh || stack.levelCount !== want)) stack = null;
+  if (!stack) {
+    stack = new Multires(o.mesh, { subdivide: subdivideOne });
+    for (let i = 0; i < want; i++) stack.divide();
+    o.stack = stack;
+  }
+  // デルタを入れ直す（履歴で戻ったときも、ここでそろう）
+  for (let i = 0; i < want; i++) {
+    const level = o.multires.find((m) => m.level === i + 1);
+    stack.deltas[i] = level ? level.delta : null;
+  }
+  return stack;
+}
+
+/** 段の数（レベル 0 を含まない）。 */
+export function levelCount(o: SceneObject): number {
+  return o.multires.length;
+}
+
+/** レベル L の四角形数。 */
+export function facesAt(o: SceneObject, level: number): number {
+  return o.mesh.faceCount * 4 ** level;
+}
+
+/** いまある段ぜんぶの推定メモリ（バイト）。`extra` を渡すと、その段も足して見積もる。 */
+export function estimateBytes(o: SceneObject, extra = 0): number {
+  let total = 0;
+  const top = levelCount(o) + extra;
+  for (let l = 1; l <= top; l++) total += estimateLevelBytes(facesAt(o, l));
+  return total;
+}
+
+/**
+ * メモリの予算（バイト）。`01` の 1.4 の表（iPad Pro 3.0GB / mini 1.2GB）から
+ * 余裕を見た値。`?budget=`（MB）で上書きできる（通し確認用）。
+ */
+export function budgetBytes(): number {
+  const override = Number(new URLSearchParams(location.search).get("budget"));
+  if (override > 0) return override * 1048576;
+  const ua = navigator.userAgent;
+  const safari = ua.includes("Safari") && !ua.includes("Chrome") && !ua.includes("Chromium");
+  return safari ? 1024 * 1048576 : 2560 * 1048576;
+}
+
+/** 段を 1 つ足せるか。足せないときは理由を返す。 */
+export function canAddLevel(o: SceneObject): { ok: boolean; want: number; budget: number } {
+  const want = estimateBytes(o, 1);
+  const budget = budgetBytes();
+  return { ok: want <= budget, want, budget };
+}
+
+export const asMb = (bytes: number): string => `${Math.round(bytes / 1048576)} MB`;
