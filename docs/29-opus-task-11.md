@@ -246,3 +246,52 @@ S2-0（測る）の前に決めておきたいこと。答えは `30` の指示�
 - **本命はハイエンド。** JS のままか wasm に出すかは、**iPad Pro（M 系）と MovinkPad 14 の数字**で決める。mini 6（A15）は「これでも動く」の下限として見る
 - 「なるべく大きく」なので、S2-0 の測り方を **100 万四角形**まで上げる（`30` に書く）。S1 の門（B-T6 の 10 万三角形）は**モデリングの門**なのでそのまま
 - 小さい画面の指標として mini を使う、という位置づけなので、**UI の密度の判断は mini で、性能の判断はハイエンドで**。指示書にも分けて書く
+
+---
+
+## 実装の報告 その 1（Opus、2026-09-09。A-T1〜A-T3）
+
+### 変えたファイル
+
+**A-T1: 修飾ボタン**
+
+- `web/index.html`: `.cluster` の中を F → SHF → CTL → ALT の順に
+- `styles/shell.css`: `.cluster` を縦の flex に。`.vp[data-cluster="side"] .cluster` でツール列の横（縦の中央）へ。左利きの鏡映し。地の不透明度 0.9 → 0.7。`.hud-hint` の左端を置き場所に合わせて動かす
+- `state.ts`: `ui.clusterPos`（`"corner"` / `"side"`）
+- `app.ts`: 「表示」に「修飾ボタン」の行（`.segmented`）、`applyClusterPos()`、起動時に当てる、`applyHandForTest()`
+
+**A-T2: 回転**
+
+- `app.ts`: `watchSize()`。`#pane3d` と `#paneUv` を `ResizeObserver` で見る。`window` の `resize` と `visualViewport` の `resize` は保険。`orientationchange` と `screen.orientation` の `change` のあと 350ms でもう 1 回
+- `ui/layout.ts`: `#stage` を `ResizeObserver` で見る
+- `render/viewport.ts`: `resize()` は 0×0 のとき何もしない
+
+**A-T3: 上段**
+
+- `styles/shell.css`: `.topbar` に `env(safe-area-inset-top / left / right)`。`.topbar > *{min-height:40px; white-space:nowrap}`。`.topspacer{min-width:120px}`。狭い画面で添え物から落とす（860px で保存の note、700px でボタンの文字）。ドロワーの見出しと「×」も 40px
+- `web/index.html`: 上段のボタンのラベルを `<span>` で包んだ（狭い画面でアイコンだけにできるように）
+
+### 数
+
+| | `29` の前 | A-T3 まで |
+|---|---|---|
+| core の単体（vitest） | 210 | 210 |
+| 通し確認（smoke） | 101 | 104 |
+
+足した通し確認: 「修飾ボタンは縦に並び、置き場所を表示から選べる」「画面を回しても潰れない」「上段のボタンは 40px 以上、上中央は空いている」。
+PNG: `docs/img/29-t1-cluster-side.png`、`29-t2-portrait.png`。公開版（`app/`）も更新済み。
+
+### 設計と変えたところ
+
+1. **上段の文字が折り返していたのも直しました**（指示書に無い追加）。744px 幅の縦持ちだと「モデリ/ング」「アウトライ/ナ」と 2 行になり、上段が高くなったうえ当たり判定がずれていました。`white-space: nowrap` と、狭いときに添え物から落とす規則（860px で保存の note、700px でボタンの文字）を入れています。**これが「触りにくい」の実際の原因の一部だったかもしれません**（縦持ちのときだけ起きるので）
+2. **`.topspacer` に `min-width: 120px`** を入れました。上中央 120px を空けたままにする、を CSS で担保するためです
+3. 「表示」の行は `.segmented` にしました。チェックの並びの下に見出し（`修飾ボタン`）を置いています
+
+### 実機で見てほしいこと（headless では確かめられない）
+
+1. **ホーム画面（standalone）から開いて回したとき潰れないか。** `ResizeObserver` は headless でも効きますが、**iOS の「resize が寸法の確定より先に来る」順番そのものは再現できません**。通し確認は回転で壊れないことの見張りにはなりますが、直った証明にはなりません
+2. **上段のボタンがステータスバーの下に入っていないか。** `env(safe-area-inset-top)` は headless では 0 なので、余白が実際に入るかは実機でしか見えません。**もし余白が 0 のままなら**、standalone のときだけ `padding-top: 24px` を明示する保険を入れます（指示書に書いてあるとおり）
+
+### 次
+
+B-T4（履歴の差分化）→ B-T5（BVH）→ B-T6（10 万三角形の門）。

@@ -5840,6 +5840,35 @@ check(
     `4 分割で回しても隙間なし ${quadRot.widthSum === quadRot.w && quadRot.heightSum === quadRot.h}`,
 );
 
+/* 43z-25. 上段のボタンは 40px 以上、上中央は空いている（`29` の A-T3） */
+const topbar = await page.evaluate(() => {
+  const bar = document.querySelector(".topbar");
+  const r = bar.getBoundingClientRect();
+  const kids = [...bar.children].map((c) => ({
+    cls: c.className.split(" ")[0],
+    h: Math.round(c.getBoundingClientRect().height),
+  }));
+  // 上段の横の中央には押すものを置かない（iPadOS のマルチタスクの「…」が出る）
+  const sample = [-60, 0, 60].map((dx) =>
+    document.elementFromPoint(window.innerWidth / 2 + dx, r.top + r.height / 2)?.className.split(" ")[0],
+  );
+  return {
+    kids,
+    mode: Math.round(document.getElementById("modeBtn").getBoundingClientRect().height),
+    panels: Math.round(document.getElementById("btnPanels").getBoundingClientRect().height),
+    sample,
+  };
+});
+check(
+  "上段のボタンは 40px 以上、上中央は空いている",
+  topbar.kids.every((k) => k.h >= 40) &&
+    topbar.mode >= 40 &&
+    topbar.panels >= 40 &&
+    topbar.sample.every((c) => c === "topspacer"),
+  `高さ ${topbar.kids.map((k) => `${k.cls} ${k.h}`).join(" · ")} / ` +
+    `中央 ±60px は ${[...new Set(topbar.sample)].join(",")}`,
+);
+
 /* 44. ツール列のグループ（`21` の 4 章） */
 
 /* 44-1. ボタンは 7 つ、右のオプションパネルは無い */

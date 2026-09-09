@@ -11,8 +11,8 @@
 <link rel="icon" href="./icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="./apple-touch-icon.png">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
-  <script type="module" crossorigin src="/macbethUnity/app/assets/index-B2lEK-Ck.js"></script>
-  <link rel="stylesheet" crossorigin href="/macbethUnity/app/assets/index-B1fxBPkU.css">
+  <script type="module" crossorigin src="/macbethUnity/app/assets/index-CCW7pbY9.js"></script>
+  <link rel="stylesheet" crossorigin href="/macbethUnity/app/assets/index-Bl1PSxMS.css">
 </head>
 <body>
 <div class="app">
@@ -23,16 +23,16 @@
     </button>
     <button class="topbtn" id="fileBtn" title="新規 / 開く / 保存 / OBJ">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M6 3h8l5 5v13H6z"/><path d="M14 3v5h5"/></svg>
-      ファイル <span class="caret">▼</span>
+      <span>ファイル</span> <span class="caret">▼</span>
     </button>
     <button class="topbtn" id="viewBtn" title="ヒント / ポリゴンカウント / グリッド / 左利き">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"><path d="M2.5 12S6 5.8 12 5.8 21.5 12 21.5 12 18 18.2 12 18.2 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.8"/></svg>
-      表示 <span class="caret">▼</span>
+      <span>表示</span> <span class="caret">▼</span>
     </button>
     <div class="topspacer"></div>
     <button class="topbtn" id="btnPanels" aria-pressed="false">
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"><path d="M12 3.4 21 8l-9 4.6L3 8z"/><path d="M3 12.6 12 17.2l9-4.6"/><path d="M3 16.8 12 21.4l9-4.6"/></svg>
-      アウトライナ
+      <span>アウトライナ</span>
     </button>
     <div class="topnote" id="saveNote"></div>
   </div>
@@ -69,12 +69,14 @@
       <div class="hud hud-stats" id="hudStats"></div>
       <div class="hud hud-mode" id="hudMode"></div>
       <div class="hud hud-hint" id="hudHint"></div>
+      <!-- 修飾ボタン。縦 1 列で上から F / SHF / CTL / ALT（29 の A-T1）。
+           置き場所（左下 / ツール列の横）は上段の「表示」から選ぶ -->
       <div class="cluster">
-        <button class="cmod" id="modShift" data-state="off">SHF</button>
         <button class="cframe" id="btnFrame" title="タップで選択をフレーム (F)。押しながらドラッグで矩形選択、押しながらピンチで選択中心へズーム">
           <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3"/><circle cx="12" cy="12" r="3"/></svg>
           <small>F</small>
         </button>
+        <button class="cmod" id="modShift" data-state="off">SHF</button>
         <button class="cmod" id="modCtrl" data-state="off">CTL</button>
         <button class="cmod" id="modAlt" data-state="off">ALT</button>
       </div>
