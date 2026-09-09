@@ -37,6 +37,22 @@ export interface StrokeInput {
    * そこだけ深くなって筋が出る。鏡映側の呼び出しにこれを渡して逃がす。
    */
   excludeNearX?: number;
+  /**
+   * 頂点ごとのマスク 0〜1（`34` の T1）。**あれば重みに `(1 - mask)` を掛ける。**
+   *
+   * 長さはメッシュの頂点数。短ければ足りない分は 0（マスクなし）とみなす。
+   */
+  mask?: Float32Array;
+  /**
+   * 裏面マスク（`34` の T1。`05` の「裏面マスク」）。
+   *
+   * カメラから面へ向かう向き（**オブジェクト空間**）。渡すと、法線がこれと
+   * 同じ向きを向いている頂点＝**こちらに背を向けている頂点**を触らない。
+   *
+   * **これが無いと薄い形が破綻する。** 耳をムーブで引くと、反対側の耳まで
+   * 一緒に動いてしまう。
+   */
+  viewDir?: readonly [number, number, number];
 }
 
 /** ブラシが当たった範囲。 */
@@ -253,16 +269,32 @@ export function applyStroke(mesh: Mesh, fp: Footprint, tri: Uint32Array, input: 
   const p = mesh.positions;
   const weights = new Float32Array(n);
   const guard = input.excludeNearX ?? 0;
+  const mask = input.mask;
   for (let i = 0; i < n; i++) {
     const v = fp.verts[i];
     // 中心線の頂点は 1 回目の呼び出しで動かしてある（`33` の T4）
     if (guard > 0 && Math.abs(p[v * 3]) < guard) continue;
     const d = Math.hypot(p[v * 3] - input.point[0], p[v * 3 + 1] - input.point[1], p[v * 3 + 2] - input.point[2]);
-    weights[i] = falloff(d / input.radius) * input.strength;
+    let w = falloff(d / input.radius) * input.strength;
+    // マスク（`34` の T1）。1 なら 1 ミリも動かない
+    if (w !== 0 && mask && v < mask.length) w *= 1 - mask[v];
+    weights[i] = w;
+  }
+
+  // 法線。Standard は動く向きに、裏面マスクは向きの判定に使う。
+  // **どちらも範囲の三角形から作る**ので、メッシュ全体には触らない
+  const normals = input.kind === "standard" || input.viewDir ? localNormals(mesh, fp, tri, stamp) : null;
+  if (input.viewDir && normals) {
+    // カメラから面へ向かう向きと同じ側を向いている＝背を向けている。触らない
+    const [dx, dy, dz] = input.viewDir;
+    for (let i = 0; i < n; i++) {
+      if (weights[i] === 0) continue;
+      if (normals[i * 3] * dx + normals[i * 3 + 1] * dy + normals[i * 3 + 2] * dz > 0) weights[i] = 0;
+    }
   }
 
   const moved: number[] = [];
-  if (input.kind === "standard") {
+  if (input.kind === "standard" && normals) {
     // 法線方向へ。動く量は半径に比例させる（大きい筆は深く彫れる）。
     //
     // **1 打ちぶんの深さ**（ZBrush に合わせた。`33` の直し）。
@@ -270,7 +302,6 @@ export function applyStroke(mesh: Mesh, fp: Footprint, tri: Uint32Array, input: 
     // 強さ 1 で 1 なぞり ≒ 半径の半分（0.0625 × 8 = 0.5）になる。
     // 既定の強さは 0.67（実機で触って決めた。ZBrush の Z Intensity 67 相当）
     // なので、ふつうに 1 回なぞると半径の 1/3 ほど。重ねれば深くなる。
-    const normals = localNormals(mesh, fp, tri, stamp);
     const amount = input.radius * DAB_DEPTH * (input.invert ? -1 : 1);
     for (let i = 0; i < n; i++) {
       const w = weights[i] * amount;

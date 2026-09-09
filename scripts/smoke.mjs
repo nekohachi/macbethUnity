@@ -915,6 +915,98 @@ check(
   `${strokeCheck.entry?.kind} ${strokeCheck.entry?.bytes} バイト`,
 );
 
+/* 17k. 筆の円が画面で丸い（`34`。実機で楕円に見えた） */
+//
+// 前は「当たった点の法線に垂直な平らな輪」だったので、面が傾いている所では
+// **必ず楕円**に見えた。いまはカメラに正対させている。
+// 球の**端のほう**（面がいちばん傾いている所）で見るのが肝心。
+const cursorRound = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const core = window.macbethCore;
+  const keep = app.state.doc.objects.slice();
+  const camBefore = app.viewport.saveLayout();
+  const modeBefore = app.state.mode;
+  const selBefore = app.state.selected;
+
+  app.state.doc.objects.length = 0;
+  const ball = app.state.doc.addMesh(
+    core.PRIMITIVES.sphere.build({ ...core.defaultParams("sphere"), sdAxis: 24, sdHeight: 16 }),
+    "Cursor",
+  );
+  app.viewport.syncAll();
+  app.state.select(ball);
+  app.setMode("sculpt");
+  await app.levelForTest("add");
+  app.viewport.frameSelected();
+  app.refresh();
+  await new Promise((r) => setTimeout(r, 120));
+
+  const pane = document.getElementById("pane3d").getBoundingClientRect();
+  const gl = document.getElementById("gl");
+  const hover = async (x, y) => {
+    gl.dispatchEvent(new PointerEvent("pointermove", {
+      pointerId: 91, pointerType: "pen", bubbles: true, cancelable: true,
+      clientX: pane.left + x, clientY: pane.top + y, pressure: 0, buttons: 0,
+    }));
+    await new Promise((r) => setTimeout(r, 40));
+    return app.viewport.brushCursorForTest();
+  };
+  /**
+   * 画面に落とした輪が丸いか。**縦横の比で見る**。
+   *
+   * 中心からの距離で見ると、輪の最後の点が 1 点目と重なっているぶん重心が
+   * ずれて、真円でも 0.96 に出る。囲む箱の縦横なら重なりに影響されない。
+   */
+  const roundness = (pts) => {
+    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+    for (const q of pts) {
+      x0 = Math.min(x0, q[0]); x1 = Math.max(x1, q[0]);
+      y0 = Math.min(y0, q[1]); y1 = Math.max(y1, q[1]);
+    }
+    const w = x1 - x0, h = y1 - y0;
+    return { ratio: Math.min(w, h) / Math.max(w, h), px: Math.max(w, h) };
+  };
+
+  const out = [];
+  // 真ん中
+  {
+    const ring = await hover(pane.width / 2, pane.height / 2);
+    const r = ring?.visible ? roundness(ring.screen) : null;
+    out.push(r ? { name: "中央", ok: r.px > 8 && r.ratio > 0.97, ...r } : { name: "中央", ok: false, ratio: 0, note: "円が出ていない" });
+  }
+  // ふち（面がいちばん傾いている所）。当たる範囲でいちばん外を探す
+  {
+    let best = null;
+    let usedAt = 0;
+    for (const frac of [0.42, 0.38, 0.34, 0.30, 0.26, 0.20]) {
+      const ring = await hover(pane.width / 2 + pane.height * frac, pane.height / 2);
+      if (ring?.visible) { best = ring; usedAt = frac; break; }
+    }
+    if (!best) out.push({ name: "ふち", ok: false, ratio: 0, note: "どこでも当たらなかった" });
+    else {
+      const r = roundness(best.screen);
+      out.push({ name: `ふち(${usedAt})`, ok: r.px > 8 && r.ratio > 0.97, ...r });
+    }
+  }
+
+  // 片づけ（`33` で 3 回引っかかった。モードと選択とカメラを必ず戻す）
+  app.viewport.hideBrushCursor();
+  app.setMode(modeBefore);
+  app.state.doc.objects.length = 0;
+  app.state.doc.objects.push(...keep);
+  app.viewport.syncAll();
+  app.viewport.restoreLayout(camBefore);
+  app.state.select(selBefore ?? keep[0] ?? null);
+  app.history.clear();
+  app.refresh();
+  return out;
+});
+check(
+  "筆の円が画面で丸い（面が傾いていても）",
+  cursorRound.length === 2 && cursorRound.every((r) => r.ok),
+  cursorRound.map((r) => `${r.name} 縦横比 ${r.ratio.toFixed(3)}${r.note ? ` ${r.note}` : ` · ${r.px.toFixed(0)}px`}`).join(" / "),
+);
+
 /* 18. 縦持ちでもビューポートが縦一杯（右のドック列は空なので場所を取らない。`24` の T1） */
 await page.setViewportSize({ width: 744, height: 1133 }); // iPad mini の縦
 await page.waitForTimeout(200);

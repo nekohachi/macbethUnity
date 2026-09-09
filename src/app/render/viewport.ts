@@ -18,6 +18,7 @@ import {
   Line,
   LineBasicMaterial,
   LineSegments,
+  Matrix4,
   Mesh as ThreeMesh,
   OrthographicCamera,
   PerspectiveCamera,
@@ -74,6 +75,11 @@ export const STANDARD_VIEWS: Record<ViewName, { label: string; sub: string; thet
 
 const MIN_DIST = 0.3;
 const MAX_DIST = 140;
+
+/** 筆の輪を組むための控え（1 コマごとに作らないため）。 */
+const brushInv = new Matrix4();
+const brushU = new Vector3();
+const brushV = new Vector3();
 
 /** ビューポートの分割（`25` の T6）。3 分割は入れない（指示書の T6）。 */
 export type LayoutKind = "single" | "cols" | "rows" | "quad";
@@ -957,20 +963,33 @@ export class Viewport {
   seamProvider: (() => Set<string> | null) | null = null;
 
   /**
-   * 筆の円を出す（`33` の T3）。**これが無いとサイズが分からない。**
+   * 筆の円を出す（`33` の T3。`34` で画面に正対させた）。
+   * **これが無いとサイズが分からない。**
    *
-   * 面に沿わせず、当たった点の法線に垂直な平らな輪にする。彫っている最中に
-   * 面へ貼り直すと重いし、輪が歪んで太さが読み取れなくなる。
+   * **輪はカメラに正対させる。** 前は「当たった点の法線に垂直な平らな輪」に
+   * していたが、それだと面が傾いているところでは**必ず楕円に見える**
+   * （実機の報告）。輪は太さを読み取るためのものなので、面の傾きより
+   * 「どこでも同じ丸」であることを優先する。ZBrush も Nomad もそうしている。
+   *
+   * ついでに、いちばん近い頂点を総なめしていた `nearestNormal` が要らなくなる。
+   * あれは 1 コマごとに**全頂点**を見ていた（23 万頂点で毎回）。
    */
   showBrushCursor(o: SceneObject, at: readonly [number, number, number], radius: number): void {
-    const mesh = this.meshOf(o);
-    // 当たった点の近くの向き。細かく合わせる必要はないので、
-    // いちばん近い頂点の法線ではなく、点から中心へのおおまかな向きで足りる
-    const normal = nearestNormal(mesh, at);
-    const [ux, uy, uz] = perpendicular(normal);
-    const vx = normal[1] * uz - normal[2] * uy;
-    const vy = normal[2] * ux - normal[0] * uz;
-    const vz = normal[0] * uy - normal[1] * ux;
+    const view = this.views.get(o.id);
+    if (!view) return;
+    view.group.updateMatrixWorld();
+    // カメラの右と上を**オブジェクト空間**へ持ってくる（向きだけ。位置は掛けない）。
+    // 半径はオブジェクト空間の値なので、ここで合わせておくと
+    // `applyTransform` を通したあとで太さがちょうど合う
+    const inv = brushInv.copy(view.group.matrixWorld).invert();
+    const uVec = brushU.setFromMatrixColumn(this.camera.matrixWorld, 0).transformDirection(inv);
+    const vVec = brushV.setFromMatrixColumn(this.camera.matrixWorld, 1).transformDirection(inv);
+    const ux = uVec.x,
+      uy = uVec.y,
+      uz = uVec.z;
+    const vx = vVec.x,
+      vy = vVec.y,
+      vz = vVec.z;
     const steps = 48;
     const pts: number[] = [];
     for (let i = 0; i <= steps; i++) {
@@ -995,6 +1014,29 @@ export class Viewport {
   /** 筆の円を消す。 */
   hideBrushCursor(): void {
     if (this.brushCursor) this.brushCursor.visible = false;
+  }
+
+  /**
+   * 通し確認から筆の円を覗く（`34`）。輪の点を**画面の座標**にして返す。
+   *
+   * 「丸く見えるか」は画面に落とさないと分からない。ワールドの点を見ても、
+   * 楕円に**見えている**かどうかは判定できない。
+   */
+  brushCursorForTest(): { visible: boolean; screen: Array<[number, number]> } | null {
+    const c = this.brushCursor;
+    if (!c) return null;
+    c.updateMatrixWorld();
+    const camera = this.camera;
+    camera.updateMatrixWorld();
+    const rect = this.paneRect(this.inputPane);
+    const p = c.geometry.getAttribute("position") as BufferAttribute;
+    const screen: Array<[number, number]> = [];
+    const v = new Vector3();
+    for (let i = 0; i < p.count; i++) {
+      v.fromBufferAttribute(p, i).applyMatrix4(c.matrixWorld).project(camera);
+      screen.push([rect.x + ((v.x + 1) / 2) * rect.w, rect.y + ((1 - v.y) / 2) * rect.h]);
+    }
+    return { visible: c.visible, screen };
   }
 
   private brushCursor: Line | null = null;
@@ -1145,37 +1187,3 @@ export class Viewport {
   }
 }
 
-/** 点にいちばん近い頂点の、おおまかな法線（筆の円の向き。`33` の T3）。 */
-function nearestNormal(mesh: Mesh, at: readonly [number, number, number]): [number, number, number] {
-  let best = -1;
-  let bestD = Infinity;
-  const p = mesh.positions;
-  for (let v = 0; v < mesh.vertexCount; v++) {
-    const d = (p[v * 3] - at[0]) ** 2 + (p[v * 3 + 1] - at[1]) ** 2 + (p[v * 3 + 2] - at[2]) ** 2;
-    if (d < bestD) {
-      bestD = d;
-      best = v;
-    }
-  }
-  if (best < 0) return [0, 1, 0];
-  // その頂点に触る面の法線の和。面を引くのは高いので、
-  // 位置そのものを向きの当てにする（原点中心の形なら十分。歪んでも輪が少し傾くだけ）
-  const len = Math.hypot(p[best * 3], p[best * 3 + 1], p[best * 3 + 2]);
-  if (len < 1e-9) return [0, 1, 0];
-  return [p[best * 3] / len, p[best * 3 + 1] / len, p[best * 3 + 2] / len];
-}
-
-/** その向きに垂直な単位ベクトルを 1 本。 */
-function perpendicular(n: readonly [number, number, number]): [number, number, number] {
-  const ax = Math.abs(n[0]) < 0.9 ? 1 : 0;
-  const ux = n[1] * (ax ? 0 : 1) - n[2] * 0;
-  void ux;
-  // 軸に平行でないほうの基準軸と外積を取る
-  const rx = ax ? 1 : 0;
-  const ry = ax ? 0 : 1;
-  const cx = n[1] * 0 - n[2] * ry;
-  const cy = n[2] * rx - n[0] * 0;
-  const cz = n[0] * ry - n[1] * rx;
-  const len = Math.hypot(cx, cy, cz) || 1;
-  return [cx / len, cy / len, cz / len];
-}
