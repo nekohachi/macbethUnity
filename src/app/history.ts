@@ -91,6 +91,14 @@ export class History {
   /** 履歴が動いたときに呼ばれる。ボタンの有効・無効と自動保存に使う。 */
   onChange: (() => void) | null = null;
 
+  /**
+   * 何回書き換わったか（`32` の T4）。commit / undo / redo のたびに 1 つ増える。
+   *
+   * 段数ではなく世代なのは、**取り消して戻ると段数は同じでも形が違う**ため。
+   * 指紋の控えはこれを鍵にする。
+   */
+  revision = 0;
+
   constructor(private state: AppState) {}
 
   get canUndo(): boolean {
@@ -144,6 +152,7 @@ export class History {
   }
 
   private push2(e: Entry): void {
+    this.revision++;
     this.undoStack.push(e);
     if (this.undoStack.length > LIMIT) this.undoStack.shift();
     this.redoStack.length = 0;
@@ -289,6 +298,7 @@ export class History {
   undo(): string | null {
     const e = this.undoStack.pop();
     if (!e) return null;
+    this.revision++;
     if (e.kind === "full") {
       this.redoStack.push({ kind: "full", label: e.label, snap: this.snapshot() });
       this.restore(e.snap);
@@ -304,6 +314,7 @@ export class History {
   redo(): string | null {
     const e = this.redoStack.pop();
     if (!e) return null;
+    this.revision++;
     if (e.kind === "full") {
       this.undoStack.push({ kind: "full", label: e.label, snap: this.snapshot() });
       this.restore(e.snap);

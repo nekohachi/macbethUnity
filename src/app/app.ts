@@ -61,6 +61,7 @@ import {
 } from "./input/gestures.js";
 import { Picker, type ScreenPoint } from "./render/picking.js";
 import { asMb, canAddLevel, estimateBytes, facesAt, levelCount, levelsOf, warmUpLevels } from "./levels.js";
+import { forgetStamps, stampsFor } from "./stamps.js";
 import { STANDARD_VIEWS, Viewport, type LayoutKind, type ViewName } from "./render/viewport.js";
 import {
   AXES,
@@ -385,6 +386,12 @@ export class App {
    */
   runEditForTest(kind: EditKind): void {
     this.activateEdit(kind, true);
+  }
+
+  /** 通し確認から指紋を見る（`32` の T4。S3 のベイクが使う入口）。 */
+  stampsForTest(): { topology: string; base: string; high: string; uv: string } | null {
+    const o = this.state.selected;
+    return o ? stampsFor(this.history, o) : null;
   }
 
   async levelForTest(what: "add" | "up" | "down" | "dropAbove" | "burn"): Promise<void> {
@@ -5201,6 +5208,8 @@ export class App {
       this.state.doc = doc;
       this.state.select(doc.objects[0] ?? null);
       this.history.clear();
+      // 別のファイルなので、指紋の控えは持ち越さない（`32` の T4）
+      forgetStamps();
       this.viewport.restoreLayout(doc.layout);
       this.viewport.syncAll();
       this.viewport.frameSelected();

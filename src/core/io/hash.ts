@@ -7,7 +7,7 @@
 import { Mesh } from "../mesh.js";
 
 /** FNV-1a 32bit。短くて衝突が少なく、同じ入力なら常に同じ値になる。 */
-function fnv1a(hash: number, value: number): number {
+export function fnv1a(hash: number, value: number): number {
   hash ^= value & 0xff;
   hash = Math.imul(hash, 0x01000193);
   hash ^= (value >>> 8) & 0xff;

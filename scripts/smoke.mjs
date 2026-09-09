@@ -561,6 +561,37 @@ check(
   `${dropped.had} 段 → ${dropped.now} 段 / 表示レベル ${dropped.level} / 知らせ「${dropped.note}」`,
 );
 
+/* 17f. 指紋: 変えた段だけが変わり、控えは履歴の世代で効く（`32` の T4） */
+const stamps = await page.evaluate(() => {
+  const app = window.macbeth;
+  const o = app.state.selected;
+  const first = app.stampsForTest();
+  // 同じ世代なら同じものが返る（控えが効いている）
+  const cached = app.stampsForTest() === first;
+  // 頂点を動かして履歴に積む
+  app.history.beginPositions(o, [0]);
+  const p = o.mesh.getPosition(0);
+  o.mesh.setPosition(0, p[0] + 0.3, p[1], p[2]);
+  app.history.commitPending("指紋の確かめ");
+  const moved = app.stampsForTest();
+  app.history.undo();
+  const undone = app.stampsForTest();
+  app.viewport.rebuildObject(o);
+  app.refresh();
+  return {
+    cached,
+    baseChanged: first.base !== moved.base,
+    topoSame: first.topology === moved.topology,
+    highEmpty: moved.high === "",
+    backToFirst: undone.base === first.base,
+  };
+});
+check(
+  "指紋: 動かすと base だけ変わり、取り消すと戻る",
+  stamps.cached && stamps.baseChanged && stamps.topoSame && stamps.highEmpty && stamps.backToFirst,
+  `控えが効く ${stamps.cached} / base が変わる ${stamps.baseChanged} / topology は同じ ${stamps.topoSame} / 戻ると同じ ${stamps.backToFirst}`,
+);
+
 /* 18. 縦持ちでもビューポートが縦一杯（右のドック列は空なので場所を取らない。`24` の T1） */
 await page.setViewportSize({ width: 744, height: 1133 }); // iPad mini の縦
 await page.waitForTimeout(200);
