@@ -172,6 +172,14 @@ export interface ObjectView {
   heat?: MeshBasicMaterial;
   /** 不透明度が 1 未満のときの材質（`25` の T4）。共有の `MAT.surf` を複製して使う。 */
   faded?: MeshPhongMaterial;
+  /**
+   * 透けているときの裏面の描き足し（`27` の T4）。表面より先に描いて、
+   * 裏の面が手前に出てしまうのを防ぐ。ジオメトリは `surface` と同じものを指す。
+   */
+  back?: ThreeMesh;
+  backMaterial?: MeshPhongMaterial | MeshBasicMaterial;
+  /** `backMaterial` の元になった表の材質。変わったら作り直す目印。 */
+  backSource?: MeshPhongMaterial | MeshBasicMaterial;
   wire: LineSegments;
   points: Points;
   tri: { tri: Uint32Array; triToFace: Uint32Array };
@@ -208,7 +216,9 @@ export function disposeViewMaterials(view: ObjectView): void {
   view.checker?.dispose();
   view.heat?.dispose();
   view.faded?.dispose();
+  view.backMaterial?.dispose();
   view.checker = view.heat = view.faded = undefined;
+  view.backMaterial = view.backSource = view.back = undefined;
 }
 
 export function disposeObject3D(node: Object3D): void {

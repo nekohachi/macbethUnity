@@ -803,6 +803,54 @@ const scenes = {
     await new Promise((r2) => setTimeout(r2, 300));
   },
 
+  /** `27` の T2・T3: 4 分割の線を動かし、左上のペインだけ「選択したものだけ」。 */
+  "27-panes": async () => {
+    const app = window.macbeth;
+    app.state.doc.objects.length = 0;
+    const cube = app.state.doc.addObject("cube");
+    const sphere = app.state.doc.addObject("sphere");
+    sphere.transform.position = [2.2, 0.2, 0];
+    app.viewport.syncAll();
+    app.setCompMode("object");
+    app.state.select(cube);
+    app.setLayoutForTest("quad");
+    await new Promise((r) => setTimeout(r, 200));
+    // 分割線を動かす（左上を広く、下段を浅く）
+    app.viewport.setSplit("x", 0.62);
+    app.viewport.setSplit("y", 0.58);
+    for (const p of app.viewport.panes) {
+      p.cam.target.set(1.1, 0.2, 0);
+      p.cam.distance = 7.5;
+    }
+    app.viewport.applyCameraAll();
+    // 左上のペインだけ隔離する
+    app.panelHostForTest().onIsolate();
+    app.refresh();
+    await new Promise((r) => setTimeout(r, 250));
+  },
+
+  /** `27` の T4: 透けたオブジェクトごしに中の形が見える。 */
+  "27-t4-transparent": async () => {
+    const app = window.macbeth;
+    app.state.doc.objects.length = 0;
+    const inner = app.state.doc.addObject("cube");
+    inner.transform.scale = [0.55, 0.55, 0.55];
+    const shell = app.state.doc.addObject("sphere");
+    app.viewport.syncAll();
+    app.setCompMode("object");
+    app.state.select(shell);
+    app.viewport.frameSelected();
+    app.viewport.cam.distance = 4.6;
+    app.viewport.applyCamera();
+    app.setDisplay("shaded");
+    const host = app.panelHostForTest();
+    host.onOpacityInput(shell, 0.45);
+    host.onOpacityCommit(shell);
+    app.state.select(null);
+    app.refresh();
+    await new Promise((r) => setTimeout(r, 250));
+  },
+
   /** `23` の T4: ブリッジの分割数 3。上下の縁の間に輪が 2 本入る。 */
   "23-t4-bridge": async () => {
     const app = window.macbeth;

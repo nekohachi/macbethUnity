@@ -4768,6 +4768,13 @@ const twist = await page.evaluate(async (center) => {
     return { x: center.x + dx * Math.cos(a) - dy * Math.sin(a), y: center.y + dx * Math.sin(a) + dy * Math.cos(a) };
   };
 
+  // あらかじめ Z まわりに 30° 傾けておく（札の「今の傾き」と「動かした量」が
+  // 別の値になるので、2 つ出ていることを確かめられる。`27` の T1）
+  const pre = (15 * Math.PI) / 180;
+  object.transform.rotation = [0, 0, -Math.sin(pre), Math.cos(pre)];
+  app.viewport.syncAll();
+  app.refresh();
+
   const before = topOnScreen();
   fire("pointerdown", 121, thumb.x, thumb.y);
   fire("pointerdown", 122, pair[0].x, pair[0].y);
@@ -4805,8 +4812,12 @@ const twist = await page.evaluate(async (center) => {
   app.refresh();
   // クォータニオンから Z まわりの角度を出す（他の軸は 0 のはず）
   const angle = (2 * Math.atan2(Math.hypot(q[0], q[1], q[2]), q[3]) * 180) / Math.PI;
+  // 札の 2 つの数字。「Z」「今の傾き」「動かした量」
+  const parsed = /^Z(-?\d+)°([+-]\d+)°$/.exec(pop.trim());
   return {
     pop,
+    tilt: parsed ? Number(parsed[1]) : NaN,
+    moved: parsed ? Number(parsed[2]) : NaN,
     angle,
     axisZ: Math.abs(q[2]) > 0.99 * Math.hypot(q[0], q[1], q[2]),
     scale,
@@ -4819,23 +4830,25 @@ const twist = await page.evaluate(async (center) => {
 }, ON_MESH);
 check(
   // 32° ひねる。判定が決まるまでの分（8° ほど）は物差しに使われるので、
-  // 当たるのはその残り。5 の倍数で、向きが合っていることを見る
+  // 当たるのはその残り。5 の倍数で、向きが合っていることを見る。
+  // 札には「今の傾き（30° + 動かした量）」と「動かした量」の 2 つが出る（`27` の T1）
   "3 本指のひねりで回転（5° 刻み、軸は視線に垂直）",
-  twist.pop.includes("Z") &&
-    twist.pop.includes(`+${Math.round(twist.angle)}°`) &&
-    Math.abs(twist.angle - 5 * Math.round(twist.angle / 5)) < 0.01 &&
-    twist.angle >= 15 &&
-    twist.angle <= 30 &&
+  twist.moved >= 15 &&
+    twist.moved <= 30 &&
+    twist.moved % 5 === 0 &&
+    twist.tilt === 30 + twist.moved &&
+    Math.abs(twist.angle - twist.tilt) < 0.5 &&
     twist.axisZ &&
     twist.scale.every((v) => Math.abs(v - 1) < 1e-6) &&
     twist.position.every((v) => Math.abs(v) < 1e-6) &&
     twist.movedRight > 4 &&
     twist.closed &&
     twist.label === "回転" &&
-    twist.undone < 1e-6,
-  `札 「${twist.pop}」/ ${twist.angle.toFixed(1)}°（Z まわり ${twist.axisZ}）/ ` +
+    Math.abs(twist.undone - Math.sin((15 * Math.PI) / 180)) < 1e-3,
+  `札 「${twist.pop}」= 今の傾き ${twist.tilt}° · 動かした量 ${twist.moved}° / ` +
+    `クォータニオン ${twist.angle.toFixed(1)}°（Z まわり ${twist.axisZ}）/ ` +
     `上面が右へ ${twist.movedRight.toFixed(0)}px / スケール [${twist.scale.map((v) => v.toFixed(2))}] / ` +
-    `履歴 「${twist.label}」→ 取り消しで ${twist.undone.toFixed(3)}`,
+    `履歴 「${twist.label}」→ 取り消しで 30° に戻る`,
 );
 
 /* 43z-13c. ひねり・スワイプ・つまみを取り違えない（`26` の T2） */
@@ -5456,6 +5469,240 @@ check(
   `${attrDock.before.join(" → ")} / 折りたたみ ${attrDock.folds} 個 / ` +
     `下へ運ぶと ${attrDock.afterDown.join(" → ")}（線 ${attrDock.lineDown}・控え ${attrDock.savedDown}）/ ` +
     `上へ戻すと ${attrDock.afterUp.join(" → ")}（控え ${attrDock.savedUp}）`,
+);
+
+/* 43z-20. 分割線を掴んで幅を変えられる（`27` の T2） */
+const splitDrag = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const vp = app.viewport;
+  app.state.doc.objects.length = 0;
+  app.state.doc.addObject("cube");
+  vp.syncAll();
+  app.refresh();
+  app.setLayoutForTest("quad");
+  await new Promise((r) => setTimeout(r, 150));
+
+  const before = [vp.paneRect(0).w, vp.paneRect(0).h];
+  const pane = document.getElementById("pane3d").getBoundingClientRect();
+  const bars = [...document.querySelectorAll(".panesplit")].map((b) => b.className.split(" ")[1]);
+
+  /** 分割線を掴んで動かす。which は "x"（縦線）か "y"（横線）。 */
+  const drag = async (which, ratio) => {
+    const bar = document.querySelector(`.panesplit[data-axis="${which}"]`);
+    const b = bar.getBoundingClientRect();
+    const to =
+      which === "x"
+        ? { x: pane.left + pane.width * ratio, y: pane.top + pane.height / 2 }
+        : { x: pane.left + pane.width / 2, y: pane.top + pane.height * ratio };
+    const ev = (type, at) =>
+      new PointerEvent(type, {
+        pointerId: 161,
+        pointerType: "touch",
+        bubbles: true,
+        cancelable: true,
+        clientX: at.x,
+        clientY: at.y,
+      });
+    bar.dispatchEvent(ev("pointerdown", { x: b.x + 5, y: b.y + 5 }));
+    window.dispatchEvent(ev("pointermove", to));
+    window.dispatchEvent(ev("pointerup", to));
+    await new Promise((r) => setTimeout(r, 80));
+  };
+
+  await drag("x", 0.3);
+  await drag("y", 0.7);
+  const after = [vp.paneRect(0).w, vp.paneRect(0).h];
+  const split = { ...vp.split };
+  // 端に寄せすぎても潰れない
+  await drag("x", 0.02);
+  const clamped = vp.split.x;
+  // 動かした先でも、そのペインを触ればアクティブになる（座標がずれていない）
+  const gl = document.getElementById("gl");
+  const at = { clientX: pane.left + pane.width * 0.6, clientY: pane.top + pane.height * 0.4 };
+  gl.dispatchEvent(new PointerEvent("pointerdown", { pointerId: 162, pointerType: "touch", bubbles: true, cancelable: true, ...at }));
+  gl.dispatchEvent(new PointerEvent("pointerup", { pointerId: 162, pointerType: "touch", bubbles: true, ...at }));
+  await new Promise((r) => setTimeout(r, 80));
+  const active = vp.active;
+
+  // .mbz に残る
+  const core = window.macbethCore;
+  app.state.doc.layout = vp.saveLayout();
+  const back = core.unpackMbz(core.packMbz(app.state.doc)).document.layout;
+
+  app.setLayoutForTest("single");
+  vp.setSplit("x", 0.5);
+  vp.setSplit("y", 0.5);
+  await new Promise((r) => setTimeout(r, 80));
+  app.state.doc.objects.length = 0;
+  vp.syncAll();
+  app.refresh();
+  return { bars, before, after, split, clamped, active, saved: back?.split?.x ?? null, w: pane.width, h: pane.height };
+});
+check(
+  "分割線を掴んで幅を変えられる",
+  splitDrag.bars.length === 2 &&
+    splitDrag.bars.includes("vertical") &&
+    splitDrag.bars.includes("horizontal") &&
+    Math.abs(splitDrag.split.x - 0.3) < 0.02 &&
+    Math.abs(splitDrag.split.y - 0.7) < 0.02 &&
+    splitDrag.after[0] < splitDrag.before[0] &&
+    splitDrag.after[1] > splitDrag.before[1] &&
+    Math.abs(splitDrag.clamped - 0.15) < 1e-6 &&
+    splitDrag.active === 1 &&
+    Math.abs((splitDrag.saved ?? 0) - 0.15) < 1e-6,
+  `線 ${splitDrag.bars.join(" / ")} / 左上のペイン ${splitDrag.before.map(Math.round).join("×")} → ` +
+    `${splitDrag.after.map(Math.round).join("×")}（比 ${splitDrag.split.x.toFixed(2)}, ${splitDrag.split.y.toFixed(2)}）/ ` +
+    `端で止まる ${splitDrag.clamped} / 動かした先で active ${splitDrag.active} / .mbz ${splitDrag.saved}`,
+);
+
+/* 43z-21. 選択したものだけ表示（`27` の T3） */
+const isolate = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const vp = app.viewport;
+  app.state.doc.objects.length = 0;
+  const cube = app.state.doc.addObject("cube");
+  const sphere = app.state.doc.addObject("sphere");
+  sphere.transform.position = [2.4, 0, 0];
+  vp.syncAll();
+  app.setCompMode("object");
+  app.state.select(cube);
+  app.refresh();
+  app.setLayoutForTest("cols");
+  await new Promise((r) => setTimeout(r, 150));
+
+  // 左のペインを触ってアクティブにしてから、シェードのカットインで隔離する
+  const pane = document.getElementById("pane3d").getBoundingClientRect();
+  const gl = document.getElementById("gl");
+  const at = { clientX: pane.left + pane.width * 0.25, clientY: pane.top + pane.height * 0.5 };
+  for (const type of ["pointerdown", "pointerup"]) {
+    gl.dispatchEvent(new PointerEvent(type, { pointerId: 171, pointerType: "touch", bubbles: true, cancelable: true, ...at }));
+  }
+  await new Promise((r) => setTimeout(r, 80));
+
+  const b = document.querySelector('#dockLeft .ibtn[data-group="display"]');
+  const r0 = b.getBoundingClientRect();
+  const tap = { clientX: r0.x + r0.width / 2, clientY: r0.y + r0.height / 2 };
+  for (const type of ["pointerdown", "pointerup"]) {
+    const e = new PointerEvent(type, { pointerId: 172, pointerType: "mouse", bubbles: true, cancelable: true, ...tap });
+    (type === "pointerdown" ? b : window).dispatchEvent(e);
+  }
+  await new Promise((r) => setTimeout(r, 150));
+  const chk = [...document.querySelectorAll('.cutin.wide[data-gauge="display"] .chk')].find((c) =>
+    c.textContent.includes("選択したものだけ"),
+  );
+  chk?.click();
+  await new Promise((r) => setTimeout(r, 150));
+
+  const isolated = [...(vp.panes[0].isolate ?? [])];
+  const other = vp.panes[1].isolate;
+  // 隔離したペインでは球が見えず、隣のペインでは見える
+  const hiddenHere = !vp.shownIn(vp.panes[0], sphere);
+  const shownThere = vp.shownIn(vp.panes[1], sphere);
+  const label = document.querySelector('.paneframe[data-index="0"] i')?.textContent ?? "";
+
+  // 隔離したペインでは球を選べない（見えていないものは拾わない）
+  vp.inputPane = 0;
+  app.state.select(null);
+  const picked = app.pickerForTest().pickSurface({ x: vp.paneRect(0).w / 2, y: vp.paneRect(0).h / 2 });
+  const pickedSphere = picked?.view.object === sphere;
+
+  // もう一度押すと戻る
+  const chk2 = [...document.querySelectorAll('.cutin.wide[data-gauge="display"] .chk')].find((c) =>
+    c.textContent.includes("選択したものだけ"),
+  );
+  chk2?.click();
+  await new Promise((r) => setTimeout(r, 120));
+  const back = vp.panes[0].isolate;
+
+  document.querySelector('.cutin.wide[data-gauge="display"]')?.remove();
+  app.setLayoutForTest("single");
+  app.state.doc.objects.length = 0;
+  vp.syncAll();
+  app.refresh();
+  return { isolated, other, hiddenHere, shownThere, label, pickedSphere, back, cubeId: cube.id };
+});
+check(
+  "選択したものだけ表示（ペインごと）",
+  isolate.isolated.length === 1 &&
+    isolate.isolated[0] === isolate.cubeId &&
+    isolate.other === null &&
+    isolate.hiddenHere &&
+    isolate.shownThere &&
+    isolate.label.includes("選択だけ") &&
+    !isolate.pickedSphere &&
+    isolate.back === null,
+  `隔離 ${isolate.isolated.length} 個 / 隣のペインは ${isolate.other} / ` +
+    `そのペインで球は 非表示 ${isolate.hiddenHere}・隣では 表示 ${isolate.shownThere} / ` +
+    `枠 「${isolate.label}」/ 球を拾わない ${!isolate.pickedSphere} / 戻すと ${isolate.back}`,
+);
+
+/* 43z-22. 透けているときは裏面から描く（`27` の T4） */
+const backPass = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const vp = app.viewport;
+  app.state.doc.objects.length = 0;
+  const sphere = app.state.doc.addObject("sphere");
+  vp.syncAll();
+  app.setCompMode("object");
+  app.state.select(sphere);
+  // 面を描く表示にしておく（ワイヤーだけなら 2 回描く必要が無い）
+  app.setDisplay("shadedWire");
+  app.refresh();
+  await new Promise((r) => setTimeout(r, 100));
+
+  const view = vp.viewOf(sphere);
+  const opaque = { back: !!view.back && view.back.visible };
+
+  // 不透明度を下げると裏面のぶんが出る
+  const host = app.panelHostForTest();
+  host.onOpacityInput(sphere, 0.4);
+  host.onOpacityCommit(sphere);
+  await new Promise((r) => setTimeout(r, 100));
+  const v2 = vp.viewOf(sphere);
+  const faded = {
+    back: !!v2.back && v2.back.visible,
+    // 裏 → 表の順（renderOrder が小さいほうが先）
+    order: v2.back ? v2.back.renderOrder < v2.surface.renderOrder : false,
+    backSide: v2.back?.material.side,
+    frontSide: v2.surface.material.side,
+    sameGeometry: v2.back?.geometry === v2.surface.geometry,
+    opacity: v2.back?.material.opacity,
+    depthWrite: v2.back?.material.depthWrite,
+  };
+
+  // 裏面を描かない設定のときは、2 回描く必要が無いので出さない
+  host.onDisplayToggle("cullBack", true);
+  await new Promise((r) => setTimeout(r, 80));
+  const culled = !!vp.viewOf(sphere).back?.visible;
+  host.onDisplayToggle("cullBack", false);
+
+  // 不透明に戻すと消える
+  host.onOpacityInput(sphere, 1);
+  host.onOpacityCommit(sphere);
+  await new Promise((r) => setTimeout(r, 80));
+  const backOpaque = !!vp.viewOf(sphere).back?.visible;
+
+  app.state.select(null);
+  app.state.doc.objects.length = 0;
+  vp.syncAll();
+  app.refresh();
+  return { opaque, faded, culled, backOpaque };
+});
+check(
+  "透けているときは裏面から描く",
+  !backPass.opaque.back &&
+    backPass.faded.back &&
+    backPass.faded.order &&
+    backPass.faded.backSide === 1 &&
+    backPass.faded.frontSide === 2 &&
+    backPass.faded.sameGeometry &&
+    Math.abs(backPass.faded.opacity - 0.4) < 1e-6 &&
+    backPass.faded.depthWrite === false &&
+    !backPass.culled &&
+    !backPass.backOpaque,
+  `不透明では出さない ${!backPass.opaque.back} / 透けると 裏面 ${backPass.faded.back}・先に描く ${backPass.faded.order}・` +
+    `side ${backPass.faded.backSide}（表は ${backPass.faded.frontSide}）・不透明度 ${backPass.faded.opacity} / ` +
+    `裏面を描かない設定では出さない ${!backPass.culled} / 不透明に戻すと消える ${!backPass.backOpaque}`,
 );
 
 /* 44. ツール列のグループ（`21` の 4 章） */

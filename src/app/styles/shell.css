@@ -226,11 +226,18 @@ button{font-family:inherit; font-size:inherit; color:inherit; background:none; b
   box-shadow:0 6px 18px rgba(0,0,0,.45)}
 .twist-pop i{font-style:normal; font-size:10px; letter-spacing:.08em; color:var(--text-faint)}
 .twist-pop b{font-family:"IBM Plex Mono",monospace; font-size:13px; font-weight:500; color:var(--text)}
+/* 今の傾き（b）の横に、この操作で動かした量（s）を小さく出す（27 の T1） */
+.twist-pop s{font-family:"IBM Plex Mono",monospace; font-size:11px; text-decoration:none; color:var(--accent)}
 
 /* 3D の分割（25 の T6）。canvas は 1 枚で、枠だけを重ねる */
 .panes{position:absolute; inset:0; pointer-events:none; z-index:4}
 .paneframe{position:absolute; border:1px solid var(--line); box-sizing:border-box}
 .paneframe[data-active="true"]{border-color:var(--accent)}
+/* 分割線のつまみ（27 の T2）。枠と違ってここだけ指を受ける */
+.panesplit{position:absolute; pointer-events:auto; touch-action:none; z-index:5; background:transparent}
+.panesplit.vertical{top:0; bottom:0; width:11px; margin-left:-5px; cursor:col-resize}
+.panesplit.horizontal{left:0; right:0; height:11px; margin-top:-5px; cursor:row-resize}
+.panesplit:hover{background:var(--accent); opacity:.35}
 .paneframe i{position:absolute; left:5px; bottom:4px; font-style:normal; font-size:9px;
   letter-spacing:.04em; color:var(--text-faint)}
 .paneframe[data-active="true"] i{color:var(--accent)}

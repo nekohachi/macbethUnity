@@ -87,6 +87,7 @@ import { Selector } from "./tools/select.js";
 import { mirrorPairs, softWeights } from "./tools/softSelect.js";
 import {
   applyGestureTransform,
+  tiltAbout,
   beginDrag,
   updateDrag,
   type DragState,
@@ -340,6 +341,11 @@ export class App {
   /** 2D に今出ているオブジェクト。選択が変わったら入れ替える（`25` の T1）。 */
   private uvObject: SceneObject | null = null;
   /** 通し確認からオプションの操作を叩くための入口。 */
+  /** 通し確認からピッキングを直に確かめる。 */
+  pickerForTest(): Picker {
+    return this.picker;
+  }
+
   /** 通し確認から分割を変える（本物の経路は「分割」ボタン）。 */
   setLayoutForTest(kind: LayoutKind): void {
     this.setLayout(kind);
@@ -793,8 +799,17 @@ export class App {
       this.preserve = null;
       this.gestureLabel = "回転";
       const signed = `${stepped >= 0 ? "+" : ""}${stepped}°`;
-      this.showTwist(axis.name, signed, t.at);
-      note = `回転 <kbd>${axis.name} ${signed}</kbd>`;
+      // 今の傾き（その軸まわりの絶対角）も出す。コンポーネントには「今の傾き」が
+      // 無いので、そのときは動かした量だけ（`27` の T1）
+      const tilt =
+        drag.target.kind === "object"
+          ? tiltAbout(new Quaternion(...o.transform.rotation), axis.dir) * (toward ? -1 : 1)
+          : null;
+      this.showTwist(axis.name, signed, tilt, t.at);
+      note =
+        tilt === null
+          ? `回転 <kbd>${axis.name} ${signed}</kbd>`
+          : `回転 <kbd>${axis.name} ${Math.round(tilt)}°</kbd> <kbd>${signed}</kbd>`;
     } else if (t.kind === "scale") {
       // ALT を押しながらなら、つまんだ向きの軸だけ伸ばす（`25` の T2）
       const axis = this.state.modOn("alt") ? this.gestureScaleAxis(t.axis) : null;
@@ -854,13 +869,22 @@ export class App {
       : { name: "Z", dir: new Vector3(0, 0, 1) };
   }
 
-  /** ひねりの角度を出す札。指の重心の上に置く（`26` の T1）。 */
-  private showTwist(axis: string, angle: string, at: { x: number; y: number }): void {
+  /**
+   * ひねりの角度を出す札。指の重心の上に置く（`26` の T1、`27` の T1）。
+   *
+   * 出すのは 2 つ。**今その軸で何度傾いているか**（`tilt`）と、
+   * **この操作で何度動かしたか**（`angle`）。コンポーネントには前者が無いので、
+   * `tilt` が null なら動かした量だけを大きく出す。
+   */
+  private showTwist(axis: string, angle: string, tilt: number | null, at: { x: number; y: number }): void {
     if (!this.twistPop) {
       this.twistPop = el("div", "twist-pop");
       document.body.appendChild(this.twistPop);
     }
-    this.twistPop.innerHTML = `<i>${axis}</i><b>${angle}</b>`;
+    this.twistPop.innerHTML =
+      tilt === null
+        ? `<i>${axis}</i><b>${angle}</b>`
+        : `<i>${axis}</i><b>${Math.round(tilt)}°</b><s>${angle}</s>`;
     this.twistPop.style.left = `${at.x}px`;
     this.twistPop.style.top = `${Math.max(6, at.y - 56)}px`;
   }
@@ -3863,6 +3887,7 @@ export class App {
       canGrow: this.state.compMode !== "object" && this.state.comp.size > 0,
       alsoCount: this.state.also.size,
       attrDock: this.attrDock,
+      isolate: !!this.viewport.pane.isolate,
       cut: this.state.cut,
       bevel: this.state.bevel,
       bevelActive: this.bevel.active,
@@ -4183,6 +4208,18 @@ export class App {
         this.state.camOpts.ortho = on;
         this.viewport.applyCamera();
         this.refresh();
+      },
+      onIsolate: () => {
+        const ids = [this.state.selected, ...this.state.also]
+          .filter((o): o is SceneObject => !!o)
+          .map((o) => o.id);
+        if (!this.viewport.pane.isolate && !ids.length) {
+          this.hud.toast("先にオブジェクトを選んでください");
+          return;
+        }
+        const on = this.viewport.toggleIsolate(ids);
+        this.reopenToolOptions("display");
+        this.hud.toast(on ? `選択した ${ids.length} 個だけを表示（このペイン）` : "全部を表示に戻した");
       },
       onCamLockChange: (on) => {
         this.state.camOpts.locked = on;

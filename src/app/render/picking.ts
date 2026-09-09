@@ -227,7 +227,14 @@ export class Picker {
     const views = this.viewport
       .allViews()
       // ロックしたものは選べない（`19` の 3.3 のアウトライナ）
-      .filter((v) => v.object.visible && !v.object.locked && (!exclude || v.object !== exclude));
+      // 隔離（`27` の T3）で見えていないものも選べない
+      .filter(
+        (v) =>
+          v.object.visible &&
+          !v.object.locked &&
+          !this.viewport.isolatedOut(v.object) &&
+          (!exclude || v.object !== exclude),
+      );
     const hits = raycaster.intersectObjects(
       views.map((v) => v.surface),
       false,

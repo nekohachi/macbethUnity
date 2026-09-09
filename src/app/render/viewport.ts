@@ -5,6 +5,7 @@
  * PC の操作割り当ては input 側で行い、ここは動きだけを提供する。
  */
 import {
+  BackSide,
   Box3,
   BufferGeometry,
   DirectionalLight,
@@ -26,6 +27,8 @@ import {
   WebGLRenderTarget,
   WebGLRenderer,
   type Camera,
+  type MeshBasicMaterial,
+  type MeshPhongMaterial,
 } from "three";
 import type { PaneLayout, SceneObject } from "../../core/index.js";
 import { defaultCamOpts, type AppState, type PaneLike } from "../state.js";
@@ -88,6 +91,11 @@ export interface Pane extends PaneLike {
   cam: OrbitCamera;
   persp: PerspectiveCamera;
   ortho: OrthographicCamera;
+  /**
+   * このペインだけで見せるオブジェクトの id（Maya の Isolate Select。`27` の T3）。
+   * null なら全部見せる。`.mbz` には入れない（作業中の都合）。
+   */
+  isolate: Set<string> | null;
 }
 
 /** ペインの矩形（container の中の CSS ピクセル。左上が原点）。 */
@@ -108,6 +116,7 @@ function makePane(view: ViewName): Pane {
     cam: { target: new Vector3(0, 0.4, 0), theta: v.theta, phi: v.phi, distance: 7.2 },
     persp: new PerspectiveCamera(45, 1, 0.05, 500),
     ortho: new OrthographicCamera(-1, 1, 1, -1, 0.05, 500),
+    isolate: null,
   };
 }
 
@@ -128,6 +137,11 @@ export class Viewport {
   /* ---- ペイン（`25` の T6） -------------------------------------------- */
 
   layout: LayoutKind = "single";
+  /**
+   * 分割の比（`27` の T2）。左の列の幅と上の段の高さ、どちらも 0〜1。
+   * 分割線を掴んで動かすと変わる。
+   */
+  split = { x: 0.5, y: 0.5 };
   panes: Pane[] = [makePane("persp")];
   /** 最後に触れたペイン。シェードとカメラはここに効く。 */
   active = 0;
@@ -211,18 +225,34 @@ export class Viewport {
   paneRect(i: number): PaneRect {
     const w = this.container.clientWidth || 1;
     const h = this.container.clientHeight || 1;
-    const hw = w / 2;
-    const hh = h / 2;
+    // 分割線の位置。掴んで動かせる（`27` の T2）
+    const sx = Math.round(w * this.split.x);
+    const sy = Math.round(h * this.split.y);
     switch (this.layout) {
       case "cols":
-        return { x: i === 0 ? 0 : hw, y: 0, w: hw, h };
+        return i === 0 ? { x: 0, y: 0, w: sx, h } : { x: sx, y: 0, w: w - sx, h };
       case "rows":
-        return { x: 0, y: i === 0 ? 0 : hh, w, h: hh };
+        return i === 0 ? { x: 0, y: 0, w, h: sy } : { x: 0, y: sy, w, h: h - sy };
       case "quad":
-        return { x: i % 2 === 0 ? 0 : hw, y: i < 2 ? 0 : hh, w: hw, h: hh };
+        return {
+          x: i % 2 === 0 ? 0 : sx,
+          y: i < 2 ? 0 : sy,
+          w: i % 2 === 0 ? sx : w - sx,
+          h: i < 2 ? sy : h - sy,
+        };
       default:
         return { x: 0, y: 0, w, h };
     }
+  }
+
+  /**
+   * 分割線を動かす（`27` の T2）。`which` は縦線 / 横線、値は 0〜1 の比。
+   * 端に寄せすぎるとペインが潰れるので 0.15〜0.85 で止める。
+   */
+  setSplit(which: "x" | "y", ratio: number): void {
+    this.split[which] = Math.max(0.15, Math.min(0.85, ratio));
+    this.applyCameraAll();
+    this.paintFrames();
   }
 
   /** container の中のローカル座標が、どのペインに入るか。 */
@@ -267,10 +297,85 @@ export class Viewport {
       f.style.width = `${r.w}px`;
       f.style.height = `${r.h}px`;
       const label = document.createElement("i");
-      label.textContent = this.panes[i].viewName;
+      label.textContent = this.panes[i].viewName + (this.panes[i].isolate ? " · 選択だけ" : "");
       f.appendChild(label);
       this.frames.appendChild(f);
     }
+    this.paintSplitters();
+  }
+
+  /**
+   * 分割線のつまみ（`27` の T2）。枠と違ってこれだけは指を受ける。
+   * 縦線は左右の幅、横線は上下の高さを変える。
+   */
+  private paintSplitters(): void {
+    if (!this.frames) return;
+    const w = this.container.clientWidth || 1;
+    const h = this.container.clientHeight || 1;
+    const add = (which: "x" | "y") => {
+      const bar = document.createElement("div");
+      bar.className = `panesplit ${which === "x" ? "vertical" : "horizontal"}`;
+      bar.dataset.axis = which;
+      if (which === "x") bar.style.left = `${Math.round(w * this.split.x)}px`;
+      else bar.style.top = `${Math.round(h * this.split.y)}px`;
+      this.attachSplitter(bar, which);
+      this.frames?.appendChild(bar);
+    };
+    if (this.layout === "cols" || this.layout === "quad") add("x");
+    if (this.layout === "rows" || this.layout === "quad") add("y");
+  }
+
+  private attachSplitter(bar: HTMLElement, which: "x" | "y"): void {
+    let pid: number | null = null;
+    const move = (e: PointerEvent) => {
+      if (e.pointerId !== pid) return;
+      const r = this.container.getBoundingClientRect();
+      const ratio =
+        which === "x" ? (e.clientX - r.left) / (r.width || 1) : (e.clientY - r.top) / (r.height || 1);
+      // 動かすと枠ごと作り直されるので、掴んでいる要素は途中で無くなる。
+      // 購読は window に置いてあるので追いかけ続けられる
+      this.setSplit(which, ratio);
+    };
+    const up = (e: PointerEvent) => {
+      if (e.pointerId !== pid) return;
+      pid = null;
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
+    };
+    bar.addEventListener("pointerdown", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      pid = e.pointerId;
+      window.addEventListener("pointermove", move);
+      window.addEventListener("pointerup", up);
+      window.addEventListener("pointercancel", up);
+    });
+  }
+
+  /**
+   * このペインでそのオブジェクトを見せるか（`27` の T3）。
+   * 隠しているもの（`visible = false`）と、隔離から外れたものは見せない。
+   */
+  shownIn(pane: Pane, o: SceneObject): boolean {
+    return o.visible && (!pane.isolate || pane.isolate.has(o.id));
+  }
+
+  /**
+   * アクティブなペインの隔離を入れ替える（Maya の Isolate Select）。
+   * 入れるのは今の選択。返すのは入れたあとの状態。
+   */
+  toggleIsolate(ids: string[]): boolean {
+    const pane = this.pane;
+    pane.isolate = pane.isolate ? null : new Set(ids);
+    this.paintFrames();
+    return !!pane.isolate;
+  }
+
+  /** 入力を受けているペインで隠れているか。ピッキングが見る（`27` の T3）。 */
+  isolatedOut(o: SceneObject): boolean {
+    const pane = this.inputPaneRef;
+    return !!pane.isolate && !pane.isolate.has(o.id);
   }
 
   /** ペインの名前や向きが変わったときに、枠の表示をそろえる。 */
@@ -282,6 +387,7 @@ export class Viewport {
   saveLayout(): PaneLayout {
     return {
       kind: this.layout,
+      split: { ...this.split },
       panes: this.panes.map((p) => ({
         view: p.view,
         target: [p.cam.target.x, p.cam.target.y, p.cam.target.z] as [number, number, number],
@@ -298,6 +404,7 @@ export class Viewport {
   /** 控えた分割を戻す。無ければ 1 画面のまま。 */
   restoreLayout(saved: PaneLayout | null): void {
     const kind = (saved?.kind ?? "single") as LayoutKind;
+    if (saved?.split) this.split = { x: saved.split.x, y: saved.split.y };
     const views = LAYOUT_VIEWS[kind] ?? LAYOUT_VIEWS.single;
     this.layout = LAYOUT_VIEWS[kind] ? kind : "single";
     this.panes = views.map((v, i) => {
@@ -621,6 +728,14 @@ export class Viewport {
     for (const view of this.views.values()) this.applyDisplay(view, pane.display);
   }
 
+  /**
+   * そのペインで見せるものだけを表示にする（`27` の T3）。
+   * 表示の付け替えと違って毎フレーム必ず通す（真偽値の代入だけなので軽い）。
+   */
+  private applyPaneVisibility(pane: Pane): void {
+    for (const view of this.views.values()) view.group.visible = this.shownIn(pane, view.object);
+  }
+
   /** 最後に材質へ当てた表示。ペインを跨ぐたびに付け替えるので、同じなら省く。 */
   private paneDisplayApplied: string | null = null;
   private paneDisplayStamp = -1;
@@ -654,6 +769,8 @@ export class Viewport {
       mat.needsUpdate = true;
     }
     view.surface.material = mat;
+    // 透けているときは「裏面 → 表面」の 2 回に分けて描く（`27` の T4）
+    this.applyBackPass(view, mat, opacity < 1 && view.surface.visible && !this.state.cullBack);
     view.wire.visible = d === "wire" || d === "shadedWire" || selected;
     view.wire.material = !selected
       ? MAT.wire
@@ -662,6 +779,44 @@ export class Viewport {
         : MAT.wireComp;
     view.points.visible = selected && this.state.compMode === "vertex";
     view.group.visible = view.object.visible;
+  }
+
+  /**
+   * 透けている面を「裏 → 表」の 2 回に分けて描く（`27` の T4）。
+   *
+   * 1 回で描くと、同じオブジェクトの裏の面が表より後に来ることがあり、
+   * 内側の形が手前に浮いて見える。裏面だけの複製を先に描けばその順が決まる。
+   * `depthWrite` は両方とも切ったまま（深度を書くと透けなくなる）。
+   *
+   * 透けたオブジェクトどうしの前後は three.js の距離順に任せている。
+   * 重なった透明 2 つの厳密な順までは面倒を見ない（`27` の「やらないこと」）。
+   */
+  private applyBackPass(view: ObjectView, front: MeshPhongMaterial | MeshBasicMaterial, on: boolean): void {
+    if (!on) {
+      if (view.back) view.back.visible = false;
+      return;
+    }
+    if (!view.back) {
+      view.back = new ThreeMesh(view.surface.geometry, front);
+      // 表より先に描く
+      view.back.renderOrder = -1;
+      view.group.add(view.back);
+    }
+    if (view.backSource !== front) {
+      view.backMaterial?.dispose();
+      view.backMaterial = front.clone();
+      view.backSource = front;
+    }
+    const m = view.backMaterial as MeshPhongMaterial;
+    m.side = BackSide;
+    m.transparent = true;
+    m.opacity = front.opacity;
+    m.depthWrite = false;
+    m.needsUpdate = true;
+    // ジオメトリは作り直されることがあるので、毎回そろえる
+    view.back.geometry = view.surface.geometry;
+    view.back.material = m;
+    view.back.visible = true;
   }
 
   applyDisplayAll(): void {
@@ -686,7 +841,12 @@ export class Viewport {
         m.side = side;
         m.needsUpdate = true;
       }
+      // 裏面を描かないなら、裏面のぶんも要らない（`27` の T4）
+      if (this.state.cullBack && view.back) view.back.visible = false;
     }
+    // 次のフレームでペインごとに当て直す（裏面のぶんの出し入れもここで決まる）
+    this.displayStamp++;
+    this.paneDisplayApplied = null;
   }
 
   /** チェッカーの細かさや模様を変えた（`23` の T3）。材質を作り直す。 */
@@ -825,6 +985,7 @@ export class Viewport {
       const h = this.container.clientHeight || 1;
       r.setViewport(0, 0, w, h);
       this.applyPaneDisplay(this.panes[0]);
+      this.applyPaneVisibility(this.panes[0]);
       r.render(this.scene, this.cameraOf(this.panes[0]));
       return;
     }
@@ -839,6 +1000,7 @@ export class Viewport {
       r.setScissor(rect.x, y, rect.w, rect.h);
       this.manip.visible = manipWas && i === this.active;
       this.applyPaneDisplay(this.panes[i]);
+      this.applyPaneVisibility(this.panes[i]);
       r.render(this.scene, this.cameraOf(this.panes[i]));
     }
     this.manip.visible = manipWas;

@@ -169,6 +169,8 @@ export class SceneObject {
  */
 export interface PaneLayout {
   kind: string;
+  /** 分割線の位置（0〜1。`27` の T2）。無ければ半分。 */
+  split?: { x: number; y: number };
   panes: Array<{
     view: string;
     target: Vec3;

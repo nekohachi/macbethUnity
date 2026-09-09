@@ -47,6 +47,8 @@ export interface PanelHost {
   onCheckerChange(key: "cells" | "cellsPreview" | "pattern", value: number | string): void;
   /** 3D の表示（`23` の T6）。裏面を描かない / グリッド。 */
   onDisplayToggle(key: "cullBack" | "showGrid", on: boolean): void;
+  /** 今のペインで選択したものだけ見せる（`27` の T3）。 */
+  onIsolate(): void;
   /** アトリビュートの転送（`24` の T6）。 */
   onTransfer(key: "positions" | "uvs" | "space" | "swap" | "run", value?: boolean | string): void;
   /** 回転の刻み（度。0 でなし）。 */
@@ -215,6 +217,8 @@ export interface OptionsState {
   alsoCount: number;
   /** アトリビュート欄の置き場所（`26` の T4）。 */
   attrDock: "top" | "bottom";
+  /** 今のペインが「選択したものだけ」になっているか（`27` の T3）。 */
+  isolate: boolean;
   cut: { snapStep: number; edgeFlow: boolean };
   bevel: { width: number; segments: number };
   /** ベベルを確定した直後か。作り直せる間だけ出す。 */
@@ -829,6 +833,8 @@ export function displaySection(state: OptionsState, host: PanelHost): HTMLElemen
     onInput: (v) => host.onSmoothAngleChange(v),
   });
   checkbox(s, "裏面を描かない", state.cullBack, (v) => host.onDisplayToggle("cullBack", v));
+  // このペインで選択だけを見せる（Maya の Isolate Select。`27` の T3）
+  checkbox(s, "選択したものだけ", state.isolate, () => host.onIsolate());
   // グリッドは上段の「表示」にも同じものがある（`24` の T4）
   checkbox(s, "グリッド", state.showGrid, (v) => host.onDisplayToggle("showGrid", v));
   checkbox(s, "歪みを色で（ヒートマップ）", state.uvHeat, (v) => host.onUvHeatChange(v));
@@ -836,7 +842,7 @@ export function displaySection(state: OptionsState, host: PanelHost): HTMLElemen
     el(
       "div",
       "hint",
-      "長押しで ワイヤ / シェード / シェード + ワイヤ / スムース を選べます（4〜7）。\nヒートマップは 9。1.0 は歪みなし、緑 → 黄 → 赤 の順に歪んでいます。",
+      "長押しで ワイヤ / シェード / シェード + ワイヤ / スムース を選べます（4〜7）。\n「選択したものだけ」は今のペインにだけ効きます。分割していれば隣は元のまま。",
     ),
   );
   return s;

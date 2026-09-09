@@ -206,6 +206,24 @@ export function updateDrag(
  * 開始時点の控えに毎回当て直すので、行ったり来たりしてもずれない。
  * ソフト選択の重みと対称編集は、コンポーネントの控えにそのまま入っている。
  */
+/**
+ * クォータニオンのうち、その軸まわりの回転（度。`27` の T1）。
+ *
+ * スイング・ツイスト分解。軸に平行な成分だけを取り出して角度に直す。
+ * 「今この軸で何度傾いているか」を出すのに使う。返すのは −180〜180。
+ */
+export function tiltAbout(q: Quaternion, axis: Vector3): number {
+  const v = new Vector3(q.x, q.y, q.z);
+  const along = axis.clone().multiplyScalar(v.dot(axis));
+  const len = Math.hypot(along.x, along.y, along.z);
+  // 軸に垂直な 180° 回転だと成分が消える。そこは 0 とする
+  if (len < 1e-9 && Math.abs(q.w) < 1e-9) return 0;
+  const sign = along.dot(axis) < 0 ? -1 : 1;
+  const deg = (2 * Math.atan2(len, Math.abs(q.w)) * 180) / Math.PI;
+  const signed = deg * sign * (q.w < 0 ? -1 : 1);
+  return ((((signed + 180) % 360) + 360) % 360) - 180;
+}
+
 export function applyGestureTransform(
   drag: DragState,
   object: SceneObject,
