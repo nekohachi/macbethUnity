@@ -46,6 +46,7 @@ import {
   nodesFromObjects,
   writeGlb,
   writeObj,
+  type Mesh,
   type SceneObject,
 } from "../core/index.js";
 import {
@@ -268,6 +269,24 @@ const SNAP_ICONS: Record<SnapKind, string> = {
 /** シェーディングごとのアイコン。 */
 /** 3 本指のひねりの刻み（度。`26` の T1）。マニピュレータの刻みとは別。 */
 const TWIST_STEP_DEG = 5;
+
+/**
+ * その頂点たちに触る面の、すべてのコーナー番号（`29` の B-T4）。
+ * Preserve UVs で書き換わるのはこの範囲なので、履歴の差分もここだけ控える。
+ */
+function cornersAround(mesh: Mesh, verts: Iterable<number>): number[] {
+  const faces = mesh.vertexFaces();
+  const seen = new Set<number>();
+  const out: number[] = [];
+  for (const v of verts) {
+    for (const f of faces.get(v) ?? []) {
+      if (seen.has(f)) continue;
+      seen.add(f);
+      for (let i = mesh.faceOffsets[f]; i < mesh.faceOffsets[f + 1]; i++) out.push(i);
+    }
+  }
+  return out;
+}
 
 /** 分割のアイコンと名前（`25` の T6）。 */
 const LAYOUT_ICONS: Record<LayoutKind, string> = {
@@ -762,7 +781,7 @@ export class App {
     if (!target) return false;
 
     const pivotScreen = this.manipulator.toScreen(pivot);
-    this.dragSnapshot = this.history.snapshot();
+    this.beginDragHistory(o, target);
     this.gestureDrag = beginDrag({
       handle: HANDLE_GESTURE,
       pivot,
@@ -921,8 +940,11 @@ export class App {
     this.gestureLabel = "変形";
     this.hideTwist();
     this.commitPreserve();
-    if (moved && this.dragSnapshot) this.history.commit(label, this.dragSnapshot);
-    this.dragSnapshot = null;
+    if (moved) this.commitDragHistory(label);
+    else {
+      this.history.abortPending();
+      this.dragSnapshot = null;
+    }
     this.refresh();
     this.hud.defaultHint();
   }
@@ -999,6 +1021,44 @@ export class App {
     const recipe = p.object.uv;
     if (recipe) recordPreserved(p.object.mesh, recipe, p.before.uv);
     if (this.state.mode === "uv") this.uv?.rebuild();
+  }
+
+  /**
+   * ドラッグの控えを取る（`29` の B-T4）。
+   *
+   * 座標だけ / トランスフォームだけで済むなら**差分**、済まないなら全複製。
+   * 差分で済まないのは、UV のレシピに差分が記録される場合（Preserve UVs が
+   * オンで、そのオブジェクトがレシピを持っているとき）。レシピは差分に入らない。
+   */
+  private beginDragHistory(o: SceneObject, target: DragTarget): void {
+    this.dragSnapshot = null;
+    this.history.abortPending();
+    if (target.kind === "object") {
+      this.history.beginTransform(o);
+      return;
+    }
+    const verts = this.movedVerts(target);
+    const uv = o.mesh.uvSets.get(UV_SET);
+    const preserving = this.state.preserveUvs && !!uv;
+    if (preserving && o.uv) {
+      // レシピへ差分が記録される。差分では戻せないので全複製
+      this.dragSnapshot = this.history.snapshot();
+      return;
+    }
+    this.history.beginPositions(o, verts, preserving ? cornersAround(o.mesh, verts) : undefined);
+  }
+
+  /**
+   * ドラッグの控えを積む。差分なら何も動いていなければ積まない。
+   * 積んだかどうかを返す。
+   */
+  private commitDragHistory(label: string): boolean {
+    if (this.dragSnapshot) {
+      this.history.commit(label, this.dragSnapshot);
+      this.dragSnapshot = null;
+      return true;
+    }
+    return this.history.commitPending(label);
   }
 
   /** ドラッグ対象の頂点（対称編集の相手も含む）。 */
@@ -1137,10 +1197,10 @@ export class App {
       return;
     }
 
-    const snapshot = this.history.snapshot();
     let label = { move: "移動", rotate: "回転", scale: "スケール" }[handleKind(handle) ?? "move"];
 
-    // SHF + CTL + 移動 = スライド（docs/17 の 5 章）
+    // SHF + CTL + 移動 = スライド（docs/17 の 5 章）。
+    // スライドは自前の控えを持つので、履歴は今までどおり全複製（`29` の B-T4）
     if (
       handleKind(handle) === "move" &&
       this.state.compMode !== "object" &&
@@ -1148,6 +1208,7 @@ export class App {
       shift &&
       ctrl
     ) {
+      const snapshot = this.history.snapshot();
       if (this.beginSlide(o, p)) {
         this.dragSnapshot = snapshot;
         this.manipulator.hot = handle;
@@ -1157,9 +1218,15 @@ export class App {
     }
 
     // Shift + 移動 = 押し出してから移動（Maya と同じ）。
-    // 生きた時点で行うので、Shift + タップでは押し出さない
+    // 生きた時点で行うので、Shift + タップでは押し出さない。
+    // トポロジが変わるので、押し出すなら控えは**押し出す前の全複製**
+    let extrudeSnapshot: ReturnType<History["snapshot"]> | null = null;
     if (handleKind(handle) === "move" && this.state.compMode !== "object" && this.state.comp.size && shift && !ctrl) {
-      if (this.extrudeForDrag(o)) label = "押し出し";
+      const snapshot = this.history.snapshot();
+      if (this.extrudeForDrag(o)) {
+        label = "押し出し";
+        extrudeSnapshot = snapshot;
+      }
     }
 
     const target = this.captureTarget();
@@ -1168,7 +1235,13 @@ export class App {
       return;
     }
 
-    this.dragSnapshot = snapshot;
+    // 座標だけで済むなら差分、済まないなら全複製
+    if (extrudeSnapshot) {
+      this.history.abortPending();
+      this.dragSnapshot = extrudeSnapshot;
+    } else {
+      this.beginDragHistory(o, target);
+    }
     this.drag = beginDrag({
       handle,
       pivot: this.pivotWorld() ?? pivot,
@@ -1747,20 +1820,20 @@ export class App {
       // ペンと指は生きた時点で既に動いているので、ここに来るのはマウスだけ
       if (!moved) {
         this.dragSnapshot = null;
+        this.history.abortPending();
         this.applySelectResult(this.selector.click(p, e));
-      } else if (this.dragSnapshot) {
+      } else {
         const target = this.weldTarget;
         const moving = this.state.compMode === "vertex" ? [...this.state.comp][0] : undefined;
         if (target !== null && moving !== undefined && this.state.selected) {
+          // ウェルドはトポロジが変わる。差分では戻せないので全複製に切り替える
+          const snap = this.dragSnapshot ?? this.history.upgradeToFull();
+          this.dragSnapshot = null;
           this.applyTargetWeld(this.state.selected, moving, target);
-          this.history.commit("ターゲットウェルド", this.dragSnapshot);
-        } else {
-          this.history.commit(drag.label, this.dragSnapshot);
+          if (snap) this.history.commit("ターゲットウェルド", snap);
+        } else if (this.commitDragHistory(drag.label)) {
           this.hud.toast(drag.label);
         }
-        this.dragSnapshot = null;
-      } else {
-        this.dragSnapshot = null;
       }
       this.refresh();
     } else if (!moved) {

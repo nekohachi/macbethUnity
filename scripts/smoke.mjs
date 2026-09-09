@@ -5869,6 +5869,87 @@ check(
     `中央 ±60px は ${[...new Set(topbar.sample)].join(",")}`,
 );
 
+/* 43z-26. ドラッグの履歴は動いた頂点だけを持つ（`29` の B-T4） */
+const diffHistory = await page.evaluate(async () => {
+  const app = window.macbeth;
+  app.state.doc.objects.length = 0;
+  const o = app.state.doc.addObject("sphere");
+  o.params.sdAxis = 60;
+  o.params.sdHeight = 40;
+  o.rebuild();
+  app.viewport.syncAll();
+  app.state.select(o);
+  // 面を掴んで動かす（ツイーク）。頂点 1 つだと近くの頂点へ溶接されてしまい、
+  // トポロジが変わって全複製になる。それは正しい動きなので、ここでは面で見る
+  app.setCompMode("face");
+  app.viewport.frameSelected();
+  app.refresh();
+  await new Promise((r) => setTimeout(r, 150));
+  const verts = o.mesh.vertexCount;
+
+  // 画面の真ん中あたりの頂点を 1 つ選んでツイークする（本物の経路）
+  const pane = document.getElementById("pane3d").getBoundingClientRect();
+  const gl = document.getElementById("gl");
+  const at = { clientX: pane.left + pane.width / 2, clientY: pane.top + pane.height / 2 };
+  const ev = (type, x, y) =>
+    new PointerEvent(type, { pointerId: 181, pointerType: "pen", bubbles: true, cancelable: true, clientX: x, clientY: y, buttons: type === "pointerup" ? 0 : 1 });
+  gl.dispatchEvent(ev("pointerdown", at.clientX, at.clientY));
+  gl.dispatchEvent(ev("pointerup", at.clientX, at.clientY));
+  await new Promise((r) => setTimeout(r, 120));
+  const picked = app.state.comp.size;
+
+  // 選んだ面をつかんで動かす
+  const face = [...app.state.comp][0] ?? 0;
+  const moved = o.mesh.faceCorners[o.mesh.faceOffsets[face]];
+  const p0 = [...o.mesh.getPosition(moved)];
+  gl.dispatchEvent(ev("pointerdown", at.clientX, at.clientY));
+  for (let i = 1; i <= 6; i++) {
+    gl.dispatchEvent(ev("pointermove", at.clientX + i * 6, at.clientY - i * 4));
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  gl.dispatchEvent(ev("pointerup", at.clientX + 36, at.clientY - 24));
+  await new Promise((r) => setTimeout(r, 150));
+  const entry = app.history.lastEntry();
+  const p1 = [...o.mesh.getPosition(moved)];
+  const dragged = Math.hypot(p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]);
+
+  // 取り消すと座標が戻る
+  app.history.undo();
+  await new Promise((r) => setTimeout(r, 80));
+  const p2 = [...app.state.doc.objects[0].mesh.getPosition(moved)];
+  const backHome = Math.hypot(p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]);
+
+  // 面を押し出すとトポロジが変わるので全複製
+  app.state.comp.clear();
+  app.state.comp.add(0);
+  app.doExtrudeFaces();
+  await new Promise((r) => setTimeout(r, 120));
+  const full = app.history.lastEntry();
+  app.history.undo();
+  await new Promise((r) => setTimeout(r, 80));
+  const backFaces = app.state.doc.objects[0].mesh.vertexCount === verts;
+
+  app.setCompMode("object");
+  app.state.select(null);
+  app.state.doc.objects.length = 0;
+  app.viewport.syncAll();
+  app.refresh();
+  return { picked, entry, dragged, backHome, full, backFaces, verts };
+});
+check(
+  "ドラッグの履歴は動いた頂点だけを持つ",
+  diffHistory.picked === 1 &&
+    diffHistory.entry?.kind === "positions" &&
+    diffHistory.entry.bytes < 4096 &&
+    diffHistory.dragged > 0.01 &&
+    diffHistory.backHome < 1e-6 &&
+    diffHistory.full?.kind === "full" &&
+    diffHistory.full.bytes > 100000 &&
+    diffHistory.backFaces,
+  `頂点 ${diffHistory.verts} 個の球 / 面のツイーク ${diffHistory.entry?.kind} ${diffHistory.entry?.bytes} バイト（${diffHistory.dragged.toFixed(2)} 動いた）/ ` +
+    `取り消しで戻る ${diffHistory.backHome < 1e-6} / 押し出しは ${diffHistory.full?.kind} ${Math.round((diffHistory.full?.bytes ?? 0) / 1024)}KB / 戻る ${diffHistory.backFaces}`,
+);
+
 /* 44. ツール列のグループ（`21` の 4 章） */
 
 /* 44-1. ボタンは 7 つ、右のオプションパネルは無い */
