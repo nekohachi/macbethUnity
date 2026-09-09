@@ -253,8 +253,10 @@ button{font-family:inherit; font-size:inherit; color:inherit; background:none; b
 .bench-row span{font-size:10px; color:var(--text-faint)}
 .bench-row[data-over="true"] b{color:var(--warn)}
 .bench-status{padding:6px 0; font-size:11px; color:var(--accent)}
-.bench-foot{display:flex; gap:6px; margin-top:10px}
-.bench-foot .act{flex:1}
+.bench-foot{display:flex; gap:6px; margin-top:10px; flex-wrap:wrap}
+.bench-foot .act{flex:1; min-width:72px}
+/* いま測っている大きさのボタン */
+.bench-foot .act[data-on="true"]{border-color:var(--accent); color:var(--accent)}
 
 /* 3 本指のひねりの角度（26 の T1）。指の重心の上に出す小さな札 */
 .twist-pop{position:fixed; z-index:60; transform:translateX(-50%); pointer-events:none;

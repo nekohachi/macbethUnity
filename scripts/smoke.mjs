@@ -6066,7 +6066,8 @@ check(
       table.rows.length >= 5 &&
       table.rows.every((r) => /[0-9]/.test(r.value)) &&
       table.keys.includes("B2b") &&
-      table.keys.includes("B4") &&
+      table.keys.includes("B4a") &&
+      table.keys.includes("B4b") &&
       table.agent,
     `${table.rows.length} 行 / ${table.rows.map((r) => `${r.label.split("（")[0]} ${r.value}`).join(" · ")}`,
   );

@@ -7,9 +7,12 @@
  *
  * 走らせ方:
  *   https://…/app/?bench=1          本番の大きさ（100 万四角形）
- *   https://…/app/?bench=1&quick=1  小さめ（通し確認と、手元で形を見るとき）
+ *   https://…/app/?bench=1&size=25  25 万四角形（小さい端末はこちら）
+ *   https://…/app/?bench=1&quick=1  ごく小さい（通し確認と、手元で形を見るとき）
  *
- * 結果は表に出て、「コピー」で JSON がクリップボードへ入る。
+ * 結果は表に出て、「コピー」で JSON がクリップボードへ入る。下のボタンで
+ * 大きさを選び直せる。**100 万四角形はメモリを 2GB 以上使う**ので、
+ * iPad mini のような端末では途中でタブが落ちる。落ちたら小さい方で測る。
  */
 import { PRIMITIVES, buildBvh, catmullClark, defaultParams, refitBvh, Multires, type Mesh } from "../core/index.js";
 import type { App } from "./app.js";
@@ -51,11 +54,23 @@ function sphere(axis: number, height: number): Mesh {
   return PRIMITIVES.sphere.build({ ...defaultParams("sphere"), sdAxis: axis, sdHeight: height });
 }
 
-export async function runBench(app: App, quick: boolean): Promise<void> {
+/** いま使っている JS ヒープ（MB）。取れない端末（Safari）では 0。 */
+function heapMb(): number {
+  const m = (performance as { memory?: { usedJSHeapSize: number } }).memory;
+  return m ? m.usedJSHeapSize / 1048576 : 0;
+}
+
+/** 選べる大きさ（万四角形）。 */
+const SIZES = [25, 50, 100];
+
+export async function runBench(app: App, quick: boolean, size?: number): Promise<void> {
+  // quick はごく小さい（通し確認用）。size が来ればそれ、来なければ 100 万
+  const man = quick ? 6 : (size ?? 100);
+
   const panel = el("div", "bench");
   const head = el("div", "bench-head");
   head.innerHTML =
-    `<b>ベンチ</b> <span>${quick ? "小さめ" : "本番の大きさ"}</span><br>` +
+    `<b>ベンチ</b> <span>${quick ? "ごく小さい" : `${man} 万四角形`}</span><br>` +
     `<i>${navigator.userAgent}</i><br>` +
     `<i>コア ${navigator.hardwareConcurrency ?? "?"} · 画素比 ${window.devicePixelRatio}</i>`;
   panel.appendChild(head);
@@ -78,18 +93,22 @@ export async function runBench(app: App, quick: boolean): Promise<void> {
     }
     if (status) body.appendChild(el("div", "bench-status", status));
   };
+  // いちばん高かったときのヒープ。落ちる端末の目安になるので行ごとに見る
+  let peak = 0;
   const add = async (r: Row) => {
     rows.push(r);
+    peak = Math.max(peak, heapMb());
     paint();
     await breathe();
   };
   paint("測っています…");
   await breathe();
 
-  // 大きさ。100 万四角形は sdAxis 1000 × sdHeight 1000
-  const big = quick ? { axis: 250, height: 250 } : { axis: 1000, height: 1000 };
-  const mid = quick ? { axis: 125, height: 125 } : { axis: 500, height: 500 };
-  const baseSize = quick ? { axis: 60, height: 60 } : { axis: 240, height: 240 };
+  // 大きさ。N 万四角形の球は sdAxis = sdHeight = √(N × 10000)
+  const axis = Math.round(Math.sqrt(man * 10000));
+  const big = { axis, height: axis };
+  const mid = { axis: axis >> 1, height: axis >> 1 };
+  const baseSize = { axis: Math.round(axis * 0.24), height: Math.round(axis * 0.24) };
 
   /* B0 — メッシュを作る */
   let heavy!: Mesh;
@@ -239,24 +258,60 @@ export async function runBench(app: App, quick: boolean): Promise<void> {
   app.refresh();
   await breathe();
   const vp = app.viewport;
-  const b4 = timeIt(30, () => vp.renderer.render(vp.scene, vp.camera));
+  const triMan = ((tris.tri.length / 3 / 10000) | 0).toString();
+
+  // `renderer.render` は GL に命令を積むだけで返る。そのまま測ると 0.3ms のような
+  // 意味のない数字が出るので、**GPU が描き終わるのを待ってから**測る。
+  // readPixels は積んだ命令を流し切ってから返るので、これで待てる
+  const gl = vp.renderer.getContext();
+  const px = new Uint8Array(4);
+  const drawAndWait = () => {
+    vp.renderer.render(vp.scene, vp.camera);
+    gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+  };
+  for (let i = 0; i < 3; i++) drawAndWait(); // 温める
+  const b4gpu = timeIt(10, drawAndWait);
   await add({
-    key: "B4",
-    label: `描画 1 フレーム（${((tris.tri.length / 3 / 10000) | 0)} 万三角形）`,
-    value: b4,
+    key: "B4a",
+    label: `描画 1 フレーム・GPU まで待つ（${triMan} 万三角形）`,
+    value: b4gpu,
     unit: "ms",
     target: 16,
     note: "",
   });
 
+  // 実際に画面が動くときの間隔。60fps なら 16.7ms で頭打ちになる
+  const gaps: number[] = [];
+  await new Promise<void>((done) => {
+    let last = performance.now();
+    let n = 0;
+    const tick = () => {
+      vp.renderer.render(vp.scene, vp.camera);
+      const now = performance.now();
+      if (n > 5) gaps.push(now - last); // 最初の数コマは捨てる
+      last = now;
+      if (++n < 45) requestAnimationFrame(tick);
+      else done();
+    };
+    requestAnimationFrame(tick);
+  });
+  await add({
+    key: "B4b",
+    label: "コマの間隔（実際に動かしたとき）",
+    value: gaps.length ? median(gaps) : 0,
+    unit: "ms",
+    note: "60fps なら 16.7ms で頭打ち",
+  });
+
   /* B5 — メモリ */
-  const mem = (performance as { memory?: { usedJSHeapSize: number } }).memory;
+  const now = heapMb();
+  peak = Math.max(peak, now);
   await add({
     key: "B5",
-    label: "使っているメモリ",
-    value: mem ? mem.usedJSHeapSize / 1048576 : 0,
+    label: "いちばん使ったメモリ",
+    value: peak,
     unit: "MB",
-    note: mem ? "" : "この端末では取れない",
+    note: now ? `終わった時点で ${now.toFixed(0)} MB` : "この端末では取れない",
   });
 
   paint("終わりました");
@@ -264,7 +319,17 @@ export async function runBench(app: App, quick: boolean): Promise<void> {
   const again = el("button", "act", "もう一度");
   again.addEventListener("click", () => {
     panel.remove();
-    void runBench(app, quick);
+    void runBench(app, quick, man);
+  });
+  // 大きさを選び直す。100 万で落ちる端末は小さい方で測る
+  const sizeButtons = SIZES.map((n) => {
+    const b = el("button", "act", `${n} 万`);
+    if (!quick && n === man) b.dataset.on = "true";
+    b.addEventListener("click", () => {
+      panel.remove();
+      void runBench(app, false, n);
+    });
+    return b;
   });
   const copy = el("button", "act", "コピー");
   const json = () =>
@@ -274,6 +339,7 @@ export async function runBench(app: App, quick: boolean): Promise<void> {
         cores: navigator.hardwareConcurrency ?? null,
         dpr: window.devicePixelRatio,
         quick,
+        man,
         rows: rows.map((r) => ({ key: r.key, label: r.label, value: +r.value.toFixed(2), unit: r.unit, target: r.target })),
       },
       null,
@@ -287,7 +353,7 @@ export async function runBench(app: App, quick: boolean): Promise<void> {
   });
   const close = el("button", "act", "閉じる");
   close.addEventListener("click", () => panel.remove());
-  foot.append(again, copy, close);
+  foot.append(again, ...sizeButtons, copy, close);
   // 通し確認から読むため
   panel.dataset.done = "true";
   Object.assign(window, { macbethBench: json });

@@ -37,7 +37,8 @@ void app.boot();
 const params = new URLSearchParams(location.search);
 if (params.get("bench")) {
   void import("./bench.js").then(({ runBench }) => {
-    void app.boot().then(() => runBench(app, params.get("quick") === "1"));
+    const size = Number(params.get("size"));
+    void app.boot().then(() => runBench(app, params.get("quick") === "1", size > 0 ? size : undefined));
   });
 }
 
