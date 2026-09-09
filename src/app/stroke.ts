@@ -26,9 +26,25 @@ interface Live {
   touched: Set<number>;
   /** 何コマ当てたか。0 なら履歴に積まない。 */
   hits: number;
+  /**
+   * 次の 1 打ちまでに、あとどれだけ進んだかの繰り越し（`33` の直し）。
+   *
+   * **打つ間隔はペンの進んだ距離で決める。** イベントが何回来たかで決めると、
+   * ゆっくり動かすほど濃くなって、同じ線を引いても結果が変わってしまう。
+   */
+  carry: number;
 }
 
 const scratch = new Vector3();
+
+/**
+ * 打つ間隔（筆の半径に対する割合）。ZBrush の Stroke → Spacing にあたる。
+ * 狭いほど濃く、なめらかになる。
+ */
+const DAB_SPACING = 0.25;
+
+/** 1 回の動きで打つ上限。カメラが飛んだときの暴発よけ。 */
+const MAX_DABS = 24;
 
 export class StrokeDriver {
   private live: Live | null = null;
@@ -73,39 +89,53 @@ export class StrokeDriver {
     const o = this.state.selected!;
     const at = this.hitLocal(p);
     if (!at) return false;
-    this.live = { object: o, level: o.activeLevel, last: at, touched: new Set(), hits: 0 };
+    this.live = { object: o, level: o.activeLevel, last: at, touched: new Set(), hits: 0, carry: 0 };
     this.history.beginSculpt(o, o.activeLevel);
     this.stamp(at, pressure, null);
     return true;
   }
 
   /**
-   * 動かした。前の点から遠ければ**間を埋める**（速く動かすと飛び飛びになるため）。
-   * 刻みは半径の 1/4。
+   * 動かした。**進んだ距離で打つ**（ZBrush と同じ）。
+   *
+   * 前は「イベントが来るたびに最低 1 回」当てていた。すると同じ線でも、
+   * ゆっくり動かす（イベントが多い）ほど濃くなり、速く動かすと薄くなる。
+   * 手の速さで結果が変わるので「強さがちょうどよいか分からない」ことになる。
+   *
+   * いまは半径の 1/4 進むごとに 1 回。イベントが何回来ても、同じ道を引けば
+   * 同じ結果になる。
+   *
+   * ムーブだけは別（積み上げではなく掴んで動かすものなので、指の動きを
+   * そのまま渡す）。
    */
   move(p: ScreenPoint, pressure: number): void {
     const live = this.live;
     if (!live) return;
     const at = this.hitLocal(p);
     if (!at) return;
-    const { radius } = brushAt(this.state.brush, pressure);
-    const step = Math.max(radius * 0.25, 1e-4);
     const dx = at[0] - live.last[0];
     const dy = at[1] - live.last[1];
     const dz = at[2] - live.last[2];
     const dist = Math.hypot(dx, dy, dz);
-    const steps = Math.min(32, Math.max(1, Math.ceil(dist / step)));
-    for (let i = 1; i <= steps; i++) {
-      const t = i / steps;
-      const point: [number, number, number] = [
-        live.last[0] + dx * t,
-        live.last[1] + dy * t,
-        live.last[2] + dz * t,
-      ];
-      // Move は「指の動き」そのものを使う。刻んだぶんだけ配る
-      const delta: [number, number, number] = [dx / steps, dy / steps, dz / steps];
-      this.stamp(point, pressure, delta);
+    if (dist <= 0) return;
+
+    if (this.state.brush.kind === "move") {
+      this.stamp(at, pressure, [dx, dy, dz]);
+      live.last = at;
+      return;
     }
+
+    const { radius } = brushAt(this.state.brush, pressure);
+    const spacing = Math.max(radius * DAB_SPACING, 1e-5);
+    const total = live.carry + dist;
+    // 上限を置く。カメラが飛んだときなどに何百回も当てないため
+    const dabs = Math.min(MAX_DABS, Math.floor(total / spacing));
+    for (let k = 1; k <= dabs; k++) {
+      const along = k * spacing - live.carry;
+      const t = along / dist;
+      this.stamp([live.last[0] + dx * t, live.last[1] + dy * t, live.last[2] + dz * t], pressure, null);
+    }
+    live.carry = dabs >= MAX_DABS ? 0 : total - dabs * spacing;
     live.last = at;
   }
 

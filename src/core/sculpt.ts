@@ -52,6 +52,14 @@ export interface Footprint {
  *
  * `(1 - t²)²` は端の傾きも 0 になるので、ストロークの境目に段差が出ない。
  */
+/**
+ * 1 打ちで法線方向へ動く量（筆の半径に対する割合）。
+ *
+ * 打つ間隔（`DAB_SPACING` = 半径の 1/4）と対になっている。**片方を変えたら
+ * もう片方も見直すこと**（間隔を狭めると同じ強さでも濃くなる）。
+ */
+export const DAB_DEPTH = 0.0625;
+
 export function falloff(t: number): number {
   if (t >= 1) return 0;
   const u = 1 - t * t;
@@ -201,13 +209,13 @@ export function applyStroke(mesh: Mesh, fp: Footprint, tri: Uint32Array, input: 
   if (input.kind === "standard") {
     // 法線方向へ。動く量は半径に比例させる（大きい筆は深く彫れる）。
     //
-    // **1 回ぶんは小さくする。** ストロークは半径の 1/4 ごとに当てるので、
-    // 1 回なぞるだけで同じ頂点に 8 回ほど乗る。指示書の 0.25 だと 1 回の
-    // ストロークで半径の 2 倍も盛れてしまい、形が破綻した（`33` の T3 の絵）。
-    // 0.08 だと 1 なぞりで半径の 3 割ほど（強度 1・筆圧 1 のとき）。
-    // ここは手触りの数字なので、実機で触ってから決め直してよい
+    // **1 打ちぶんの深さ**（ZBrush に合わせた。`33` の直し）。
+    // 打つ間隔は半径の 1/4 なので、1 回なぞると同じ頂点に 8 打ちほど乗る。
+    // 強さ 1 で 1 なぞり ≒ 半径の半分（0.0625 × 8 = 0.5）になる。
+    // 既定の強さは 0.25（ZBrush の Z Intensity 25）なので、
+    // ふつうに 1 回なぞると半径の 1 割強。重ねれば深くなる。
     const normals = localNormals(mesh, fp, tri, index);
-    const amount = input.radius * 0.08 * (input.invert ? -1 : 1);
+    const amount = input.radius * DAB_DEPTH * (input.invert ? -1 : 1);
     for (let i = 0; i < n; i++) {
       const w = weights[i] * amount;
       if (w === 0) continue;

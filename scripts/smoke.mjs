@@ -830,6 +830,77 @@ check(
     `段 ${strokeCheck.level} · 彫れる ${strokeCheck.probe.canSculpt} · 当たり ${strokeCheck.probe.hit ? "あり" : "なし"}`,
 );
 
+/* 17i2. 同じ線なら、速く引いても遅く引いても同じだけ盛れる（ZBrush と同じ当て方） */
+//
+// 前は「イベントが来るたびに最低 1 回」当てていたので、ゆっくり動かす
+// （イベントが多い）ほど濃くなっていた。手の速さで結果が変わると、
+// 強さを決めようがない。
+const evenStroke = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const core = window.macbethCore;
+  app.setMode("model");
+  const keep = [...app.state.doc.objects];
+  const keepSel = app.state.selected;
+  const camBefore = app.viewport.saveLayout();
+
+  const runStroke = async (events) => {
+    app.setMode("model");
+    app.state.doc.objects.length = 0;
+    const ball = app.state.doc.addMesh(
+      core.PRIMITIVES.sphere.build({ ...core.defaultParams("sphere"), sdAxis: 24, sdHeight: 16 }),
+      "Speed",
+    );
+    app.viewport.syncAll();
+    app.state.select(ball);
+    app.setMode("sculpt");
+    await app.levelForTest("add");
+    app.viewport.frameSelected();
+    app.refresh();
+    await new Promise((r) => setTimeout(r, 100));
+    const before = ball.shown(app.state.shownLevel(ball)).positions.slice();
+    const pane = document.getElementById("pane3d").getBoundingClientRect();
+    const gl = document.getElementById("gl");
+    const cx = pane.left + pane.width / 2;
+    const cy = pane.top + pane.height / 2;
+    const ev = (t, x, y) =>
+      new PointerEvent(t, {
+        pointerId: 55, pointerType: "pen", bubbles: true, cancelable: true,
+        clientX: x, clientY: y, pressure: 0.5, buttons: t === "pointerup" ? 0 : 1,
+      });
+    // 同じ道（左から右へ 60px）を、細かく刻むか粗く刻むかだけ変える
+    gl.dispatchEvent(ev("pointerdown", cx - 30, cy));
+    for (let i = 1; i <= events; i++) gl.dispatchEvent(ev("pointermove", cx - 30 + (60 * i) / events, cy));
+    gl.dispatchEvent(ev("pointerup", cx + 30, cy));
+    await new Promise((r) => setTimeout(r, 60));
+    const after = ball.shown(app.state.shownLevel(ball)).positions;
+    let sum = 0;
+    for (let i = 0; i < before.length; i += 3) {
+      sum += Math.hypot(after[i] - before[i], after[i + 1] - before[i + 1], after[i + 2] - before[i + 2]);
+    }
+    return sum;
+  };
+
+  const slow = await runStroke(40); // ゆっくり = イベントが多い
+  const fast = await runStroke(4); //  速く = イベントが少ない
+
+  app.setMode("model");
+  app.state.doc.objects.length = 0;
+  app.state.doc.objects.push(...keep);
+  app.viewport.syncAll();
+  app.viewport.restoreLayout(camBefore);
+  app.state.select(keepSel ?? keep[0] ?? null);
+  app.setCompMode("object");
+  app.state.comp.clear();
+  app.history.clear();
+  app.refresh();
+  return { slow, fast, ratio: fast > 0 ? slow / fast : 0 };
+});
+check(
+  "同じ線なら、速く引いても遅く引いても同じだけ盛れる",
+  evenStroke.fast > 0 && evenStroke.ratio > 0.8 && evenStroke.ratio < 1.25,
+  `ゆっくり ${evenStroke.slow.toFixed(3)} / 速く ${evenStroke.fast.toFixed(3)} = ${evenStroke.ratio.toFixed(2)} 倍`,
+);
+
 /* 17j2. X 対称で左右が同じだけ動く（`33` の T4） */
 check(
   "X 対称で左右が同じだけ動く",
