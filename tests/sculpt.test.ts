@@ -328,3 +328,57 @@ describe("対称の中心線（`33` の T4）", () => {
     }
   });
 });
+
+/**
+ * 頂点番号の控え（`scratch`）は**モジュールに 1 つだけ**あって使い回される。
+ * 消さずに世代番号で無効にしているので、**前の呼び出しの跡が残っていても
+ * 結果が変わらない**ことを見る。ここが崩れると、大きいメッシュを触ったあとの
+ * 小さいメッシュだけおかしくなる、という直しにくいバグになる。
+ */
+describe("頂点番号の控えを使い回しても結果が変わらない", () => {
+  const at: [number, number, number] = [0.1, 0, 0.05];
+
+  it("大きいメッシュを挟んでも、同じ 1 打ちは同じ結果", () => {
+    const alone = plane(12);
+    stroke(alone, { ...base, kind: "standard", point: at });
+
+    // 間に別の大きさのメッシュを何度も挟む（控えが伸び、世代も進む）
+    const between = plane(40);
+    for (let i = 0; i < 5; i++) stroke(between, { ...base, kind: "standard", point: [i * 0.05, 0, 0] });
+    const after = plane(12);
+    stroke(after, { ...base, kind: "standard", point: at });
+
+    expect(Array.from(after.positions)).toEqual(Array.from(alone.positions));
+  });
+
+  it("小さいメッシュを挟んでも同じ（控えは縮まない）", () => {
+    const alone = plane(40);
+    stroke(alone, { ...base, kind: "smooth", point: at });
+
+    const between = plane(6);
+    for (let i = 0; i < 5; i++) stroke(between, { ...base, kind: "smooth", point: [i * 0.05, 0, 0] });
+    const after = plane(40);
+    stroke(after, { ...base, kind: "smooth", point: at });
+
+    expect(Array.from(after.positions)).toEqual(Array.from(alone.positions));
+  });
+
+  it("同じメッシュに続けて当てても、1 打ちずつの積み上げと一致する", () => {
+    // 控えが「前の打ちの範囲」を引きずっていないこと
+    const a = plane(20);
+    const b = plane(20);
+    const points: [number, number, number][] = [
+      [0, 0, 0],
+      [0.2, 0, 0],
+      [0.4, 0, 0.1],
+    ];
+    for (const p of points) stroke(a, { ...base, kind: "standard", point: p });
+    // 間に別メッシュを挟みながら同じ順で当てる
+    const noise = plane(30);
+    for (const p of points) {
+      stroke(noise, { ...base, kind: "standard", point: p });
+      stroke(b, { ...base, kind: "standard", point: p });
+    }
+    expect(Array.from(b.positions)).toEqual(Array.from(a.positions));
+  });
+});
