@@ -31,7 +31,7 @@ import {
   type MeshBasicMaterial,
   type MeshPhongMaterial,
 } from "three";
-import { buildBvh, refitBvh, refitBvhPartial, type Bvh, type PaneLayout, type SceneObject } from "../../core/index.js";
+import { buildBvh, refitBvh, refitBvhPartial, type Bvh, type Mesh, type PaneLayout, type SceneObject } from "../../core/index.js";
 import { defaultCamOpts, type AppState, type PaneLike } from "../state.js";
 import { MAT, checkerMaterial, heatMaterial } from "./materials.js";
 import {
@@ -561,8 +561,9 @@ export class Viewport {
     for (const o of targets) {
       const view = this.views.get(o.id);
       if (!view) continue;
-      const p = o.mesh.positions;
-      for (let v = 0; v < o.mesh.vertexCount; v++) {
+      const shown = this.meshOf(o);
+      const p = shown.positions;
+      for (let v = 0; v < shown.vertexCount; v++) {
         const w = new Vector3(p[v * 3], p[v * 3 + 1], p[v * 3 + 2]).applyMatrix4(view.group.matrixWorld);
         min = [Math.min(min[0], w.x), Math.min(min[1], w.y), Math.min(min[2], w.z)];
         max = [Math.max(max[0], w.x), Math.max(max[1], w.y), Math.max(max[2], w.z)];
@@ -665,11 +666,19 @@ export class Viewport {
    * トポロジが変わると view ごと作り直されるので、木も自然に作り直される。
    */
   bvhOf(view: ObjectView): Bvh {
-    return (view.bvh ??= buildBvh(view.object.mesh.positions, view.tri));
+    return (view.bvh ??= buildBvh(this.meshOf(view.object).positions, view.tri));
   }
 
   allViews(): ObjectView[] {
     return [...this.views.values()];
+  }
+
+  /**
+   * いま見せるメッシュ（`32` の T2）。スカルプトで段を上げていればその段、
+   * モデリングでは常にレベル 0。描画とピッキングはすべてこれを通す。
+   */
+  meshOf(o: SceneObject): Mesh {
+    return o.shown(this.state.shownLevel(o));
   }
 
   /** 1 オブジェクトだけ作り直す。トポロジや座標を変えたあとに呼ぶ。 */
@@ -680,7 +689,7 @@ export class Viewport {
       disposeObject3D(old.group);
       disposeViewMaterials(old);
     }
-    const view = buildObjectView(o, this.shadingAngle);
+    const view = buildObjectView(o, this.shadingAngle, this.meshOf(o));
     this.root.add(view.group);
     this.views.set(o.id, view);
     this.applyDisplay(view);
@@ -716,16 +725,17 @@ export class Viewport {
   refreshPositions(o: SceneObject): void {
     const view = this.views.get(o.id);
     if (!view) return this.rebuildObject(o);
+    const mesh = this.meshOf(o);
     applyTransform(view.group, o.transform);
     view.group.updateMatrixWorld();
     // 木の形はそのまま、境界箱だけ取り直す（`29` の B-T5）
-    if (view.bvh) refitBvh(view.bvh, o.mesh.positions, view.tri);
+    if (view.bvh) refitBvh(view.bvh, mesh.positions, view.tri);
     view.surface.geometry.dispose();
-    view.surface.geometry = surfaceGeometry(o.mesh, view.tri, this.shadingAngle);
+    view.surface.geometry = surfaceGeometry(mesh, view.tri, this.shadingAngle);
     view.wire.geometry.dispose();
-    view.wire.geometry = wireGeometry(o.mesh, view.edges);
+    view.wire.geometry = wireGeometry(mesh, view.edges);
     view.points.geometry.dispose();
-    view.points.geometry = positionGeometry(o.mesh.positions);
+    view.points.geometry = positionGeometry(mesh.positions);
     if (this.state.display === "heat") this.applyHeat(view);
   }
 
@@ -741,19 +751,20 @@ export class Viewport {
     if (!view) return this.rebuildObject(o);
     applyTransform(view.group, o.transform);
     view.group.updateMatrixWorld();
-    const slots = (view.slots ??= buildVertexSlots(o.mesh.vertexCount, view.tri, view.edges));
+    const mesh = this.meshOf(o);
+    const slots = (view.slots ??= buildVertexSlots(mesh.vertexCount, view.tri, view.edges));
     // 頂点が増減していれば表が合わない。素直に作り直す
-    if (slots.surfaceOffsets.length !== o.mesh.vertexCount + 1) return this.refreshPositions(o);
+    if (slots.surfaceOffsets.length !== mesh.vertexCount + 1) return this.refreshPositions(o);
 
     const surface = view.surface.geometry.getAttribute("position") as BufferAttribute;
     const wire = view.wire.geometry.getAttribute("position") as BufferAttribute;
     const points = view.points.geometry.getAttribute("position") as BufferAttribute;
     const touched: number[] = [];
     for (const v of verts) {
-      if (v < 0 || v >= o.mesh.vertexCount) continue;
-      const x = o.mesh.positions[v * 3];
-      const y = o.mesh.positions[v * 3 + 1];
-      const z = o.mesh.positions[v * 3 + 2];
+      if (v < 0 || v >= mesh.vertexCount) continue;
+      const x = mesh.positions[v * 3];
+      const y = mesh.positions[v * 3 + 1];
+      const z = mesh.positions[v * 3 + 2];
       for (let i = slots.surfaceOffsets[v]; i < slots.surfaceOffsets[v + 1]; i++) {
         const at = slots.surfaceSlots[i];
         surface.setXYZ(at, x, y, z);
@@ -767,7 +778,7 @@ export class Viewport {
     surface.needsUpdate = true;
     wire.needsUpdate = true;
     points.needsUpdate = true;
-    if (view.bvh && touched.length) refitBvhPartial(view.bvh, o.mesh.positions, view.tri, touched);
+    if (view.bvh && touched.length) refitBvhPartial(view.bvh, mesh.positions, view.tri, touched);
   }
 
   /** 面ごとの歪みを頂点色にして積む（`23` の T2）。 */
@@ -949,7 +960,7 @@ export class Viewport {
     const o = this.state.selected;
     const view = o ? this.views.get(o.id) : undefined;
     if (!o || !view) return;
-    const m = o.mesh;
+    const m = this.meshOf(o);
 
     // UV の切れ目。選択の有無に関わらず出す。少し浮かせて面に埋もれないように
     const seams = this.seamProvider?.();

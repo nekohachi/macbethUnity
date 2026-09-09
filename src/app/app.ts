@@ -43,6 +43,8 @@ import {
   weldVertices,
   parseObj,
   subdivide,
+  estimateLevelBytes,
+  reconcile,
   nodesFromObjects,
   writeGlb,
   writeObj,
@@ -58,6 +60,7 @@ import {
   type GestureHandlers,
 } from "./input/gestures.js";
 import { Picker, type ScreenPoint } from "./render/picking.js";
+import { asMb, canAddLevel, estimateBytes, facesAt, levelCount, levelsOf, warmUpLevels } from "./levels.js";
 import { STANDARD_VIEWS, Viewport, type LayoutKind, type ViewName } from "./render/viewport.js";
 import {
   AXES,
@@ -374,6 +377,22 @@ export class App {
   /** 通し確認から分割を変える（本物の経路は「分割」ボタン）。 */
   setLayoutForTest(kind: LayoutKind): void {
     this.setLayout(kind);
+  }
+
+  /**
+   * 通し確認から段を操作する（本物の経路は「段」ボタンのタップと長押し）。
+   * `32` の T3。
+   */
+  runEditForTest(kind: EditKind): void {
+    this.activateEdit(kind, true);
+  }
+
+  async levelForTest(what: "add" | "up" | "down" | "dropAbove" | "burn"): Promise<void> {
+    if (what === "add") await this.addLevel();
+    else if (what === "up") await this.goLevel((this.state.selected?.activeLevel ?? 0) + 1);
+    else if (what === "down") await this.goLevel((this.state.selected?.activeLevel ?? 0) - 1);
+    else if (what === "dropAbove") this.dropAboveLevel();
+    else this.burnDownLevel();
   }
 
   panelHostForTest(): PanelHost {
@@ -2314,9 +2333,20 @@ export class App {
     // 予定表は stage と入れ替える。3D の描画ループは止めない（戻ったとき即座に出る）
     const stub = byId("modeStub");
     stub.textContent = "";
-    const def = STUBS[mode];
+    // スカルプトは 3D を出す（`32` の T3）。予定表はもう出さない
+    const def = mode === "sculpt" ? null : STUBS[mode];
     if (mode === "uv") this.enterUv();
     else this.leaveUv();
+    if (mode === "sculpt") {
+      // 細分割に使う wasm を読み始める。読めなくても JS で動く
+      void warmUpLevels();
+      // 段の上げ下げはオブジェクト単位。コンポーネント選択は持ち込まない
+      this.setCompMode("object");
+    }
+    // モードで見せる段が変わる（スカルプトは activeLevel、それ以外は 0）
+    for (const o of this.state.doc.objects) {
+      if (o.activeLevel > 0) this.viewport.rebuildObject(o);
+    }
     if (def) {
       stub.appendChild(buildStub(def));
       stub.hidden = false;
@@ -3643,8 +3673,12 @@ export class App {
    */
   private toolColumn(): ToolEntry[] {
     if (this.state.mode === "uv") return this.uvToolColumn();
+    if (this.state.mode === "sculpt") return this.sculptToolColumn();
     if (this.state.mode !== "model") return [];
+    return this.modelToolColumn();
+  }
 
+  private modelToolColumn(): ToolEntry[] {
     return [
       { kind: "label", text: "選択" },
       {
@@ -3731,6 +3765,193 @@ export class App {
         onTap: () => {},
       },
     ];
+  }
+
+  /**
+   * スカルプトのツール列（`32` の T3）。いまは段（レベル）だけ。
+   * ブラシは S2-2 から。シェード・カメラ・分割はモデリングと同じものを使い回す。
+   */
+  private sculptToolColumn(): ToolEntry[] {
+    const model = this.modelToolColumn();
+    const shared = model.filter((e) => e.kind === "button" && ["display", "camera", "layout"].includes(e.id));
+    return [
+      { kind: "label", text: "段" },
+      {
+        kind: "button",
+        id: "level",
+        icon: ICONS.layers,
+        title: "サブディビジョンレベル（タップで 1 つ上へ · 長押しで選ぶ / 足す / 捨てる）",
+        badge: () => String(this.state.selected?.activeLevel ?? 0),
+        pressed: () => (this.state.selected?.activeLevel ?? 0) > 0,
+        radial: () => this.levelMenu(),
+        radialList: () => this.levelItems(),
+        onTap: () => this.stepLevel(1),
+      },
+      { kind: "separator" },
+      { kind: "label", text: "シェード" },
+      ...shared,
+    ];
+  }
+
+  /* ---- 段（サブディビジョンレベル）。`32` の T3 -------------------------- */
+
+  /** 長押しの 8 方位。段のジャンプと、足す / 捨てる / 焼く。 */
+  private levelMenu(): RadialMenu {
+    const o = this.state.selected;
+    if (!o) return { N: { label: "オブジェクトを選んでください", run: () => {} } };
+    const top = levelCount(o);
+    const add = canAddLevel(o);
+    const menu: RadialMenu = {
+      N: {
+        label: add.ok ? "段を足す" : `足せません（${asMb(add.want)}）`,
+        sub: add.ok ? `→ レベル ${top + 1}・${asMb(add.want)}` : `予算 ${asMb(add.budget)}`,
+        icon: ICONS.dup,
+        run: () => void this.addLevel(),
+      },
+    };
+    if (top > 0) {
+      menu.S = {
+        label: "上の段を捨てる",
+        sub: `レベル ${o.activeLevel} より上`,
+        icon: ICONS.del,
+        run: () => this.dropAboveLevel(),
+      };
+      menu.E = { label: "1 つ上へ", sub: `レベル ${Math.min(o.activeLevel + 1, top)}`, run: () => this.stepLevel(1) };
+      menu.W = { label: "1 つ下へ", sub: `レベル ${Math.max(o.activeLevel - 1, 0)}`, run: () => this.stepLevel(-1) };
+    }
+    if (o.activeLevel > 0) {
+      menu.SE = {
+        label: "下の段に焼く",
+        sub: `レベル ${o.activeLevel} を新しいレベル 0 に`,
+        run: () => this.burnDownLevel(),
+      };
+    }
+    return menu;
+  }
+
+  /** 長押しの一覧。段ごとの四角形数と推定メモリ（`03` の 3.3）。 */
+  private levelItems(): RadialItem[] {
+    const o = this.state.selected;
+    if (!o) return [];
+    const out: RadialItem[] = [];
+    for (let l = 0; l <= levelCount(o); l++) {
+      out.push({
+        label: `レベル ${l}${l === o.activeLevel ? "（今）" : ""}`,
+        sub: `${facesAt(o, l).toLocaleString()} 面 · ${asMb(l === 0 ? 0 : estimateLevelBytes(facesAt(o, l)))}`,
+        run: () => void this.goLevel(l),
+      });
+    }
+    return out;
+  }
+
+  /** 段を 1 つ上げ下げする。上限では足さずに知らせるだけ（指の滑りで重い操作を起こさない）。 */
+  private stepLevel(by: number): void {
+    const o = this.state.selected;
+    if (!o) {
+      this.hud.toast("オブジェクトを選んでください");
+      return;
+    }
+    const top = levelCount(o);
+    const next = o.activeLevel + by;
+    if (next > top) {
+      this.hud.toast(top === 0 ? "段がありません。長押しで足せます" : "いちばん上です。長押しで足せます");
+      return;
+    }
+    if (next < 0) {
+      this.hud.toast("いちばん下です");
+      return;
+    }
+    void this.goLevel(next);
+  }
+
+  /** 見せる段を変える。履歴には入れない（見ているものが変わるだけ。カメラと同じ）。 */
+  private async goLevel(level: number): Promise<void> {
+    const o = this.state.selected;
+    if (!o) return;
+    // 組むのは wasm が読めてから。初回のタップだけ JS になるのを避ける
+    await warmUpLevels();
+    o.activeLevel = Math.max(0, Math.min(level, levelCount(o)));
+    if (o.activeLevel > 0) levelsOf(o);
+    this.viewport.rebuildObject(o);
+    this.viewport.rebuildOverlay();
+    // バッジ（今の段）はツール列にあるので、描き直さないと古いままになる
+    this.renderToolColumn();
+    this.refresh();
+  }
+
+  /** 段を 1 つ足す。予算を越えるならブロックする（`03` の 3.3）。 */
+  private async addLevel(): Promise<void> {
+    const o = this.state.selected;
+    if (!o) {
+      this.hud.toast("オブジェクトを選んでください");
+      return;
+    }
+    await warmUpLevels();
+    const check = canAddLevel(o);
+    if (!check.ok) {
+      this.hud.toast(`推定 ${asMb(check.want)}。予算 ${asMb(check.budget)} を越えます`);
+      return;
+    }
+    const snapshot = this.history.snapshot();
+    const stack = levelsOf(o);
+    stack.divide();
+    o.multires = [...o.multires, { level: o.multires.length + 1, delta: new Float32Array(0) }];
+    o.activeLevel = o.multires.length;
+    // デルタはまだ無い。空の Float32Array は「ディテール無し」の印として持たない
+    o.multires[o.multires.length - 1].delta = new Float32Array(stack.level(o.activeLevel).vertexCount * 3);
+    this.history.commit(`レベル ${o.activeLevel} を足した`, snapshot);
+    this.viewport.rebuildObject(o);
+    this.renderToolColumn();
+    this.refresh();
+    this.hud.toast(`レベル ${o.activeLevel}・${facesAt(o, o.activeLevel).toLocaleString()} 面・${asMb(estimateBytes(o))}`);
+  }
+
+  /** 今の段より上を捨てる（`03` の Delete Higher）。 */
+  private dropAboveLevel(): void {
+    const o = this.state.selected;
+    if (!o || !levelCount(o)) return;
+    const keep = o.activeLevel;
+    const dropped = levelCount(o) - keep;
+    if (!dropped) {
+      this.hud.toast("上に段がありません");
+      return;
+    }
+    const snapshot = this.history.snapshot();
+    o.multires = o.multires.filter((m) => m.level <= keep);
+    o.invalidateLevels();
+    o.activeLevel = keep;
+    this.history.commit(`レベル ${keep} より上を捨てた`, snapshot);
+    this.viewport.rebuildObject(o);
+    this.renderToolColumn();
+    this.refresh();
+    this.hud.toast(`${dropped} 段を捨てました`);
+  }
+
+  /**
+   * 今の段を新しいレベル 0 にする（`03` の Delete Lower）。
+   *
+   * レベル 0 のトポロジが変わるので、UV は `markTopologyChanged` と同じ扱いで
+   * 取り直す。上の段のデルタは、その段の滑らかな面が変わらないのでそのまま効く。
+   */
+  private burnDownLevel(): void {
+    const o = this.state.selected;
+    if (!o || o.activeLevel === 0) return;
+    const at = o.activeLevel;
+    const snapshot = this.history.snapshot();
+    o.mesh = levelsOf(o).level(at).clone();
+    o.parametric = false;
+    o.multires = o.multires.filter((m) => m.level > at).map((m) => ({ level: m.level - at, delta: m.delta }));
+    o.sculptLayers = o.sculptLayers.filter((l) => l.level > at).map((l) => ({ ...l, level: l.level - at }));
+    o.invalidateLevels();
+    o.activeLevel = 0;
+    if (o.uv) reconcile(o.uv, o.mesh);
+    this.state.comp.clear();
+    this.history.commit(`レベル ${at} を新しいレベル 0 にした`, snapshot);
+    this.viewport.rebuildObject(o);
+    this.viewport.rebuildOverlay();
+    this.renderToolColumn();
+    this.refresh();
+    this.hud.toast(`レベル ${at} を焼き込みました（${o.mesh.faceCount.toLocaleString()} 面）`);
   }
 
   /** 「追加」のアイコンに出す種類。選択がパラメトリックならそれ、無ければ最後に足したもの。 */

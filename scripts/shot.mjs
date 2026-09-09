@@ -1001,6 +1001,31 @@ const scenes = {
     app.uv.view.frameUnit();
   },
 
+  /** `32` の T3: 段のボタンを長押しして、一覧（段ごとの面数と推定メモリ）を開いたところ。 */
+  "32-t3-level": async () => {
+    const app = window.macbeth;
+    app.state.doc.objects.length = 0;
+    const core = window.macbethCore;
+    const o = app.state.doc.addMesh(
+      core.PRIMITIVES.sphere.build({ ...core.defaultParams("sphere"), sdAxis: 16, sdHeight: 12 }),
+      "Head",
+    );
+    app.viewport.syncAll();
+    app.state.select(o);
+    app.setMode("sculpt");
+    await app.levelForTest("add");
+    await app.levelForTest("add");
+    app.viewport.frameSelected();
+    app.setDisplay("shadedWire");
+    app.refresh();
+    // 段のボタンを長押しして一覧を開く
+    const btn = document.querySelector('#dockLeft [data-group="level"]');
+    const r = btn.getBoundingClientRect();
+    const at = { clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, pointerId: 1, isPrimary: true };
+    btn.dispatchEvent(new PointerEvent("pointerdown", { ...at, bubbles: true }));
+    await new Promise((done) => setTimeout(done, 700));
+  },
+
   /** `30` の T1: ベンチ画面。数字は CI のものなので当てにしない（表の形だけ）。 */
   "30-t1-bench": async () => {
     // `?bench=1&quick=1` で開いている。表が埋まるまで待つ

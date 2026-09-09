@@ -1,5 +1,6 @@
 /** ビューポート上の情報表示。統計、モード、操作のヒント。 */
 import type { AppState } from "../state.js";
+import { asMb, estimateBytes, levelCount, usingWasm } from "../levels.js";
 import { byId } from "./dom.js";
 
 const COMP_NAME: Record<string, string> = {
@@ -35,10 +36,26 @@ export class Hud {
    */
   private statsCache: { key: string; html: string } | null = null;
 
-  /** 数が変わりうるか。オブジェクトの数と、各メッシュの大きさだけ見る。 */
+  /**
+   * スカルプトのときだけ出す「今の段 / 全段 · 推定メモリ · wasm か JS か」
+   * （`32` の T3、`03` の 3.3）。**レベルを 1 つ上げるとメモリが 4 倍になる**ので、
+   * 上げる前に見えるところへ出しておく。
+   */
+  private levelRow(): string {
+    const o = this.state.selected;
+    if (this.state.mode !== "sculpt" || !o) return "";
+    const top = levelCount(o);
+    const how = usingWasm() ? "wasm" : "js";
+    return `<i>Level</i><span>${o.activeLevel}/${top} · ${asMb(estimateBytes(o))} · ${how}</span>`;
+  }
+
+  /** 数が変わりうるか。オブジェクトの数と、いま見せている各メッシュの大きさだけ見る。 */
   private statsKey(): string {
     let key = "";
-    for (const o of this.state.doc.objects) key += `${o.id}:${o.mesh.vertexCount}/${o.mesh.cornerCount}/${o.mesh.faceCount};`;
+    for (const o of this.state.doc.objects) {
+      const m = o.shown(this.state.shownLevel(o));
+      key += `${o.id}@${this.state.shownLevel(o)}:${m.vertexCount}/${m.cornerCount}/${m.faceCount};`;
+    }
     return key;
   }
 
@@ -47,16 +64,26 @@ export class Hud {
     byId("hudStats").hidden = !this.state.ui.stats;
     const key = this.statsKey();
     if (this.statsCache?.key !== key) {
-      const s = this.state.doc.stats();
+      // 段を上げていればその段の数を出す（`32` の T3）
+      let vertices = 0;
+      let faces = 0;
+      let triangles = 0;
       let edges = 0;
-      for (const o of this.state.doc.objects) edges += o.mesh.stats().edges;
+      for (const o of this.state.doc.objects) {
+        const st = o.shown(this.state.shownLevel(o)).stats();
+        vertices += st.vertices;
+        faces += st.faces;
+        triangles += st.triangles;
+        edges += st.edges;
+      }
       this.statsCache = {
         key,
         html:
-          `<i>Verts</i><span>${s.vertices}</span>` +
+          `<i>Verts</i><span>${vertices}</span>` +
           `<i>Edges</i><span>${edges}</span>` +
-          `<i>Faces</i><span>${s.faces}</span>` +
-          `<i>Tris</i><span>${s.triangles}</span>`,
+          `<i>Faces</i><span>${faces}</span>` +
+          `<i>Tris</i><span>${triangles}</span>` +
+          this.levelRow(),
       };
     }
     byId("hudStats").innerHTML = this.statsCache.html;

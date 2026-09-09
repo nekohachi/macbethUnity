@@ -417,14 +417,13 @@ check(
   `右上 ${dockedRight.right}（列が出る ${dockedRight.colShown}）→ 左 ${dockedLeft.left}（列が消える ${dockedLeft.colHidden}）`,
 );
 
-/* 17. モードを切り替えると予定表が出て、戻すとキャンバスが戻る */
-await page.evaluate(() => window.macbeth.setMode("sculpt"));
+/* 17. 未実装のモード（マテリアル）は予定表が出て、戻すとキャンバスが戻る */
+await page.evaluate(() => window.macbeth.setMode("material"));
 const inStub = await page.evaluate(() => ({
   stub: !document.getElementById("modeStub").hidden,
   stage: document.getElementById("stage").hidden,
   label: document.getElementById("modeLabel").textContent,
   tools: document.querySelectorAll("#dockLeft .ibtn").length,
-  gauge: document.getElementById("g1lbl").textContent,
 }));
 await page.evaluate(() => window.macbeth.setMode("model"));
 const backToModel = await page.evaluate(() => ({
@@ -434,9 +433,132 @@ const backToModel = await page.evaluate(() => ({
 }));
 check(
   "未実装のモードは予定表が出て、戻すとキャンバスが戻る",
-  inStub.stub && inStub.stage && inStub.label === "スカルプト" && inStub.tools === 0 &&
+  inStub.stub && inStub.stage && inStub.label === "マテリアル" && inStub.tools === 0 &&
     !backToModel.stub && !backToModel.stage && backToModel.tools > 0,
-  `スカルプト: 予定表 ${inStub.stub} / ツール ${inStub.tools} / ゲージ「${inStub.gauge}」→ モデリング: ツール ${backToModel.tools}`,
+  `マテリアル: 予定表 ${inStub.stub} / ツール ${inStub.tools} → モデリング: ツール ${backToModel.tools}`,
+);
+
+/* 17b. スカルプトは 3D が出て、段のボタンが並ぶ（`32` の T3） */
+await page.evaluate(() => window.macbeth.setMode("sculpt"));
+const inSculpt = await page.evaluate(() => ({
+  stub: !document.getElementById("modeStub").hidden,
+  stage: document.getElementById("stage").hidden,
+  label: document.getElementById("modeLabel").textContent,
+  groups: [...document.querySelectorAll("#dockLeft .ibtn")].map((b) => b.dataset.group),
+  gauge: document.getElementById("g1lbl").textContent,
+}));
+await page.evaluate(() => window.macbeth.setMode("model"));
+check(
+  "スカルプトは 3D が出て、段のボタンが並ぶ",
+  !inSculpt.stub && !inSculpt.stage && inSculpt.label === "スカルプト" &&
+    inSculpt.groups[0] === "level" && inSculpt.groups.includes("display") &&
+    inSculpt.groups.includes("camera") && inSculpt.groups.includes("layout"),
+  `予定表 ${inSculpt.stub} / ツール ${inSculpt.groups.join(" · ")} / ゲージ「${inSculpt.gauge}」`,
+);
+
+/* 17c. 段を足すと面が 4 倍になり、HUD に段と推定メモリが出る（`32` の T3） */
+const levels = await page.evaluate(async () => {
+  const app = window.macbeth;
+  app.setMode("model");
+  // 場面はそのまま。確かめ用の立方体を 1 つ足して、17e の終わりで片づける
+  window.__lvlKeep = { objects: [...app.state.doc.objects], selected: app.state.selected };
+  const cube = app.state.doc.addMesh(window.macbethCore.PRIMITIVES.cube.build(window.macbethCore.defaultParams("cube")), "L");
+  app.viewport.syncAll();
+  app.state.select(cube);
+  app.setMode("sculpt");
+  const at = () => ({
+    level: cube.activeLevel,
+    faces: cube.shown(app.state.shownLevel(cube)).faceCount,
+    badge: document.querySelector('#dockLeft [data-group="level"] .badge')?.textContent ?? "",
+  });
+  const before = at();
+  await app.levelForTest("add");
+  const one = at();
+  await app.levelForTest("add");
+  const two = at();
+  const hud = document.getElementById("hudStats").textContent;
+  await app.levelForTest("down");
+  const back = at();
+  // タップでいちばん上まで戻る
+  await app.levelForTest("up");
+  await app.levelForTest("up");
+  const top = at();
+  app.setMode("model");
+  const inModel = { level: cube.activeLevel, faces: cube.shown(app.state.shownLevel(cube)).faceCount };
+  return { before, one, two, back, top, hud, inModel };
+});
+check(
+  "段を足すと面が 4 倍になり、HUD に段と推定メモリが出る",
+  levels.before.faces === 6 && levels.one.faces === 24 && levels.two.faces === 96 &&
+    levels.one.badge === "1" && levels.two.badge === "2" &&
+    levels.back.level === 1 && levels.top.level === 2 &&
+    /Level/.test(levels.hud) && /wasm/.test(levels.hud) &&
+    levels.inModel.level === 2 && levels.inModel.faces === 6,
+  `面 ${levels.before.faces} → ${levels.one.faces} → ${levels.two.faces} / バッジ ${levels.two.badge} / ` +
+    `下げて ${levels.back.level} 上げて ${levels.top.level} / モデリングでは ${levels.inModel.faces} 面（段は ${levels.inModel.level} のまま）` +
+    ` / HUD「${levels.hud}」`,
+);
+
+/* 17d. 予算を越えると足せない（`03` の 3.3） */
+{
+  const tiny = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+  await tiny.goto(`http://localhost:${PORT}${BASE}${ENTRY}?budget=1`, { waitUntil: "load" });
+  await tiny.waitForFunction(() => window.macbeth?.state.doc.objects.length > 0, null, { timeout: 5000 });
+  const blocked = await tiny.evaluate(async () => {
+    const app = window.macbeth;
+    app.state.doc.objects.length = 0;
+    const ball = app.state.doc.addMesh(
+      window.macbethCore.PRIMITIVES.sphere.build({ ...window.macbethCore.defaultParams("sphere"), sdAxis: 60, sdHeight: 50 }),
+      "B",
+    );
+    app.viewport.syncAll();
+    app.state.select(ball);
+    app.setMode("sculpt");
+    await app.levelForTest("add");
+    return {
+      levels: ball.multires.length,
+      level: ball.activeLevel,
+      toast: document.getElementById("hudHint").textContent,
+    };
+  });
+  await tiny.close();
+  check(
+    "予算を越えると段を足せない",
+    blocked.levels === 0 && blocked.level === 0 && /予算/.test(blocked.toast),
+    `段 ${blocked.levels} / 知らせ「${blocked.toast}」`,
+  );
+}
+
+/* 17e. モデリングでトポロジを変えると上位レベルが消える（`03` の 3.4） */
+const dropped = await page.evaluate(() => {
+  const app = window.macbeth;
+  const o = app.state.selected;
+  // 17c で段を 2 つ足してある。スカルプトへ戻して段が生きていることを見てから壊す
+  app.setMode("sculpt");
+  const had = o.multires.length;
+  app.setMode("model");
+  app.setCompMode("face");
+  app.state.comp.clear();
+  app.state.comp.add(0);
+  app.runEditForTest("extrude");
+  const note = document.getElementById("hudHint").textContent;
+  const out = { had, now: o.multires.length, level: o.activeLevel, note };
+  // 足した立方体を片づけて、17c の前と同じ場面へ戻す
+  const keep = window.__lvlKeep;
+  app.state.doc.objects.length = 0;
+  app.state.doc.objects.push(...keep.objects);
+  app.viewport.syncAll();
+  app.state.select(keep.selected ?? app.state.doc.objects[0] ?? null);
+  app.setCompMode("object");
+  app.state.comp.clear();
+  app.history.clear();
+  app.refresh();
+  return out;
+});
+check(
+  "モデリングでトポロジを変えると上位レベルが消える",
+  dropped.had === 2 && dropped.now === 0 && dropped.level === 0,
+  `${dropped.had} 段 → ${dropped.now} 段 / 表示レベル ${dropped.level} / 知らせ「${dropped.note}」`,
 );
 
 /* 18. 縦持ちでもビューポートが縦一杯（右のドック列は空なので場所を取らない。`24` の T1） */

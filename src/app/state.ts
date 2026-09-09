@@ -356,6 +356,17 @@ export class AppState {
     return out;
   }
 
+  /**
+   * そのオブジェクトを今どの段で見せるか（`32` の T2）。
+   *
+   * **モデリングは常にレベル 0。**（`03` の 3.4。ローモデルを編集する側）
+   * スカルプトでは `activeLevel`。`activeLevel` 自体は書き換えないので、
+   * モードを行き来しても見ていた段は覚えている。
+   */
+  shownLevel(o: SceneObject): number {
+    return this.mode === "sculpt" ? o.activeLevel : 0;
+  }
+
   select(o: SceneObject | null): void {
     if (this.selected !== o) this.comp.clear();
     this.also.clear();

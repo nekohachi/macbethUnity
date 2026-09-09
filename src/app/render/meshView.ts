@@ -231,21 +231,27 @@ export function buildVertexSlots(
   return { surfaceOffsets, surfaceSlots, wireOffsets, wireSlots };
 }
 
-export function buildObjectView(o: SceneObject, smoothAngle: number): ObjectView {
+/**
+ * 見せるメッシュから描画用の一式を作る。
+ *
+ * `mesh` は `o.mesh`（レベル 0）とはかぎらない。スカルプトで段を上げていれば
+ * `o.shown(level)`（`32` の T2）。**ここから先は `o.mesh` を読まないこと。**
+ */
+export function buildObjectView(o: SceneObject, smoothAngle: number, mesh: Mesh = o.mesh): ObjectView {
   const group = new Group();
   applyTransform(group, o.transform);
 
-  const tri = o.mesh.triangulate();
-  const edges = o.mesh.edges();
+  const tri = mesh.triangulate();
+  const edges = mesh.edges();
 
-  const surface = new ThreeMesh(surfaceGeometry(o.mesh, tri, smoothAngle), MAT.surf);
+  const surface = new ThreeMesh(surfaceGeometry(mesh, tri, smoothAngle), MAT.surf);
   surface.userData.objectId = o.id;
   group.add(surface);
 
-  const wire = new LineSegments(wireGeometry(o.mesh, edges), MAT.wire);
+  const wire = new LineSegments(wireGeometry(mesh, edges), MAT.wire);
   group.add(wire);
 
-  const points = new Points(positionGeometry(o.mesh.positions), MAT.vert);
+  const points = new Points(positionGeometry(mesh.positions), MAT.vert);
   group.add(points);
 
   group.updateMatrixWorld();

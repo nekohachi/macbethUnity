@@ -163,8 +163,10 @@ export function openRadial(
     rect.setAttribute("fill", "#2c3238");
     rect.setAttribute("stroke", "#171a1e");
     svg.appendChild(rect);
-    const label = text(null, cx, top + ROW_HEIGHT / 2 + 5, item.label);
+    // `sub` があれば 2 段にする（段ごとの面数と推定メモリ。`32` の T3）
+    const label = text(null, cx, top + ROW_HEIGHT / 2 + (item.sub ? -1 : 5), item.label);
     svg.appendChild(label);
+    if (item.sub) svg.appendChild(text("sub", cx, top + ROW_HEIGHT / 2 + 12, item.sub));
     rows.push({ rect, label, item, top });
   });
 

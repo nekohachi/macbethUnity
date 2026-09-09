@@ -14,16 +14,20 @@ import { buildFromGeometry, loadWasm, subdivGeometry, type WasmModule } from "./
 
 /** 読み込みが済んだ wasm。まだなら null。 */
 let wasm: WasmModule | null = null;
-let asked = false;
+/** 読み込み中の約束。**待っている人がいれば同じものを返す。** */
+let warming: Promise<void> | null = null;
 
 /**
- * wasm を読み始める。スカルプトに入ったときに 1 度だけ呼ぶ。
- * 読めても読めなくても、レベルの操作はできる（JS に落ちるだけ）。
+ * wasm を読み始める。スカルプトに入ったときに呼び、段を組む前にも待つ。
+ *
+ * **2 度目以降も「読み終わるまで」を返す。** 「もう頼んだ」で素通りさせると、
+ * 読み込み中に段を足したときだけ JS で組まれてしまう。
+ * 読めても読めなくても、段の操作はできる（JS に落ちるだけ）。
  */
-export async function warmUpLevels(): Promise<void> {
-  if (asked) return;
-  asked = true;
-  wasm = await loadWasm();
+export function warmUpLevels(): Promise<void> {
+  return (warming ??= loadWasm().then((m) => {
+    wasm = m;
+  }));
 }
 
 /** いま細分割に wasm を使えるか。HUD に出す。 */
@@ -105,4 +109,8 @@ export function canAddLevel(o: SceneObject): { ok: boolean; want: number; budget
   return { ok: want <= budget, want, budget };
 }
 
-export const asMb = (bytes: number): string => `${Math.round(bytes / 1048576)} MB`;
+/** メモリの見せ方。1MB に満たないと「0 MB」になってしまうので、そこは KB で。 */
+export function asMb(bytes: number): string {
+  if (bytes < 1048576) return `${Math.round(bytes / 1024)} KB`;
+  return `${Math.round(bytes / 1048576)} MB`;
+}
