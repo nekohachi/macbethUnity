@@ -265,6 +265,9 @@ const SNAP_ICONS: Record<SnapKind, string> = {
 };
 
 /** シェーディングごとのアイコン。 */
+/** 3 本指のひねりの刻み（度。`26` の T1）。マニピュレータの刻みとは別。 */
+const TWIST_STEP_DEG = 5;
+
 /** 分割のアイコンと名前（`25` の T6）。 */
 const LAYOUT_ICONS: Record<LayoutKind, string> = {
   single: ICONS.layout1,
@@ -358,7 +361,16 @@ export class App {
   }
   private uvSplit: UvSplit = "both";
   /** 3 本指のジェスチャ中に固定しておくカメラ由来の値。 */
-  private gestureView: { pixelToWorld: number; horizontal: Vector3 } | null = null;
+  private gestureView: {
+    pixelToWorld: number;
+    horizontal: Vector3;
+    /** ひねりの軸（`26` の T1）。視線にいちばん近いワールド軸。開始時に決めて固定。 */
+    viewAxis: { name: string; dir: Vector3 };
+  } | null = null;
+  /** 3 本指のひねりの角度を出す小さな札（`26` の T1）。 */
+  private twistPop: HTMLElement | null = null;
+  /** 3 本指の変形を履歴に積むときの名前。中身が決まった時点で変わる。 */
+  private gestureLabel = "変形";
   private gestureMoved = false;
   /** ベベル確定後、オプションで作り直すための控え。 */
   private bevelSnapshot: ReturnType<History["snapshot"]> | null = null;
@@ -698,6 +710,32 @@ export class App {
   }
 
   /**
+   * 視線にいちばん近いワールド軸（`26` の T1）。ひねりの回転軸になる。
+   *
+   * カメラの向きと X / Y / Z の内積の絶対値がいちばん大きいものを 1 本選ぶ。
+   * 前ビューなら Z、上ビューなら Y。**必ずワールド軸で、自由軸は返さない。**
+   */
+  private screenDepthAxis(): { name: string; dir: Vector3 } {
+    const forward = new Vector3();
+    this.viewport.camera.getWorldDirection(forward);
+    const axes: Array<{ name: string; dir: Vector3 }> = [
+      { name: "X", dir: new Vector3(1, 0, 0) },
+      { name: "Y", dir: new Vector3(0, 1, 0) },
+      { name: "Z", dir: new Vector3(0, 0, 1) },
+    ];
+    let best = axes[2];
+    let dot = -1;
+    for (const a of axes) {
+      const d = Math.abs(forward.dot(a.dir));
+      if (d > dot) {
+        dot = d;
+        best = a;
+      }
+    }
+    return best;
+  }
+
+  /**
    * 3 本指で選択を動かし始める。選ぶものが無ければ false。
    * カメラには化けさせないので、呼び出し側はそのまま何もしない。
    */
@@ -723,8 +761,13 @@ export class App {
       label: "変形",
     });
     // カメラの向きはジェスチャ中固定。途中で軸や縮尺が変わらないようにする
-    this.gestureView = { pixelToWorld: this.pixelToWorldAt(pivot), horizontal: this.screenRightAxis() };
+    this.gestureView = {
+      pixelToWorld: this.pixelToWorldAt(pivot),
+      horizontal: this.screenRightAxis(),
+      viewAxis: this.screenDepthAxis(),
+    };
     this.gestureMoved = false;
+    this.gestureLabel = "変形";
     this.beginPreserve(o, this.movedVerts(target));
     return true;
   }
@@ -736,7 +779,22 @@ export class App {
     if (!drag || !view || !o) return;
 
     let note: string;
-    if (t.kind === "scale") {
+    if (t.kind === "rotate") {
+      // 軸はワールドの 1 本だけ（`26` の T1）。ALT なら画面の面に沿った軸へ
+      const axis = this.twistAxis(t.axis);
+      // 5° 刻み。手のひねりをそのまま当てるとモデルが微妙に傾く
+      const stepped = Math.round((t.radians * 180) / Math.PI / TWIST_STEP_DEG) * TWIST_STEP_DEG;
+      // 画面で時計まわりにひねったら、画面でも時計まわりに回るように符号を返す。
+      // 軸がカメラの手前を向いていれば右ねじは反時計まわりに見えるので逆にする
+      const toward = axis.dir.dot(new Vector3().subVectors(this.cameraPosition(), drag.pivot)) > 0;
+      const angle = ((stepped * Math.PI) / 180) * (toward ? -1 : 1);
+      applyGestureTransform(drag, o, { rotate: { axis: axis.dir, angle } });
+      this.preserve = null;
+      this.gestureLabel = "回転";
+      const signed = `${stepped >= 0 ? "+" : ""}${stepped}°`;
+      this.showTwist(axis.name, signed, t.at);
+      note = `回転 <kbd>${axis.name} ${signed}</kbd>`;
+    } else if (t.kind === "scale") {
       // ALT を押しながらなら、つまんだ向きの軸だけ伸ばす（`25` の T2）
       const axis = this.state.modOn("alt") ? this.gestureScaleAxis(t.axis) : null;
       applyGestureTransform(drag, o, {
@@ -779,6 +837,39 @@ export class App {
   }
 
   /**
+   * ひねりの軸（`26` の T1・T3）。
+   *
+   * ALT なしは**視線にいちばん近いワールド軸**（画面の面の中で回る）。
+   * ALT ありは**画面の面に沿った軸**にして、手前 / 奥へ倒す。どちらの軸かは
+   * ALT + つまみと同じ規則（指の並びが縦なら画面の横に沿った軸、横なら Y）。
+   */
+  private twistAxis(axis: "vertical" | "horizontal"): { name: string; dir: Vector3 } {
+    const view = this.gestureView;
+    if (!this.state.modOn("alt")) return view?.viewAxis ?? this.screenDepthAxis();
+    if (axis === "horizontal") return { name: "Y", dir: new Vector3(0, 1, 0) };
+    const right = view?.horizontal ?? this.screenRightAxis();
+    return right.x !== 0
+      ? { name: "X", dir: new Vector3(1, 0, 0) }
+      : { name: "Z", dir: new Vector3(0, 0, 1) };
+  }
+
+  /** ひねりの角度を出す札。指の重心の上に置く（`26` の T1）。 */
+  private showTwist(axis: string, angle: string, at: { x: number; y: number }): void {
+    if (!this.twistPop) {
+      this.twistPop = el("div", "twist-pop");
+      document.body.appendChild(this.twistPop);
+    }
+    this.twistPop.innerHTML = `<i>${axis}</i><b>${angle}</b>`;
+    this.twistPop.style.left = `${at.x}px`;
+    this.twistPop.style.top = `${Math.max(6, at.y - 56)}px`;
+  }
+
+  private hideTwist(): void {
+    this.twistPop?.remove();
+    this.twistPop = null;
+  }
+
+  /**
    * ALT + つまみの軸（`25` の T2）。
    * 縦につまめば Y、横につまめば**カメラから見て横のワールド軸**（X か Z）。
    */
@@ -792,11 +883,14 @@ export class App {
 
   private endGestureTransform(): void {
     const moved = this.gestureMoved;
+    const label = this.gestureLabel;
     this.gestureDrag = null;
     this.gestureView = null;
     this.gestureMoved = false;
+    this.gestureLabel = "変形";
+    this.hideTwist();
     this.commitPreserve();
-    if (moved && this.dragSnapshot) this.history.commit("変形", this.dragSnapshot);
+    if (moved && this.dragSnapshot) this.history.commit(label, this.dragSnapshot);
     this.dragSnapshot = null;
     this.refresh();
     this.hud.defaultHint();

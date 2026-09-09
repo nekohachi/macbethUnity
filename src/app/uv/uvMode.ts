@@ -1510,6 +1510,14 @@ export class UvMode {
       this.host.hint(`スケール <kbd>×${t.scale.toFixed(2)}</kbd> · 指 3 本`);
       return;
     }
+    if (t.kind === "rotate") {
+      // 手のひねりで島を回す（`26` の T1）。3D と同じ 5° 刻み。
+      // 画面は y が下、UV は V が上なので、時計まわりは UV では負の向き
+      const deg = Math.round((t.radians * 180) / Math.PI / 5) * 5;
+      this.applyOffset(g.base, 0, 0, 1, (-deg * Math.PI) / 180);
+      this.host.hint(`回転 <kbd>${deg >= 0 ? "+" : ""}${deg}°</kbd> · 指 3 本`);
+      return;
+    }
     // 上下は V、左右は U（3D の「上下 = Y、左右 = X か Z」と同じ考え方）
     const du = t.axis === "horizontal" ? t.pixels * k : 0;
     const dv = t.axis === "vertical" ? -t.pixels * k : 0;

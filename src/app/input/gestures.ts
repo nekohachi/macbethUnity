@@ -80,7 +80,18 @@ export interface GestureHandlers {
  */
 export type GestureDelta =
   | { kind: "scale"; scale: number; axis: "vertical" | "horizontal" }
-  | { kind: "swipe"; axis: "vertical" | "horizontal"; pixels: number };
+  | { kind: "swipe"; axis: "vertical" | "horizontal"; pixels: number }
+  /**
+   * 手のひねり（`26` の T1）。**画面の時計まわりが正**（ラジアン、刻む前の生の値）。
+   * `axis` は指の並び（ALT + ひねりが使う）。
+   */
+  | {
+      kind: "rotate";
+      radians: number;
+      axis: "vertical" | "horizontal";
+      /** 指の重心（画面座標）。角度の札をここに出す。 */
+      at: { x: number; y: number };
+    };
 
 interface PointerRecord {
   x: number;
@@ -144,6 +155,66 @@ function clusterOf(pointers: Map<number, PointerRecord>): Cluster {
   return { cx, cy, spread: spread / n, angles, axis };
 }
 
+/**
+ * 3 本指のてこ（`26` の T1）。**親指と、残り 2 本の中点**を結ぶ 1 本。
+ *
+ * 指ごとの角度差の平均（`rotationSince`）では測らない。親指と残り 2 本のあいだに
+ * 空間があるので重心は 2 本のほうへ寄り、その 2 本は重心に近すぎて角度が暴れる。
+ * 1 本のてことして見ると、手首のひねりがそのまま角度になる。
+ */
+interface Lever {
+  /** てこの角度。画面は y が下向きなので、増える向き = **画面の時計まわり**。 */
+  angle: number;
+  /** 親指 → 対の中点の距離。 */
+  length: number;
+  /** 対の 2 本のあいだの距離。 */
+  span: number;
+}
+
+/**
+ * 3 本のうち「親指」。他の指からいちばん離れているものを選ぶ
+ * （各指について「他までの最短距離」を出し、それが最大のもの）。
+ * 開始時に 1 回決めて、以後は変えない。
+ */
+function thumbOf(pointers: Map<number, PointerRecord>): number {
+  let best = -1;
+  let bestGap = -1;
+  for (const [id, p] of pointers) {
+    let near = Infinity;
+    for (const [other, q] of pointers) {
+      if (other === id) continue;
+      near = Math.min(near, Math.hypot(q.x - p.x, q.y - p.y));
+    }
+    if (near > bestGap) {
+      bestGap = near;
+      best = id;
+    }
+  }
+  return best;
+}
+
+function leverOf(pointers: Map<number, PointerRecord>, thumb: number): Lever | null {
+  const t = pointers.get(thumb);
+  if (!t) return null;
+  const rest = [...pointers].filter(([id]) => id !== thumb).map(([, p]) => p);
+  if (rest.length !== 2) return null;
+  const mx = (rest[0].x + rest[1].x) / 2;
+  const my = (rest[0].y + rest[1].y) / 2;
+  return {
+    angle: Math.atan2(my - t.y, mx - t.x),
+    length: Math.hypot(mx - t.x, my - t.y),
+    span: Math.hypot(rest[1].x - rest[0].x, rest[1].y - rest[0].y),
+  };
+}
+
+/** 角度の差を [-π, π] に畳む。 */
+function angleDelta(from: number, to: number): number {
+  let d = to - from;
+  while (d > Math.PI) d -= Math.PI * 2;
+  while (d < -Math.PI) d += Math.PI * 2;
+  return d;
+}
+
 /** 開始時点からの回転量。指ごとの角度差を [-π, π] に畳んで平均する。 */
 function rotationSince(basis: Cluster, now: Cluster): number {
   let sum = 0;
@@ -190,7 +261,13 @@ interface Gesture {
   /** そのフレームで動いた指。全員そろってから測るために使う（3 本指）。 */
   fresh?: Set<number>;
   /** 3 本指で確定した中身。一度決まったら変えない（誤操作防止）。 */
-  delta?: { kind: "scale"; axis: "vertical" | "horizontal" } | { kind: "swipe"; axis: "vertical" | "horizontal" };
+  delta?:
+    | { kind: "scale"; axis: "vertical" | "horizontal" }
+    | { kind: "swipe"; axis: "vertical" | "horizontal" }
+    | { kind: "rotate"; axis: "vertical" | "horizontal" };
+  /** 親指のポインタ ID と、開始時のてこ（`26` の T1）。 */
+  thumb?: number;
+  basisLever?: Lever | null;
   zoomOnly?: boolean;
   pivot?: Vector3;
   moved?: boolean;
@@ -199,6 +276,19 @@ interface Gesture {
 }
 
 const TUMBLE_DEADZONE = 5;
+/**
+ * ひねりと認める最小の角度（度。`26` の T1）。刻み 1 つ分。
+ * これ未満なら、曲がっただけのスワイプとして扱う。
+ */
+const TWIST_MIN_DEG = 5;
+/**
+ * 親指と残り 2 本のあいだに要る「空間」（対の間隔の何倍か）。
+ * ユーザーの言う「親指と 2 本のあいだに空間が生まれる」を判定にしたもの。
+ * 3 本が均等に開いているとき（パンのつもりで広げた手）はひねりに入らない。
+ * **実機で確かめる値**（中指 + 薬指はくっつくので、実際は 2 以上になるはず。
+ * きつすぎるなら 1.2 まで下げてよい）。
+ */
+const TWIST_GAP = 1.4;
 /** 複数指のカメラ操作 / 変形が確定する動き（px）。2 本指でも 3 本指でも同じ。 */
 const CLUSTER_DEADZONE = 10;
 /** タップと見なせる動きの上限（px）。これを越えたら長押しもタップも消える。 */
@@ -288,7 +378,17 @@ export class GestureRouter {
         // 3 本指は選択の変形。デッドゾーンを越えるまでは何も起こさないので、
         // 3 本指ダブルタップ（やり直す）とも長押しとも両立する
         const c = clusterOf(this.pointers);
-        this.gesture = { mode: "threefinger", live: false, acc: 0, basis: c, last: c };
+        const thumb = thumbOf(this.pointers);
+        this.gesture = {
+          mode: "threefinger",
+          live: false,
+          acc: 0,
+          basis: c,
+          last: c,
+          // 親指は置いた時点で決めて、以後は変えない（`26` の T1）
+          thumb,
+          basisLever: leverOf(this.pointers, thumb),
+        };
         // 指 3 本の長押し = カメラ。選択の有無に関わらずいつでも出せる
         this.startHold(3, () => this.h.openCameraMenu(c.cx, c.cy));
         return;
@@ -427,13 +527,24 @@ export class GestureRouter {
         fresh.clear();
         g.last = now;
 
-        // つまみとスワイプを同じ物差しで測って、大きい方に決める。
+        // つまみ・スワイプ・ひねりを同じ物差しで測って、いちばん大きいものに決める。
         // 開始時からの量なので、揺れが溜まって暴発することはない
         const pinch = spreadMotion(basis, now);
         const dx = now.cx - basis.cx;
         const dy = now.cy - basis.cy;
         const swipe = Math.hypot(dx, dy);
-        if (pinch < CLUSTER_DEADZONE && swipe < CLUSTER_DEADZONE) return;
+
+        // ひねりは「親指 → 対の中点」のてこで測る（`26` の T1）。
+        // 対の中点が描く弧の長さを、つまみやスワイプと同じ px の物差しにする
+        const lever = g.thumb !== undefined ? leverOf(this.pointers, g.thumb) : null;
+        const base = g.basisLever;
+        const twisted = lever && base ? angleDelta(base.angle, lever.angle) : 0;
+        // 親指と対のあいだに空間があること。3 本が均等に開いた手はひねりに入らない
+        const roomy = !!lever && lever.length >= TWIST_GAP * lever.span;
+        const enough = Math.abs(twisted) >= (TWIST_MIN_DEG * Math.PI) / 180;
+        const turn = lever && roomy && enough ? Math.abs(twisted) * (lever.length / 2) : 0;
+
+        if (pinch < CLUSTER_DEADZONE && swipe < CLUSTER_DEADZONE && turn < CLUSTER_DEADZONE) return;
 
         // 選ぶものが無ければ変形しない。カメラにも化けさせない
         if (!this.h.transformBegin()) {
@@ -446,17 +557,29 @@ export class GestureRouter {
         this.cancelHold();
         // ここで中身を 1 つに決める。以後は入れ替わらない
         g.delta =
-          pinch >= swipe
-            ? // つまむ向きは確定した時点で決めて、以後は変えない（`25` の T2）
-              { kind: "scale", axis: now.axis }
-            : { kind: "swipe", axis: Math.abs(dy) >= Math.abs(dx) ? "vertical" : "horizontal" };
+          turn >= pinch && turn >= swipe
+            ? { kind: "rotate", axis: now.axis }
+            : pinch >= swipe
+              ? // つまむ向きは確定した時点で決めて、以後は変えない（`25` の T2）
+                { kind: "scale", axis: now.axis }
+              : { kind: "swipe", axis: Math.abs(dy) >= Math.abs(dx) ? "vertical" : "horizontal" };
         // 確定した時点を基準にし直して飛びを防ぐ
         g.basis = now;
+        if (g.thumb !== undefined) g.basisLever = leverOf(this.pointers, g.thumb);
         return;
       }
 
       const kind = g.delta ?? { kind: "scale" as const, axis: now.axis };
-      if (kind.kind === "scale") {
+      if (kind.kind === "rotate") {
+        const lever = g.thumb !== undefined ? leverOf(this.pointers, g.thumb) : null;
+        if (!lever || !g.basisLever) return;
+        this.h.transformUpdate({
+          kind: "rotate",
+          radians: angleDelta(g.basisLever.angle, lever.angle),
+          axis: kind.axis,
+          at: { x: now.cx, y: now.cy },
+        });
+      } else if (kind.kind === "scale") {
         this.h.transformUpdate({
           kind: "scale",
           scale: basis.spread > 1e-6 ? now.spread / basis.spread : 1,

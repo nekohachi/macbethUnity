@@ -219,6 +219,14 @@ button{font-family:inherit; font-size:inherit; color:inherit; background:none; b
 .vp.split .pane3d{left:50%; border-left:1px solid var(--line)}
 .stage.portrait .vp.split .paneuv{right:0; bottom:50%}
 .stage.portrait .vp.split .pane3d{left:0; top:50%; border-left:none; border-top:1px solid var(--line)}
+/* 3 本指のひねりの角度（26 の T1）。指の重心の上に出す小さな札 */
+.twist-pop{position:fixed; z-index:60; transform:translateX(-50%); pointer-events:none;
+  display:flex; align-items:baseline; gap:6px; padding:5px 10px;
+  background:rgba(18,21,25,.92); border:1px solid var(--accent); border-radius:var(--radius);
+  box-shadow:0 6px 18px rgba(0,0,0,.45)}
+.twist-pop i{font-style:normal; font-size:10px; letter-spacing:.08em; color:var(--text-faint)}
+.twist-pop b{font-family:"IBM Plex Mono",monospace; font-size:13px; font-weight:500; color:var(--text)}
+
 /* 3D の分割（25 の T6）。canvas は 1 枚で、枠だけを重ねる */
 .panes{position:absolute; inset:0; pointer-events:none; z-index:4}
 .paneframe{position:absolute; border:1px solid var(--line); box-sizing:border-box}

@@ -650,6 +650,66 @@ const scenes = {
     await new Promise((r) => setTimeout(r, 250));
   },
 
+  /** `26` の T1: 3 本指のひねりで回転。指を離さずに撮るので札が出たまま。 */
+  "26-t1-twist": async () => {
+    const app = window.macbeth;
+    app.state.doc.objects.length = 0;
+    const object = app.state.doc.addObject("cube");
+    app.viewport.syncAll();
+    app.setCompMode("object");
+    app.state.select(object);
+    app.setView("front");
+    app.viewport.frameSelected();
+    app.viewport.cam.distance = 5.2;
+    app.viewport.applyCamera();
+    app.setDisplay("shadedWire");
+    app.refresh();
+    await new Promise((r) => setTimeout(r, 120));
+
+    const pane = document.getElementById("pane3d").getBoundingClientRect();
+    const center = { x: pane.left + pane.width / 2, y: pane.top + pane.height / 2 };
+    const canvas = document.getElementById("gl");
+    const fire = (type, id, x, y) =>
+      canvas.dispatchEvent(
+        new PointerEvent(type, {
+          pointerId: id,
+          pointerType: "touch",
+          isPrimary: id === 121,
+          clientX: x,
+          clientY: y,
+          buttons: type === "pointerup" ? 0 : 1,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    const thumb = { x: center.x - 60, y: center.y + 60 };
+    const pair = [
+      { x: center.x + 52, y: center.y - 60 },
+      { x: center.x + 68, y: center.y - 52 },
+    ];
+    const turn = (p, deg) => {
+      const a = (deg * Math.PI) / 180;
+      const dx = p.x - center.x;
+      const dy = p.y - center.y;
+      return { x: center.x + dx * Math.cos(a) - dy * Math.sin(a), y: center.y + dx * Math.sin(a) + dy * Math.cos(a) };
+    };
+    fire("pointerdown", 121, thumb.x, thumb.y);
+    fire("pointerdown", 122, pair[0].x, pair[0].y);
+    fire("pointerdown", 123, pair[1].x, pair[1].y);
+    for (let step = 1; step <= 12; step++) {
+      const deg = (48 / 12) * step;
+      const a = turn(thumb, deg);
+      const b = turn(pair[0], deg);
+      const c = turn(pair[1], deg);
+      fire("pointermove", 121, a.x, a.y);
+      fire("pointermove", 122, b.x, b.y);
+      fire("pointermove", 123, c.x, c.y);
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    // 指は離さない（札を出したまま撮る）
+    await new Promise((r) => setTimeout(r, 200));
+  },
+
   /** `23` の T4: ブリッジの分割数 3。上下の縁の間に輪が 2 本入る。 */
   "23-t4-bridge": async () => {
     const app = window.macbeth;

@@ -4713,6 +4713,131 @@ check(
     `ALT なし [${axisScale.uniform.map((v) => v.toFixed(2))}]`,
 );
 
+/* 43z-13b. 3 本指のひねりで回転（`26` の T1） */
+const twist = await page.evaluate(async (center) => {
+  const app = window.macbeth;
+  app.state.doc.objects.length = 0;
+  const object = app.state.doc.addObject("cube");
+  app.viewport.syncAll();
+  app.setCompMode("object");
+  app.state.select(object);
+  // 前ビュー（平行投影）。視線に近いワールド軸は Z になる
+  app.viewport.setView("front");
+  app.viewport.frameSelected();
+  app.refresh();
+  await new Promise((r) => setTimeout(r, 80));
+
+  const canvas = document.getElementById("gl");
+  const fire = (type, id, x, y) =>
+    canvas.dispatchEvent(
+      new PointerEvent(type, {
+        pointerId: id,
+        pointerType: "touch",
+        isPrimary: id === 121,
+        clientX: x,
+        clientY: y,
+        buttons: type === "pointerup" ? 0 : 1,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  /** 上面の中心を画面へ投影する。回り方の向きを見るのに使う。 */
+  const topOnScreen = () => {
+    const view = app.viewport.viewOf(object);
+    view.group.updateMatrixWorld();
+    // three を読み込まずに Vector3 を借りる（カメラの注視点は Vector3）
+    const v = app.viewport.cam.target.clone().set(0, 0.5, 0);
+    v.applyMatrix4(view.group.matrixWorld).project(app.viewport.camera);
+    const rect = app.viewport.paneRect(0);
+    return { x: ((v.x + 1) / 2) * rect.w, y: ((-v.y + 1) / 2) * rect.h };
+  };
+
+  // 親指は左下、対の 2 本は右上（間隔 14px）。あいだに空間がある持ち方
+  const thumb = { x: center.x - 50, y: center.y + 50 };
+  const pair = [
+    { x: center.x + 43, y: center.y - 50 },
+    { x: center.x + 57, y: center.y - 43 },
+  ];
+  const turn = (p, deg) => {
+    const a = (deg * Math.PI) / 180;
+    const dx = p.x - center.x;
+    const dy = p.y - center.y;
+    // 画面は y が下向きなので、この式が画面の時計まわり
+    return { x: center.x + dx * Math.cos(a) - dy * Math.sin(a), y: center.y + dx * Math.sin(a) + dy * Math.cos(a) };
+  };
+
+  const before = topOnScreen();
+  fire("pointerdown", 121, thumb.x, thumb.y);
+  fire("pointerdown", 122, pair[0].x, pair[0].y);
+  fire("pointerdown", 123, pair[1].x, pair[1].y);
+  for (let step = 1; step <= 10; step++) {
+    const deg = (32 / 10) * step;
+    const a = turn(thumb, deg);
+    const b = turn(pair[0], deg);
+    const c = turn(pair[1], deg);
+    fire("pointermove", 121, a.x, a.y);
+    fire("pointermove", 122, b.x, b.y);
+    fire("pointermove", 123, c.x, c.y);
+    await wait(8);
+  }
+  const pop = document.querySelector(".twist-pop")?.textContent ?? "";
+  const during = topOnScreen();
+  const scale = [...object.transform.scale];
+  const position = [...object.transform.position];
+  const q = [...object.transform.rotation];
+  fire("pointerup", 121, center.x, center.y);
+  fire("pointerup", 122, center.x, center.y);
+  fire("pointerup", 123, center.x, center.y);
+  await wait(60);
+  const closed = !document.querySelector(".twist-pop");
+  const label = app.history.undoLabel;
+
+  app.history.undo();
+  await wait(40);
+  const undone = [...app.state.doc.objects[0].transform.rotation];
+
+  app.state.select(null);
+  app.state.doc.objects.length = 0;
+  app.viewport.syncAll();
+  app.viewport.setView("persp");
+  app.refresh();
+  // クォータニオンから Z まわりの角度を出す（他の軸は 0 のはず）
+  const angle = (2 * Math.atan2(Math.hypot(q[0], q[1], q[2]), q[3]) * 180) / Math.PI;
+  return {
+    pop,
+    angle,
+    axisZ: Math.abs(q[2]) > 0.99 * Math.hypot(q[0], q[1], q[2]),
+    scale,
+    position,
+    movedRight: during.x - before.x,
+    closed,
+    label,
+    undone: Math.hypot(undone[0], undone[1], undone[2]),
+  };
+}, ON_MESH);
+check(
+  // 32° ひねる。判定が決まるまでの分（8° ほど）は物差しに使われるので、
+  // 当たるのはその残り。5 の倍数で、向きが合っていることを見る
+  "3 本指のひねりで回転（5° 刻み、軸は視線に垂直）",
+  twist.pop.includes("Z") &&
+    twist.pop.includes(`+${Math.round(twist.angle)}°`) &&
+    Math.abs(twist.angle - 5 * Math.round(twist.angle / 5)) < 0.01 &&
+    twist.angle >= 15 &&
+    twist.angle <= 30 &&
+    twist.axisZ &&
+    twist.scale.every((v) => Math.abs(v - 1) < 1e-6) &&
+    twist.position.every((v) => Math.abs(v) < 1e-6) &&
+    twist.movedRight > 4 &&
+    twist.closed &&
+    twist.label === "回転" &&
+    twist.undone < 1e-6,
+  `札 「${twist.pop}」/ ${twist.angle.toFixed(1)}°（Z まわり ${twist.axisZ}）/ ` +
+    `上面が右へ ${twist.movedRight.toFixed(0)}px / スケール [${twist.scale.map((v) => v.toFixed(2))}] / ` +
+    `履歴 「${twist.label}」→ 取り消しで ${twist.undone.toFixed(3)}`,
+);
+
 /* 43z-14. アトリビュート欄がアウトライナの上に出る（`25` の T3） */
 const attrs = await page.evaluate(async () => {
   const app = window.macbeth;

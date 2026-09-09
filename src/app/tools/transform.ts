@@ -209,7 +209,12 @@ export function updateDrag(
 export function applyGestureTransform(
   drag: DragState,
   object: SceneObject,
-  t: { scale?: number | [number, number, number]; move?: Vector3 },
+  t: {
+    scale?: number | [number, number, number];
+    move?: Vector3;
+    /** ひねりの回転（`26` の T1）。右ねじの向きで `angle` ラジアン回す。 */
+    rotate?: { axis: Vector3; angle: number };
+  },
 ): void {
   // 裏返らないように下限を置く。軸ごとの倍率にも同じ下限（`25` の T2）
   const raw = t.scale ?? 1;
@@ -218,19 +223,30 @@ export function applyGestureTransform(
       ? new Vector3(Math.max(0.02, raw), Math.max(0.02, raw), Math.max(0.02, raw))
       : new Vector3(Math.max(0.02, raw[0]), Math.max(0.02, raw[1]), Math.max(0.02, raw[2]));
   const move = t.move ?? new Vector3();
+  const spin = t.rotate ?? null;
   const pivot = drag.pivot;
   const target = drag.target;
 
-  /** ピボットからの距離を成分ごとに伸ばして、軸に沿って動かす。 */
-  const place = (p: Vector3): Vector3 => p.clone().sub(pivot).multiply(s).add(pivot).add(move);
+  /** ピボットからの距離を成分ごとに伸ばし、回して、軸に沿って動かす。 */
+  const place = (p: Vector3, weight = 1): Vector3 => {
+    const r = p.clone().sub(pivot).multiply(s);
+    // 回転はソフト選択の重みを角度に掛ける（座標を混ぜると弧が内側に落ちる）
+    if (spin) r.applyQuaternion(new Quaternion().setFromAxisAngle(spin.axis, spin.angle * weight));
+    return r.add(pivot).add(move);
+  };
 
   if (target.kind === "object") {
     const t0 = target.transform;
-    // 原点もピボットの周りで伸び縮みする（マニピュレータのスケールと同じ扱い）
+    // 原点もピボットの周りで伸び縮み・回転する（マニピュレータと同じ扱い）
     const moved = place(new Vector3(t0.position[0], t0.position[1], t0.position[2]));
+    const turned = spin
+      ? new Quaternion()
+          .setFromAxisAngle(spin.axis, spin.angle)
+          .multiply(new Quaternion(t0.rotation[0], t0.rotation[1], t0.rotation[2], t0.rotation[3]))
+      : null;
     object.transform = {
       position: [moved.x, moved.y, moved.z],
-      rotation: [...t0.rotation],
+      rotation: turned ? [turned.x, turned.y, turned.z, turned.w] : [...t0.rotation],
       scale: [t0.scale[0] * s.x, t0.scale[1] * s.y, t0.scale[2] * s.z],
     };
     return;
@@ -238,8 +254,10 @@ export function applyGestureTransform(
 
   for (let i = 0; i < target.verts.length; i++) {
     const start = target.world[i];
-    // 重みで元の位置と変形後の間を取る（ソフト選択）
-    const w = start.clone().lerp(place(start), target.weights[i]).applyMatrix4(target.inverse);
+    const weight = target.weights[i];
+    // 重みで元の位置と変形後の間を取る（ソフト選択）。回転は角度そのものに重みが乗る
+    const moved = spin ? place(start, weight) : start.clone().lerp(place(start), weight);
+    const w = moved.applyMatrix4(target.inverse);
     object.mesh.setPosition(target.verts[i], w.x, w.y, w.z);
   }
   // 対称編集: 相手側をローカル X で鏡映した位置に置く
