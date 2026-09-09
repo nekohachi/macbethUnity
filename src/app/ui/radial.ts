@@ -90,13 +90,22 @@ export function openRadial(
   list: RadialItem[] = [],
 ): void {
   closeRadial();
-  // 画面の端で切れないように中心を寄せる。一覧がある分だけ下の余白も見る
+  // 一覧がある分だけ下の余白も見る
   const below = list.length ? ROW_GAP + list.length * ROW_HEIGHT : 0;
-  const cx = Math.max(RING_OUTER + 16, Math.min(window.innerWidth - RING_OUTER - 16, clientX));
-  const cy = Math.max(
-    RING_OUTER + 16,
-    Math.min(window.innerHeight - RING_OUTER - below - 16, clientY),
-  );
+  // **中心は指のところから動かさない**（動かせるのは、指が画面の外に近すぎて
+  // 中心の丸ごと見えなくなるときだけ）。
+  //
+  // 以前は輪が丸ごと収まるように寄せていた（`RING_OUTER + 16`）。だが
+  // ツール列は画面の左端にあるので、中心が指から 100px も右へずれる。
+  // すると**指は押した瞬間から「西」の区画に居る**ことになり、
+  // 上へ引いたつもりでも北にならない。段のメニューは項目が「足す」1 つ
+  // （北）だけのことが多く、そのとき何も選ばれずに離すことになって、
+  // 「段が足せない」になっていた（実機の報告）。
+  //
+  // 輪が端で少し切れても、**引いた向きと選ばれるものが合っている**ほうが大事。
+  const edge = RING_INNER + 24;
+  const cx = Math.max(edge, Math.min(window.innerWidth - edge, clientX));
+  const cy = Math.max(edge, Math.min(window.innerHeight - edge - below, clientY));
 
   const host = document.createElement("div");
   host.className = "radial";

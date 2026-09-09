@@ -500,6 +500,56 @@ check(
     ` / HUD「${levels.hud}」`,
 );
 
+/* 17c2. 長押しから「段を足す」が本当に押せる（`33` の実機報告） */
+//
+// levelForTest は中の関数を直に叩くので、**輪のメニューが指の位置に出ているか**は
+// 見ていなかった。実機で「段が足せない」と言われて初めて分かったので、
+// ここは押した場所からまっすぐ引く、本物の道で見る。
+const addByHold = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const keep = [...app.state.doc.objects];
+  const keepSel = app.state.selected;
+  app.state.doc.objects.length = 0;
+  const cube = app.state.doc.addMesh(window.macbethCore.PRIMITIVES.cube.build(window.macbethCore.defaultParams("cube")), "H");
+  app.viewport.syncAll();
+  app.state.select(cube);
+  app.setMode("sculpt");
+  await new Promise((r) => setTimeout(r, 120));
+  const btn = document.querySelector('#dockLeft [data-group="level"]');
+  const r = btn.getBoundingClientRect();
+  const bx = r.left + r.width / 2;
+  const by = r.top + r.height / 2;
+  const ev = (t, x, y) =>
+    new PointerEvent(t, { pointerId: 31, pointerType: "touch", bubbles: true, cancelable: true, clientX: x, clientY: y, isPrimary: true });
+  btn.dispatchEvent(ev("pointerdown", bx, by));
+  await new Promise((r2) => setTimeout(r2, 700));
+  const svg = document.querySelector(".radial svg");
+  const hub = svg && [...svg.querySelectorAll("circle")].reduce((b, c) => (Number(c.getAttribute("r")) > Number(b.getAttribute("r")) ? c : b));
+  // 輪の中心が指からどれだけずれているか。ずれていると向きが合わない
+  const off = hub ? Math.hypot(bx - Number(hub.getAttribute("cx")), by - Number(hub.getAttribute("cy"))) : -1;
+  // 押した場所から**まっすぐ上**へ引いて離す（人がやるとおり）
+  window.dispatchEvent(ev("pointermove", bx, by - 110));
+  await new Promise((r2) => setTimeout(r2, 60));
+  window.dispatchEvent(ev("pointerup", bx, by - 110));
+  await new Promise((r2) => setTimeout(r2, 400));
+  const out = { off, levels: cube.multires.length, active: cube.activeLevel, faces: cube.shown(app.state.shownLevel(cube)).faceCount };
+  app.setMode("model");
+  app.state.doc.objects.length = 0;
+  app.state.doc.objects.push(...keep);
+  app.viewport.syncAll();
+  // **選んでいたものをそのまま戻す。** 次の項目が同じものを見ている
+  app.state.select(keepSel ?? keep[0] ?? null);
+  app.setCompMode("object");
+  app.state.comp.clear();
+  app.refresh();
+  return out;
+});
+check(
+  "長押しからまっすぐ上へ引くと段が足せる",
+  addByHold.off >= 0 && addByHold.off < 8 && addByHold.levels === 1 && addByHold.active === 1 && addByHold.faces === 24,
+  `輪の中心のずれ ${addByHold.off.toFixed(0)}px / 段 ${addByHold.levels} · 表示レベル ${addByHold.active} · ${addByHold.faces} 面`,
+);
+
 /* 17d. 予算を越えると足せない（`03` の 3.3） */
 {
   const tiny = await browser.newPage({ viewport: { width: 1280, height: 800 } });
