@@ -254,20 +254,27 @@ button{font-family:inherit; font-size:inherit; color:inherit; background:none; b
 .hud-stats i{font-style:normal; color:#93a0ab}
 .hud-mode{top:8px; right:12px; text-align:right}
 .hud-mode b{color:var(--comp); font-weight:500}
-.hud-hint{bottom:calc(12px + env(safe-area-inset-bottom, 0px)); left:150px; right:12px; color:#a7b2bc; line-height:1.7}
+.hud-hint{bottom:calc(12px + env(safe-area-inset-bottom, 0px)); left:90px; right:12px; color:#a7b2bc; line-height:1.7}
+/* クラスタが横へ移れば左下の角は空く */
+.vp[data-cluster="side"] .hud-hint{left:12px}
+:root[data-hand="left"] .hud-hint{left:12px; right:90px}
+:root[data-hand="left"] .vp[data-cluster="side"] .hud-hint{right:12px}
 .hud-hint kbd{font-family:inherit; background:rgba(0,0,0,.35); border:1px solid rgba(255,255,255,.14);
   border-radius:2px; padding:0 3px; color:#dbe2e8}
 .marquee{position:absolute; border:1px solid #e8eef2; background:rgba(232,238,242,.14); pointer-events:none; display:none}
 
-/* 左下のタッチ用クラスタ:  SHF  F  /  CTL  ALT */
-.cluster{position:absolute; left:12px; bottom:calc(12px + env(safe-area-inset-bottom, 0px)); display:grid; grid-template-columns:66px 66px;
-  grid-auto-rows:58px; gap:6px; z-index:8}
+/* タッチ用の修飾ボタン: 縦 1 列で上から F / SHF / CTL / ALT（29 の A-T1）。
+   置き場所は左下（既定）か、ツール列の横（.vp[data-cluster="side"]）の 2 つ。
+   地は少し透かしてある（押している状態だけ不透明）。 */
+.cluster{position:absolute; left:12px; bottom:calc(12px + env(safe-area-inset-bottom, 0px));
+  display:flex; flex-direction:column; gap:6px; z-index:8}
+.vp[data-cluster="side"] .cluster{left:8px; bottom:auto; top:50%; transform:translateY(-50%)}
 .cmod{width:66px; height:58px; border-radius:8px; font-weight:600; font-size:11px; letter-spacing:.04em;
-  background:rgba(37,42,48,.9); border:1px solid var(--line); color:var(--text-dim); backdrop-filter:blur(4px)}
+  background:rgba(37,42,48,.7); border:1px solid var(--line); color:var(--text-dim); backdrop-filter:blur(4px)}
 .cmod[data-state="on"]{background:var(--accent); border-color:var(--accent); color:#0f1418;
   box-shadow:inset 0 0 0 1px rgba(255,255,255,.4)}
 .cframe{width:66px; height:58px; border-radius:8px; display:grid; place-items:center; position:relative;
-  background:rgba(37,42,48,.92); border:1px solid var(--line-soft); color:var(--text); backdrop-filter:blur(4px);
+  background:rgba(37,42,48,.7); border:1px solid var(--line-soft); color:var(--text); backdrop-filter:blur(4px);
   box-shadow:0 4px 14px rgba(0,0,0,.4); touch-action:none}
 .cframe:hover{background:var(--panel-hi)}
 .cframe.held{background:var(--accent-dim); border-color:var(--accent); color:#eaf4fb}
@@ -414,6 +421,7 @@ button{font-family:inherit; font-size:inherit; color:inherit; background:none; b
 :root[data-hand="left"] .stage.portrait .vp{grid-column:1}
 /* ビューポートの中身 */
 :root[data-hand="left"] .cluster{left:auto; right:12px}
+:root[data-hand="left"] .vp[data-cluster="side"] .cluster{left:auto; right:8px}
 :root[data-hand="left"] .hud-stats{left:auto; right:10px; justify-items:end}
 :root[data-hand="left"] .hud-mode{right:auto; left:12px; text-align:left}
 :root[data-hand="left"] .hud-hint{left:12px; right:150px; text-align:right}

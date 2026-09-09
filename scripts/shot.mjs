@@ -851,6 +851,23 @@ const scenes = {
     await new Promise((r) => setTimeout(r, 250));
   },
 
+  /** `29` の A-T1: 修飾ボタンをツール列の横に、縦 1 列で。 */
+  "29-t1-cluster-side": async () => {
+    const app = window.macbeth;
+    app.state.doc.objects.length = 0;
+    const object = app.state.doc.addObject("cube");
+    app.viewport.syncAll();
+    app.setCompMode("object");
+    app.state.select(object);
+    app.viewport.frameSelected();
+    app.refresh();
+    // 表示のドロップダウンから「ツール列の横」を選ぶ（本物の経路）
+    document.getElementById("viewBtn").click();
+    await new Promise((r) => setTimeout(r, 200));
+    document.querySelector('.panel.floating[data-menu="view"] [data-cluster="side"]')?.click();
+    await new Promise((r) => setTimeout(r, 250));
+  },
+
   /** `23` の T4: ブリッジの分割数 3。上下の縁の間に輪が 2 本入る。 */
   "23-t4-bridge": async () => {
     const app = window.macbeth;

@@ -5705,6 +5705,79 @@ check(
     `裏面を描かない設定では出さない ${!backPass.culled} / 不透明に戻すと消える ${!backPass.backOpaque}`,
 );
 
+/* 43z-23. 修飾ボタンは縦に並び、置き場所を表示から選べる（`29` の A-T1） */
+const cluster = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const ids = () =>
+    [...document.querySelectorAll(".cluster > button")].map((b) => ({
+      id: b.id,
+      r: b.getBoundingClientRect(),
+    }));
+  const order = ids();
+  // 上から F / SHF / CTL / ALT で、x はそろっている
+  const stacked =
+    order.length === 4 &&
+    order.every((b, i) => i === 0 || b.r.top > order[i - 1].r.top) &&
+    order.every((b) => Math.abs(b.r.x - order[0].r.x) < 0.5);
+  const names = order.map((b) => b.id).join(",");
+
+  const vp = document.getElementById("vp");
+  const box = () => document.querySelector(".cluster").getBoundingClientRect();
+  const vpr = () => vp.getBoundingClientRect();
+  const cornerNear = box().bottom > vpr().bottom - 80;
+
+  // 上段の「表示」から「ツール列の横」を選ぶ（本物の経路）
+  const openView = () => document.getElementById("viewBtn").click();
+  openView();
+  await new Promise((r) => setTimeout(r, 120));
+  const seg = document.querySelector('.panel.floating[data-menu="view"] .segmented');
+  const labels = seg ? [...seg.querySelectorAll("button")].map((b) => b.textContent) : [];
+  seg?.querySelector('[data-cluster="side"]')?.click();
+  await new Promise((r) => setTimeout(r, 120));
+  const side = vp.dataset.cluster;
+  const b1 = box();
+  const v1 = vpr();
+  const centered = Math.abs((b1.top + b1.bottom) / 2 - (v1.top + v1.bottom) / 2) < 4;
+  const nearLeft = b1.left - v1.left < 20;
+  const saved = JSON.parse(localStorage.getItem("macbeth.ui") ?? "{}").clusterPos;
+
+  // 左利きでは右へ回る
+  const host = app.panelHostForTest();
+  void host;
+  app.state.ui.leftHanded = true;
+  app.applyHandForTest();
+  await new Promise((r) => setTimeout(r, 120));
+  const b2 = box();
+  const v2 = vpr();
+  const nearRight = v2.right - b2.right < 20;
+  app.state.ui.leftHanded = false;
+  app.applyHandForTest();
+
+  // 左下へ戻す
+  document.querySelector('.panel.floating[data-menu="view"] [data-cluster="corner"]')?.click();
+  await new Promise((r) => setTimeout(r, 120));
+  const back = vp.dataset.cluster;
+  document.getElementById("viewBtn").click();
+  await new Promise((r) => setTimeout(r, 80));
+  return { names, stacked, cornerNear, labels, side, centered, nearLeft, saved, nearRight, back };
+});
+check(
+  "修飾ボタンは縦に並び、置き場所を表示から選べる",
+  cluster.names === "btnFrame,modShift,modCtrl,modAlt" &&
+    cluster.stacked &&
+    cluster.cornerNear &&
+    cluster.labels.join("/") === "左下/ツール列の横" &&
+    cluster.side === "side" &&
+    cluster.centered &&
+    cluster.nearLeft &&
+    cluster.saved === "side" &&
+    cluster.nearRight &&
+    cluster.back === "corner",
+  `並び ${cluster.names}（縦 ${cluster.stacked}）/ 既定は左下 ${cluster.cornerNear} / ` +
+    `表示の行 ${cluster.labels.join(" · ")} / 横へ ${cluster.side}（中央 ${cluster.centered}・左寄せ ${cluster.nearLeft}）/ ` +
+    `控え ${cluster.saved} / 左利きで右へ ${cluster.nearRight} / 戻して ${cluster.back}`,
+);
+
 /* 44. ツール列のグループ（`21` の 4 章） */
 
 /* 44-1. ボタンは 7 つ、右のオプションパネルは無い */

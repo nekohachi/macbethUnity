@@ -282,7 +282,17 @@ export class AppState {
    * 画面まわりの好み（`24` の T4）。上段の「表示」から触る。
    * `localStorage` に残す。
    */
-  ui = { hints: true, stats: true, leftHanded: false };
+  ui = {
+    hints: true,
+    stats: true,
+    leftHanded: false,
+    /**
+     * 修飾ボタン（F / SHF / CTL / ALT）の置き場所（`29` の A-T1）。
+     * `corner` = 左下の角（既定）、`side` = ツール列の横の縦の中央。
+     * タブレットによって握り方が違うので、上段の「表示」から選べる。
+     */
+    clusterPos: "corner" as "corner" | "side",
+  };
   /** 裏面を描かない（`23` の T6）。既定はオフ（両面）。 */
   cullBack = false;
   /** 床のグリッドを出す（`23` の T6）。既定はオン。 */

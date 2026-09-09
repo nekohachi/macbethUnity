@@ -346,6 +346,11 @@ export class App {
     return this.picker;
   }
 
+  /** 通し確認から利き手を切り替える（本物の経路は「表示」の「左利き」）。 */
+  applyHandForTest(): void {
+    this.applyHand();
+  }
+
   /** 通し確認から分割を変える（本物の経路は「分割」ボタン）。 */
   setLayoutForTest(kind: LayoutKind): void {
     this.setLayout(kind);
@@ -603,8 +608,9 @@ export class App {
     // 前回の分割とペインごとのカメラを戻す（`25` の T6）
     if (restored && this.state.doc.layout) this.viewport.restoreLayout(this.state.doc.layout);
     this.viewport.syncAll();
-    // 前回の表示の設定を反映する（`23` の T6、`24` の T4）
+    // 前回の表示の設定を反映する（`23` の T6、`24` の T4、`29` の A-T1）
     this.applyHand();
+    this.applyClusterPos();
     this.viewport.setGridVisible(this.state.showGrid);
     this.viewport.applyCulling();
     // 起動時の画角はプロトタイプと同じ既定値のまま。F を押せば選択に寄る
@@ -4737,6 +4743,29 @@ export class App {
       this.rememberUi();
       this.applyHand();
     });
+
+    // 修飾ボタンの置き場所（`29` の A-T1）。握り方は端末で違うので選べるようにする
+    body.appendChild(el("div", "minilbl", "修飾ボタン"));
+    const seg = el("div", "segmented");
+    for (const [key, label] of [
+      ["corner", "左下"],
+      ["side", "ツール列の横"],
+    ] as const) {
+      const b = el("button", "act", label);
+      b.setAttribute("aria-pressed", String(this.state.ui.clusterPos === key));
+      b.dataset.cluster = key;
+      b.addEventListener("click", () => {
+        this.state.ui.clusterPos = key;
+        this.rememberUi();
+        this.applyClusterPos();
+        for (const other of seg.querySelectorAll("button")) {
+          other.setAttribute("aria-pressed", String(other === b));
+        }
+      });
+      seg.appendChild(b);
+    }
+    body.appendChild(seg);
+
     pop.appendChild(body);
     document.body.appendChild(pop);
     this.popup = pop;
@@ -4748,6 +4777,11 @@ export class App {
     document.documentElement.dataset.hand = this.state.ui.leftHanded ? "left" : "right";
     this.viewport.resize();
     this.uv?.resize();
+  }
+
+  /** 修飾ボタンの置き場所（`29` の A-T1）。中身は `shell.css`。 */
+  private applyClusterPos(): void {
+    byId("vp").dataset.cluster = this.state.ui.clusterPos;
   }
 
   private rememberUi(): void {
