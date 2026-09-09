@@ -46,6 +46,8 @@ interface SceneJson {
   objects: SceneObjectJson[];
   settings: Record<string, unknown>;
   cameraBookmarks: Document["cameraBookmarks"];
+  /** ビューポートの分割（`25` の T6）。無い版のファイルもあるので任意。 */
+  layout?: Document["layout"];
 }
 
 const encoder = new TextEncoder();
@@ -106,6 +108,7 @@ export function packMbz(doc: Document, options: PackOptions = {}): Uint8Array {
     }),
     settings: doc.settings,
     cameraBookmarks: doc.cameraBookmarks,
+    layout: doc.layout,
   };
 
   const manifest: MbzManifest = {
@@ -170,6 +173,7 @@ export function unpackMbz(bytes: Uint8Array): UnpackResult {
   const doc = new Document();
   doc.settings = scene.settings ?? {};
   doc.cameraBookmarks = scene.cameraBookmarks ?? [];
+  doc.layout = scene.layout ?? null;
   const consumed = new Set<string>(["manifest.json", "scene.json"]);
 
   for (const j of scene.objects) {

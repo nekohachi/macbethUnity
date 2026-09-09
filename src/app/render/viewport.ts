@@ -27,8 +27,8 @@ import {
   WebGLRenderer,
   type Camera,
 } from "three";
-import type { SceneObject } from "../../core/index.js";
-import type { AppState } from "../state.js";
+import type { PaneLayout, SceneObject } from "../../core/index.js";
+import { defaultCamOpts, type AppState, type PaneLike } from "../state.js";
 import { MAT, checkerMaterial, heatMaterial } from "./materials.js";
 import {
   applyTransform,
@@ -70,14 +70,52 @@ export const STANDARD_VIEWS: Record<ViewName, { label: string; sub: string; thet
 const MIN_DIST = 0.3;
 const MAX_DIST = 140;
 
+/** ビューポートの分割（`25` の T6）。3 分割は入れない（指示書の T6）。 */
+export type LayoutKind = "single" | "cols" | "rows" | "quad";
+
+/** 分割したときの既定の向き。4 分割は Maya と同じ パース / 上 / 前 / 右。 */
+const LAYOUT_VIEWS: Record<LayoutKind, ViewName[]> = {
+  single: ["persp"],
+  cols: ["persp", "front"],
+  rows: ["persp", "front"],
+  quad: ["persp", "top", "front", "right"],
+};
+
+/** 1 つのペイン。自分のカメラと自分のシェーディングを持つ。 */
+export interface Pane extends PaneLike {
+  /** 標準ビューのどれとして作ったか。 */
+  view: ViewName;
+  cam: OrbitCamera;
+  persp: PerspectiveCamera;
+  ortho: OrthographicCamera;
+}
+
+/** ペインの矩形（container の中の CSS ピクセル。左上が原点）。 */
+export interface PaneRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+function makePane(view: ViewName): Pane {
+  const v = STANDARD_VIEWS[view];
+  return {
+    view,
+    viewName: v.label,
+    display: "shadedWire",
+    camOpts: { ...defaultCamOpts(), ortho: v.ortho },
+    cam: { target: new Vector3(0, 0.4, 0), theta: v.theta, phi: v.phi, distance: 7.2 },
+    persp: new PerspectiveCamera(45, 1, 0.05, 500),
+    ortho: new OrthographicCamera(-1, 1, 1, -1, 0.05, 500),
+  };
+}
+
 export class Viewport {
   readonly renderer: WebGLRenderer;
   readonly scene = new Scene();
-  readonly persp = new PerspectiveCamera(45, 1, 0.05, 500);
   /** 床のグリッド。サムネイルのときだけ消す。 */
   private grid!: GridHelper;
-  readonly ortho = new OrthographicCamera(-1, 1, 1, -1, 0.05, 500);
-  camera: Camera = this.persp;
 
   readonly root = new Group();
   readonly overlay = new Group();
@@ -87,12 +125,24 @@ export class Viewport {
   /** ホバーのプリセレクション。予測表示とは別の層にして、片方の消去が他方を巻き込まないようにする。 */
   readonly preselect = new Group();
 
-  readonly cam: OrbitCamera = {
-    target: new Vector3(0, 0.4, 0),
-    theta: 0.72,
-    phi: 1.12,
-    distance: 7.2,
-  };
+  /* ---- ペイン（`25` の T6） -------------------------------------------- */
+
+  layout: LayoutKind = "single";
+  panes: Pane[] = [makePane("persp")];
+  /** 最後に触れたペイン。シェードとカメラはここに効く。 */
+  active = 0;
+  /**
+   * 入力の座標に使うペイン。`picker.local()` が指の下のペインで更新する。
+   * ホバーは触っていなくても起きるので、`active` とは分けてある。
+   */
+  inputPane = 0;
+  /**
+   * 指を置いている間は入力のペインを固定する。隣へはみ出しても
+   * 座標の基準が入れ替わらないようにするため（`25` の T6）。
+   */
+  inputLocked = false;
+  /** 分割の枠（DOM）。canvas の上に重ねる。当たり判定は持たない。 */
+  private frames: HTMLElement | null = null;
 
   private views = new Map<string, ObjectView>();
   private frame = 0;
@@ -107,7 +157,167 @@ export class Viewport {
     this.scene.add(this.root, this.overlay, this.manip, this.preview, this.preselect);
     this.addLights();
     this.addGrid();
+    this.state.pane = this.panes[0];
     this.applyCamera();
+  }
+
+  /** 今つながっているペイン（最後に触れたもの）。 */
+  get pane(): Pane {
+    return this.panes[this.active] ?? this.panes[0];
+  }
+
+  /** 入力の座標に使うペイン（指やポインタの下）。 */
+  get inputPaneRef(): Pane {
+    return this.panes[this.inputPane] ?? this.pane;
+  }
+
+  /** アクティブなペインのカメラ。今までの `camera` と同じ意味。 */
+  get camera(): Camera {
+    return this.cameraOf(this.inputPaneRef);
+  }
+
+  /** アクティブなペインの球座標。今までの `cam` と同じ意味。 */
+  get cam(): OrbitCamera {
+    return this.pane.cam;
+  }
+
+  cameraOf(p: Pane): Camera {
+    return p.camOpts.ortho ? p.ortho : p.persp;
+  }
+
+  /** 分割の仕方を変える。ペインは作り直し、アクティブは先頭へ。 */
+  setLayout(kind: LayoutKind): void {
+    if (this.layout === kind) return;
+    this.layout = kind;
+    const views = LAYOUT_VIEWS[kind];
+    const next: Pane[] = [];
+    for (let i = 0; i < views.length; i++) {
+      // 既にあるペインは中身を引き継ぐ（見ている向きを取り上げない）
+      next.push(this.panes[i] ?? makePane(views[i]));
+    }
+    this.panes = next;
+    this.setActive(0);
+    this.resize();
+  }
+
+  setActive(i: number): void {
+    this.active = Math.max(0, Math.min(this.panes.length - 1, i));
+    this.inputPane = this.active;
+    this.state.pane = this.panes[this.active];
+    this.paintFrames();
+  }
+
+  /** ペインの矩形。container の中の CSS ピクセル。 */
+  paneRect(i: number): PaneRect {
+    const w = this.container.clientWidth || 1;
+    const h = this.container.clientHeight || 1;
+    const hw = w / 2;
+    const hh = h / 2;
+    switch (this.layout) {
+      case "cols":
+        return { x: i === 0 ? 0 : hw, y: 0, w: hw, h };
+      case "rows":
+        return { x: 0, y: i === 0 ? 0 : hh, w, h: hh };
+      case "quad":
+        return { x: i % 2 === 0 ? 0 : hw, y: i < 2 ? 0 : hh, w: hw, h: hh };
+      default:
+        return { x: 0, y: 0, w, h };
+    }
+  }
+
+  /** container の中のローカル座標が、どのペインに入るか。 */
+  paneAt(x: number, y: number): number {
+    for (let i = this.panes.length - 1; i >= 0; i--) {
+      const r = this.paneRect(i);
+      if (x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h) return i;
+    }
+    return this.active;
+  }
+
+  /** 画面座標（clientX / clientY）から。ポインタを置いたときに使う。 */
+  paneAtClient(clientX: number, clientY: number): number {
+    const r = this.container.getBoundingClientRect();
+    return this.paneAt(clientX - r.left, clientY - r.top);
+  }
+
+  /**
+   * 分割の枠を描き直す。canvas の上に置いた div で、アクティブなペインを
+   * `--accent` の細い枠で示す。当たり判定は持たない（`pointer-events: none`）。
+   */
+  private paintFrames(): void {
+    if (this.layout === "single") {
+      this.frames?.remove();
+      this.frames = null;
+      return;
+    }
+    if (!this.frames) {
+      this.frames = document.createElement("div");
+      this.frames.className = "panes";
+      this.container.appendChild(this.frames);
+    }
+    this.frames.textContent = "";
+    for (let i = 0; i < this.panes.length; i++) {
+      const r = this.paneRect(i);
+      const f = document.createElement("div");
+      f.className = "paneframe";
+      f.dataset.index = String(i);
+      if (i === this.active) f.dataset.active = "true";
+      f.style.left = `${r.x}px`;
+      f.style.top = `${r.y}px`;
+      f.style.width = `${r.w}px`;
+      f.style.height = `${r.h}px`;
+      const label = document.createElement("i");
+      label.textContent = this.panes[i].viewName;
+      f.appendChild(label);
+      this.frames.appendChild(f);
+    }
+  }
+
+  /** ペインの名前や向きが変わったときに、枠の表示をそろえる。 */
+  refreshFrames(): void {
+    this.paintFrames();
+  }
+
+  /** 今の分割とカメラを doc に控える（`.mbz` に入る。`25` の T6）。 */
+  saveLayout(): PaneLayout {
+    return {
+      kind: this.layout,
+      panes: this.panes.map((p) => ({
+        view: p.view,
+        target: [p.cam.target.x, p.cam.target.y, p.cam.target.z] as [number, number, number],
+        theta: p.cam.theta,
+        phi: p.cam.phi,
+        distance: p.cam.distance,
+        focal: p.camOpts.focal,
+        ortho: p.camOpts.ortho,
+        display: p.display,
+      })),
+    };
+  }
+
+  /** 控えた分割を戻す。無ければ 1 画面のまま。 */
+  restoreLayout(saved: PaneLayout | null): void {
+    const kind = (saved?.kind ?? "single") as LayoutKind;
+    const views = LAYOUT_VIEWS[kind] ?? LAYOUT_VIEWS.single;
+    this.layout = LAYOUT_VIEWS[kind] ? kind : "single";
+    this.panes = views.map((v, i) => {
+      const pane = makePane(v);
+      const j = saved?.panes?.[i];
+      if (j) {
+        pane.view = (STANDARD_VIEWS[j.view as ViewName] ? j.view : v) as ViewName;
+        pane.viewName = STANDARD_VIEWS[pane.view].label;
+        pane.cam.target.set(j.target[0], j.target[1], j.target[2]);
+        pane.cam.theta = j.theta;
+        pane.cam.phi = j.phi;
+        pane.cam.distance = j.distance;
+        pane.camOpts.focal = j.focal;
+        pane.camOpts.ortho = j.ortho;
+        pane.display = j.display as Pane["display"];
+      }
+      return pane;
+    });
+    this.setActive(0);
+    this.resize();
   }
 
   private addLights(): void {
@@ -138,33 +348,45 @@ export class Viewport {
 
   /* ---- カメラ --------------------------------------------------------- */
 
+  /** アクティブなペインのカメラを組み直す。 */
   applyCamera(): void {
-    const { cam } = this;
+    this.applyCameraTo(this.active);
+  }
+
+  /** 全ペインのカメラを組み直す。分割や大きさが変わったときに使う。 */
+  applyCameraAll(): void {
+    for (let i = 0; i < this.panes.length; i++) this.applyCameraTo(i);
+  }
+
+  applyCameraTo(i: number): void {
+    const pane = this.panes[i];
+    if (!pane) return;
+    const cam = pane.cam;
     const s = Math.sin(cam.phi);
     const px = cam.target.x + cam.distance * s * Math.sin(cam.theta);
     const py = cam.target.y + cam.distance * Math.cos(cam.phi);
     const pz = cam.target.z + cam.distance * s * Math.cos(cam.theta);
-    const opts = this.state.camOpts;
+    const opts = pane.camOpts;
+    const rect = this.paneRect(i);
+    const aspect = rect.w / (rect.h || 1);
 
-    this.persp.position.set(px, py, pz);
-    this.persp.lookAt(cam.target);
-    this.persp.near = opts.near;
-    this.persp.far = opts.far;
-    this.persp.setFocalLength(opts.focal);
+    pane.persp.position.set(px, py, pz);
+    pane.persp.lookAt(cam.target);
+    pane.persp.near = opts.near;
+    pane.persp.far = opts.far;
+    pane.persp.aspect = aspect;
+    pane.persp.setFocalLength(opts.focal);
 
-    this.ortho.position.set(px, py, pz);
-    this.ortho.lookAt(cam.target);
-    const aspect = (this.container.clientWidth || 1) / (this.container.clientHeight || 1);
+    pane.ortho.position.set(px, py, pz);
+    pane.ortho.lookAt(cam.target);
     const half = cam.distance * 0.42;
-    this.ortho.left = -half * aspect;
-    this.ortho.right = half * aspect;
-    this.ortho.top = half;
-    this.ortho.bottom = -half;
-    this.ortho.near = opts.near;
-    this.ortho.far = opts.far;
-    this.ortho.updateProjectionMatrix();
-
-    this.camera = opts.ortho ? this.ortho : this.persp;
+    pane.ortho.left = -half * aspect;
+    pane.ortho.right = half * aspect;
+    pane.ortho.top = half;
+    pane.ortho.bottom = -half;
+    pane.ortho.near = opts.near;
+    pane.ortho.far = opts.far;
+    pane.ortho.updateProjectionMatrix();
   }
 
   /**
@@ -175,14 +397,17 @@ export class Viewport {
     return this.state.camOpts.locked;
   }
 
-  /** 標準ビューへ向きだけ切り替える。注視点と距離はそのまま。 */
+  /** 標準ビューへ向きだけ切り替える。注視点と距離はそのまま。アクティブなペインに効く。 */
   setView(name: ViewName): void {
     if (this.locked) return;
     const v = STANDARD_VIEWS[name];
-    this.cam.theta = v.theta;
-    this.cam.phi = v.phi;
-    this.state.camOpts.ortho = v.ortho;
+    const pane = this.pane;
+    pane.view = name;
+    pane.cam.theta = v.theta;
+    pane.cam.phi = v.phi;
+    pane.camOpts.ortho = v.ortho;
     this.applyCamera();
+    this.refreshFrames();
   }
 
   tumble(dx: number, dy: number): void {
@@ -253,10 +478,11 @@ export class Viewport {
    * 平行投影は左右がアスペクト比で伸びるだけなので、縦がはみ出すことはない。
    */
   private fitDistance(radius: number): number {
-    if (this.state.camOpts.ortho || radius <= 0) return 0;
-    const fovY = (this.persp.fov * Math.PI) / 180;
+    const pane = this.pane;
+    if (pane.camOpts.ortho || radius <= 0) return 0;
+    const fovY = (pane.persp.fov * Math.PI) / 180;
     const halfY = Math.max(1e-3, fovY / 2);
-    const halfX = Math.atan(Math.tan(halfY) * Math.max(0.01, this.persp.aspect));
+    const halfX = Math.atan(Math.tan(halfY) * Math.max(0.01, pane.persp.aspect));
     // 少し余白を持たせる（画面の縁ぎりぎりに置かない）
     return (radius / Math.sin(Math.min(halfY, halfX))) * 1.1;
   }
@@ -384,8 +610,25 @@ export class Viewport {
     view.surface.geometry.setAttribute("color", new Float32BufferAttribute(colors, 3));
   }
 
-  applyDisplay(view: ObjectView): void {
-    const d = this.state.display;
+  /**
+   * そのペインのシェーディングを材質に反映する（`25` の T6）。
+   * 描く直前に呼ぶ。材質の付け替えだけなので毎フレームでも軽い。
+   */
+  private applyPaneDisplay(pane: Pane): void {
+    if (this.paneDisplayApplied === pane.display && this.paneDisplayStamp === this.displayStamp) return;
+    this.paneDisplayApplied = pane.display;
+    this.paneDisplayStamp = this.displayStamp;
+    for (const view of this.views.values()) this.applyDisplay(view, pane.display);
+  }
+
+  /** 最後に材質へ当てた表示。ペインを跨ぐたびに付け替えるので、同じなら省く。 */
+  private paneDisplayApplied: string | null = null;
+  private paneDisplayStamp = -1;
+  /** 材質を当て直す必要が出た合図（選択やチェッカーの作り直しなど）。 */
+  private displayStamp = 0;
+
+  applyDisplay(view: ObjectView, display = this.state.display): void {
+    const d = display;
     // Shift で足したオブジェクトも同じ色で光らせる（結合の相手が見えるように）
     const selected = view.object === this.state.selected || this.state.also.has(view.object);
     view.surface.visible = d !== "wire";
@@ -424,6 +667,9 @@ export class Viewport {
   applyDisplayAll(): void {
     for (const view of this.views.values()) this.applyDisplay(view);
     this.applyCulling();
+    // 次のフレームでペインの表示を当て直す（選択の色などが変わっているため）
+    this.displayStamp++;
+    this.paneDisplayApplied = null;
   }
 
   /**
@@ -560,15 +806,49 @@ export class Viewport {
     const h = this.container.clientHeight || 1;
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     this.renderer.setSize(w, h, false);
-    this.persp.aspect = w / h;
-    this.persp.updateProjectionMatrix();
-    this.applyCamera();
+    this.applyCameraAll();
+    this.paintFrames();
+  }
+
+  /**
+   * 1 フレーム描く（`25` の T6）。
+   *
+   * 分割しているときは canvas は 1 枚のまま、`setScissor` で場所を区切って
+   * ペインの数だけ描く。塗るピクセルの合計は 1 ペインのときと同じで、増えるのは
+   * 頂点の処理と描画呼び出しだけ。マニピュレータはアクティブなペインにだけ出す。
+   */
+  private renderFrame(): void {
+    const r = this.renderer;
+    if (this.panes.length <= 1) {
+      r.setScissorTest(false);
+      const w = this.container.clientWidth || 1;
+      const h = this.container.clientHeight || 1;
+      r.setViewport(0, 0, w, h);
+      this.applyPaneDisplay(this.panes[0]);
+      r.render(this.scene, this.cameraOf(this.panes[0]));
+      return;
+    }
+    const h = this.container.clientHeight || 1;
+    r.setScissorTest(true);
+    const manipWas = this.manip.visible;
+    for (let i = 0; i < this.panes.length; i++) {
+      const rect = this.paneRect(i);
+      // WebGL の原点は左下なので、上からの y をひっくり返す
+      const y = h - (rect.y + rect.h);
+      r.setViewport(rect.x, y, rect.w, rect.h);
+      r.setScissor(rect.x, y, rect.w, rect.h);
+      this.manip.visible = manipWas && i === this.active;
+      this.applyPaneDisplay(this.panes[i]);
+      r.render(this.scene, this.cameraOf(this.panes[i]));
+    }
+    this.manip.visible = manipWas;
+    r.setScissorTest(false);
   }
 
   start(): void {
     const loop = () => {
       this.frame = requestAnimationFrame(loop);
-      this.renderer.render(this.scene, this.camera);
+      this.renderFrame();
     };
     loop();
   }

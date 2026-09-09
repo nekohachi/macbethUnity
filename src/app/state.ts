@@ -26,6 +26,34 @@ export type UvCutKind = "cut" | "moveSew" | "sew";
  */
 export type ModState = "off" | "on";
 
+/** カメラの設定。ペインごとに持つ（`25` の T5・T6）。 */
+export interface CamOpts {
+  focal: number;
+  near: number;
+  far: number;
+  ortho: boolean;
+  /** ロック中はタンブル / パン / ズーム / フレーム / ビュー切り替えを受けない。 */
+  locked: boolean;
+}
+
+/**
+ * ペインのうち、state から見える分（`25` の T6）。
+ * `viewport` の `Pane` はこれに three.js のカメラを足したもの。
+ */
+export interface PaneLike {
+  camOpts: CamOpts;
+  display: Display;
+  viewName: string;
+}
+
+export function defaultCamOpts(): CamOpts {
+  return { focal: 35, near: 0.05, far: 500, ortho: false, locked: false };
+}
+
+export function defaultPane(): PaneLike {
+  return { camOpts: defaultCamOpts(), display: "shadedWire", viewName: "パース" };
+}
+
 export interface Mods {
   shift: ModState;
   ctrl: ModState;
@@ -140,7 +168,20 @@ export class AppState {
   compMode: CompMode = "object";
   tool = "select";
   manip: Manip = "all";
-  display: Display = "shadedWire";
+
+  /**
+   * 今つながっているペイン（`25` の T6）。分割していないときは 1 つだけ。
+   * `viewport` が差し替える。表示・カメラ・ビュー名は**ペインごと**なので、
+   * `state.display` などはここへの別名にしてある（呼び出し側は今までどおり）。
+   */
+  pane: PaneLike = defaultPane();
+  /** 最後に触れたペインの表示（シェーディング）。ツール列の「シェード」が効く先。 */
+  get display(): Display {
+    return this.pane.display;
+  }
+  set display(v: Display) {
+    this.pane.display = v;
+  }
 
   /**
    * マニピュレータの見た目の大きさ（0.5〜2.0）。当たり判定の px は変えない。
@@ -252,9 +293,20 @@ export class AppState {
    * カメラの設定。`locked` はタンブル / パン / ズーム / フレーム / ビュー切り替えを
    * 受けなくする（`25` の T5）。作業中の都合なので `.mbz` には入れない。
    */
-  camOpts = { focal: 35, near: 0.05, far: 500, ortho: false, locked: false };
+  /** 最後に触れたペインのカメラ設定。 */
+  get camOpts(): CamOpts {
+    return this.pane.camOpts;
+  }
+  set camOpts(v: CamOpts) {
+    this.pane.camOpts = v;
+  }
   /** 今のビューの名前。HUD に出す。標準ビュー名か、控えたカメラの名前。 */
-  viewName = "パース";
+  get viewName(): string {
+    return this.pane.viewName;
+  }
+  set viewName(v: string) {
+    this.pane.viewName = v;
+  }
   /** 名前を付けて控えたカメラは `doc.cameraBookmarks`。`.mbz` に一緒に保存される。 */
   get cameras(): CameraBookmark[] {
     return this.doc.cameraBookmarks;

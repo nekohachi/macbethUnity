@@ -31,6 +31,9 @@ export class Autosave {
     }, DEBOUNCE_MS);
   }
 
+  /** 保存の直前に呼ぶ。doc へ控えるものがあればここで。 */
+  beforeSave: (() => void) | null = null;
+
   async saveNow(): Promise<void> {
     // 書き込み中に次が来たら、終わってから 1 回だけやり直す
     if (this.writing) {
@@ -42,6 +45,8 @@ export class Autosave {
 
     this.writing = true;
     try {
+      // 書き出す直前に、doc に残しておきたいものを拾う（分割とカメラ。`25` の T6）
+      this.beforeSave?.();
       const bytes = packMbz(this.state.doc, { appVersion: APP_VERSION });
       const record = await saveProject(
         { id: AUTOSAVE_ID, name: "自動保存", thumbnail: "", autosave: true },

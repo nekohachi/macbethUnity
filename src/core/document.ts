@@ -163,6 +163,24 @@ export class SceneObject {
   }
 }
 
+/**
+ * ビューポートの分割（`25` の T6）。`.mbz` に入れて、開き直したときに戻す。
+ * `kind` はアプリ側の `LayoutKind`（"single" / "cols" / "rows" / "quad"）。
+ */
+export interface PaneLayout {
+  kind: string;
+  panes: Array<{
+    view: string;
+    target: Vec3;
+    theta: number;
+    phi: number;
+    distance: number;
+    focal: number;
+    ortho: boolean;
+    display: string;
+  }>;
+}
+
 export interface CameraBookmark {
   name: string;
   target: Vec3;
@@ -180,6 +198,8 @@ export class Document {
   /** 表示設定など、シーン全体に効くもの。 */
   settings: Record<string, unknown> = {};
   cameraBookmarks: CameraBookmark[] = [];
+  /** ビューポートの分割と、各ペインのカメラ（`25` の T6）。無ければ 1 画面。 */
+  layout: PaneLayout | null = null;
   private nextId = 1;
 
   newId(): string {

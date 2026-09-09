@@ -4893,6 +4893,132 @@ check(
   `ロック ${camLock.locked} / 動かない ${camLock.held} / HUD の鍵 ${camLock.hudLock} / アイコンの鍵 ${camLock.iconLock} / 外すと動く ${camLock.freed}`,
 );
 
+/* 43z-17. ビューポートを 2 / 4 に分割できる（`25` の T6） */
+const quad = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const vp = app.viewport;
+  app.setMode("model");
+  app.state.doc.objects.length = 0;
+  const cube = app.state.doc.addObject("cube");
+  vp.syncAll();
+  app.state.select(cube);
+  app.refresh();
+
+  // 分割のボタンの長押しで「4 画面」（南）
+  const b = document.querySelector('#dockLeft .ibtn[data-group="layout"]');
+  const r = b.getBoundingClientRect();
+  const at = { clientX: r.x + r.width / 2, clientY: r.y + r.height / 2 };
+  b.dispatchEvent(new PointerEvent("pointerdown", { pointerId: 71, pointerType: "touch", bubbles: true, cancelable: true, ...at }));
+  await new Promise((t) => setTimeout(t, 320));
+  const svg = document.querySelector(".radial svg");
+  const labels = svg ? [...svg.querySelectorAll("text")].map((t) => t.textContent) : [];
+  const hub = svg
+    ? [...svg.querySelectorAll("circle")].reduce((best, c) =>
+        Number(c.getAttribute("r")) > Number(best.getAttribute("r")) ? c : best,
+      )
+    : null;
+  const cx = hub ? Number(hub.getAttribute("cx")) : 0;
+  const cy = hub ? Number(hub.getAttribute("cy")) : 0;
+  for (const type of ["pointermove", "pointerup"]) {
+    window.dispatchEvent(new PointerEvent(type, { pointerId: 71, pointerType: "touch", bubbles: true, clientX: cx, clientY: cy + 110 }));
+  }
+  await new Promise((t) => setTimeout(t, 200));
+  const names = vp.panes.map((p) => p.viewName);
+  const frames = document.querySelectorAll(".paneframe").length;
+
+  // 右下のペインを触るとアクティブになる
+  const pane3d = document.getElementById("pane3d");
+  const pr = pane3d.getBoundingClientRect();
+  const gl = document.getElementById("gl");
+  const at3 = { clientX: pr.left + pr.width * 0.75, clientY: pr.top + pr.height * 0.75 };
+  gl.dispatchEvent(new PointerEvent("pointerdown", { pointerId: 72, pointerType: "touch", bubbles: true, cancelable: true, ...at3 }));
+  gl.dispatchEvent(new PointerEvent("pointerup", { pointerId: 72, pointerType: "touch", bubbles: true, ...at3 }));
+  await new Promise((t) => setTimeout(t, 120));
+  const active = vp.active;
+  const marked = document.querySelector('.paneframe[data-active="true"]')?.dataset.index;
+
+  // そのペインだけワイヤーフレームになる
+  const before = vp.panes.map((p) => p.display);
+  window.dispatchEvent(new KeyboardEvent("keydown", { key: "4", bubbles: true }));
+  await new Promise((t) => setTimeout(t, 120));
+  const after = vp.panes.map((p) => p.display);
+
+  // .mbz に分割が残る
+  const core = window.macbethCore;
+  app.state.doc.layout = vp.saveLayout();
+  const back = core.unpackMbz(core.packMbz(app.state.doc)).document.layout;
+
+  // 1 画面に戻す（この先の項目は 1 画面の座標で書いてある）
+  app.setLayoutForTest("single");
+  await new Promise((t) => setTimeout(t, 120));
+  app.state.doc.objects.length = 0;
+  vp.syncAll();
+  app.refresh();
+  return {
+    labels: labels.filter((t) => t && t.length > 1),
+    panes: names,
+    frames,
+    active,
+    marked,
+    before,
+    after,
+    saved: back ? `${back.kind}/${back.panes.length}` : "",
+    single: vp.panes.length,
+  };
+});
+check(
+  "ビューポートを 2 / 4 に分割できる",
+  quad.panes.length === 4 &&
+    quad.panes.join(" ") === "パース 上 前 右" &&
+    quad.frames === 4 &&
+    quad.active === 3 &&
+    quad.marked === "3" &&
+    quad.after[3] === "wire" &&
+    quad.after[0] === quad.before[0] &&
+    quad.saved === "quad/4" &&
+    quad.single === 1,
+  `${quad.panes.join(" / ")} / 枠 ${quad.frames} / 右下で active ${quad.active}（枠 ${quad.marked}）/ ` +
+    `表示 ${quad.before.join(",")} → ${quad.after.join(",")} / .mbz ${quad.saved} / 戻して ${quad.single} 画面`,
+);
+
+/* 43z-18. 分割しても選べる（`25` の T6） */
+const splitPick = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const vp = app.viewport;
+  app.state.doc.objects.length = 0;
+  const cube = app.state.doc.addObject("cube");
+  vp.syncAll();
+  app.setCompMode("object");
+  app.state.select(null);
+  app.refresh();
+  app.setLayoutForTest("cols");
+  await new Promise((t) => setTimeout(t, 150));
+  // 右のペイン（前ビュー）は原点を向いているので、真ん中に立方体がいる
+  const pane3d = document.getElementById("pane3d");
+  const pr = pane3d.getBoundingClientRect();
+  const gl = document.getElementById("gl");
+  const at = { clientX: pr.left + pr.width * 0.75, clientY: pr.top + pr.height * 0.5 };
+  const ev = (type) =>
+    new PointerEvent(type, { pointerId: 73, pointerType: "touch", bubbles: true, cancelable: true, ...at });
+  gl.dispatchEvent(ev("pointerdown"));
+  gl.dispatchEvent(ev("pointerup"));
+  await new Promise((t) => setTimeout(t, 200));
+  const picked = app.state.selected?.id === cube.id;
+  const active = vp.active;
+
+  app.setLayoutForTest("single");
+  await new Promise((t) => setTimeout(t, 120));
+  app.state.doc.objects.length = 0;
+  vp.syncAll();
+  app.refresh();
+  return { picked, active, panes: vp.panes.length };
+});
+check(
+  "分割しても選べる",
+  splitPick.picked && splitPick.active === 1 && splitPick.panes === 1,
+  `右のペインで選べた ${splitPick.picked}（active ${splitPick.active}）/ 戻して ${splitPick.panes} 画面`,
+);
+
 /* 44. ツール列のグループ（`21` の 4 章） */
 
 /* 44-1. ボタンは 7 つ、右のオプションパネルは無い */
@@ -4901,8 +5027,12 @@ const column = await page.evaluate(() => ({
   options: !!document.querySelector('.panel[data-panel="options"]'),
 }));
 check(
-  "ツール列は 7 つのグループ、オプションパネルは無い",
-  column.buttons.length === 7 && !column.options && column.buttons.includes("xform"),
+  // `25` の T6 で「分割」が増えて 8 つ
+  "ツール列は 8 つのグループ、オプションパネルは無い",
+  column.buttons.length === 8 &&
+    !column.options &&
+    column.buttons.includes("xform") &&
+    column.buttons.includes("layout"),
   `${column.buttons.join(" / ")}`,
 );
 

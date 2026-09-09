@@ -219,6 +219,13 @@ button{font-family:inherit; font-size:inherit; color:inherit; background:none; b
 .vp.split .pane3d{left:50%; border-left:1px solid var(--line)}
 .stage.portrait .vp.split .paneuv{right:0; bottom:50%}
 .stage.portrait .vp.split .pane3d{left:0; top:50%; border-left:none; border-top:1px solid var(--line)}
+/* 3D の分割（25 の T6）。canvas は 1 枚で、枠だけを重ねる */
+.panes{position:absolute; inset:0; pointer-events:none; z-index:4}
+.paneframe{position:absolute; border:1px solid var(--line); box-sizing:border-box}
+.paneframe[data-active="true"]{border-color:var(--accent)}
+.paneframe i{position:absolute; left:5px; bottom:4px; font-style:normal; font-size:9px;
+  letter-spacing:.04em; color:var(--text-faint)}
+.paneframe[data-active="true"] i{color:var(--accent)}
 .vp.uvonly .pane3d{display:none}
 .vp.uvonly .paneuv{right:0; bottom:0}
 .uvswitch{position:absolute; top:8px; left:50%; transform:translateX(-50%); z-index:6;

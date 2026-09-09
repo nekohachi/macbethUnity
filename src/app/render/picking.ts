@@ -178,17 +178,28 @@ export class Picker {
     return around.some((f) => front[f] === 1);
   }
 
+  // 分割しているときは「今入力を受けているペイン」の矩形で測る（`25` の T6）。
+  // 分割していなければビューポート全体と同じ。
   private get width(): number {
-    return this.container.clientWidth || 1;
+    return this.viewport.paneRect(this.viewport.inputPane).w || 1;
   }
   private get height(): number {
-    return this.container.clientHeight || 1;
+    return this.viewport.paneRect(this.viewport.inputPane).h || 1;
   }
 
-  /** イベントの座標をビューポート内のローカル座標にする。 */
+  /**
+   * イベントの座標を**ペインの中の**ローカル座標にする。
+   *
+   * どのペインかはここで決まる（指を置いた場所）。ドラッグ中は
+   * `viewport.inputLocked` が立っていて、隣のペインへはみ出しても入れ替わらない。
+   */
   local(e: { clientX: number; clientY: number }): ScreenPoint {
     const r = this.container.getBoundingClientRect();
-    return { x: e.clientX - r.left, y: e.clientY - r.top };
+    const x = e.clientX - r.left;
+    const y = e.clientY - r.top;
+    if (!this.viewport.inputLocked) this.viewport.inputPane = this.viewport.paneAt(x, y);
+    const pane = this.viewport.paneRect(this.viewport.inputPane);
+    return { x: x - pane.x, y: y - pane.y };
   }
 
   ndc(p: ScreenPoint): Vector2 {

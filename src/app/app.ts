@@ -57,7 +57,7 @@ import {
   type GestureHandlers,
 } from "./input/gestures.js";
 import { Picker, type ScreenPoint } from "./render/picking.js";
-import { STANDARD_VIEWS, Viewport, type ViewName } from "./render/viewport.js";
+import { STANDARD_VIEWS, Viewport, type LayoutKind, type ViewName } from "./render/viewport.js";
 import {
   AXES,
   HANDLE_GESTURE,
@@ -265,6 +265,21 @@ const SNAP_ICONS: Record<SnapKind, string> = {
 };
 
 /** シェーディングごとのアイコン。 */
+/** 分割のアイコンと名前（`25` の T6）。 */
+const LAYOUT_ICONS: Record<LayoutKind, string> = {
+  single: ICONS.layout1,
+  cols: ICONS.layoutCols,
+  rows: ICONS.layoutRows,
+  quad: ICONS.layoutQuad,
+};
+
+const LAYOUT_LABEL: Record<LayoutKind, string> = {
+  single: "1 画面",
+  cols: "2 画面（左右）",
+  rows: "2 画面（上下）",
+  quad: "4 画面",
+};
+
 const DISPLAY_ICONS: Record<Display, string> = {
   wire: ICONS.wire,
   shaded: ICONS.shaded,
@@ -322,6 +337,11 @@ export class App {
   /** 2D に今出ているオブジェクト。選択が変わったら入れ替える（`25` の T1）。 */
   private uvObject: SceneObject | null = null;
   /** 通し確認からオプションの操作を叩くための入口。 */
+  /** 通し確認から分割を変える（本物の経路は「分割」ボタン）。 */
+  setLayoutForTest(kind: LayoutKind): void {
+    this.setLayout(kind);
+  }
+
   panelHostForTest(): PanelHost {
     return this.panelHost();
   }
@@ -430,11 +450,13 @@ export class App {
     };
 
     this.manipulator = new Manipulator({
+      // 座標はペインの中のもの（`25` の T6）。分割していなければ今までと同じ
       toScreen: (v) => {
         const p = v.clone().project(this.viewport.camera);
+        const rect = this.viewport.paneRect(this.viewport.inputPane);
         return {
-          x: ((p.x + 1) / 2) * (vp.clientWidth || 1),
-          y: ((-p.y + 1) / 2) * (vp.clientHeight || 1),
+          x: ((p.x + 1) / 2) * (rect.w || 1),
+          y: ((-p.y + 1) / 2) * (rect.h || 1),
           z: p.z,
         };
       },
@@ -453,6 +475,34 @@ export class App {
     this.autosave.onSaved = (at) =>
       this.hud.setSaveNote(`自動保存 ${new Date(at).toLocaleTimeString("ja-JP", { timeStyle: "short" })}`);
     this.autosave.onError = (m) => this.hud.toast(m);
+    // 自動保存にも分割と各ペインのカメラを載せる（`25` の T6）
+    this.autosave.beforeSave = () => {
+      this.state.doc.layout = this.viewport.saveLayout();
+    };
+
+    // 触ったペインがアクティブになる（`25` の T6）。ルータより先に受けたいので
+    // キャプチャで拾う。指を離すまでは入力のペインを固定する
+    canvas.addEventListener(
+      "pointerdown",
+      (e) => {
+        const was = this.viewport.active;
+        this.viewport.inputLocked = false;
+        this.viewport.setActive(this.viewport.paneAtClient(e.clientX, e.clientY));
+        this.viewport.inputLocked = true;
+        // ペインが変わったら、シェードのアイコンと HUD をそのペインのものにする
+        if (was !== this.viewport.active) {
+          this.renderToolColumn();
+          this.hud.refreshStats();
+          this.viewport.applyDisplayAll();
+        }
+      },
+      true,
+    );
+    for (const type of ["pointerup", "pointercancel"] as const) {
+      canvas.addEventListener(type, () => {
+        this.viewport.inputLocked = false;
+      });
+    }
 
     this.router = new GestureRouter(canvas, (e) => this.picker.local(e), this.gestureHandlers());
     this.router.attach();
@@ -531,6 +581,8 @@ export class App {
     const restored = await this.autosave.restore();
     if (!restored) this.state.doc.addObject("cube");
     this.state.select(this.state.doc.objects[0] ?? null);
+    // 前回の分割とペインごとのカメラを戻す（`25` の T6）
+    if (restored && this.state.doc.layout) this.viewport.restoreLayout(this.state.doc.layout);
     this.viewport.syncAll();
     // 前回の表示の設定を反映する（`23` の T6、`24` の T4）
     this.applyHand();
@@ -1865,8 +1917,10 @@ export class App {
     // 座標は 3D ペインの中のもの。枠は #vp に置いてあるので、ペインの位置ぶんずらす
     // （UV モードの分割表示だと、ずらさないと 2D 側に枠が出る）
     const pane = byId("pane3d");
-    const dx = pane.offsetLeft;
-    const dy = pane.offsetTop;
+    // 分割しているときは、そのペインの位置ぶんもずらす（`25` の T6）
+    const split = this.viewport.paneRect(this.viewport.inputPane);
+    const dx = pane.offsetLeft + split.x;
+    const dy = pane.offsetTop + split.y;
     this.marqueeEl.style.left = `${Math.min(m.x0, m.x1) + dx}px`;
     this.marqueeEl.style.top = `${Math.min(m.y0, m.y1) + dy}px`;
     this.marqueeEl.style.width = `${Math.abs(m.x1 - m.x0)}px`;
@@ -2222,6 +2276,12 @@ export class App {
 
   /** UV モードへ入る。初回はここで 2D ビューを作る。 */
   private enterUv(): void {
+    // UV モードの 3D 側は 1 画面にする（2D と並ぶので、これ以上は割らない。`25` の T6）
+    if (this.viewport.layout !== "single") {
+      this.viewport.setLayout("single");
+      this.viewport.applyDisplayAll();
+      this.renderToolColumn();
+    }
     const object = this.state.selected;
     if (!this.uv) {
       this.uv = new UvMode(byId("paneUv"), byId<HTMLCanvasElement>("uvgl"), {
@@ -2577,6 +2637,47 @@ export class App {
       NW: { label: "チェッカー", sub: "8", icon: ICONS.mUV, run: () => this.setDisplay("checker") },
       NE: { label: "ヒートマップ", sub: "9", icon: ICONS.heat, run: () => this.setDisplay("heat") },
     };
+  }
+
+  /**
+   * ビューポートの分割（`25` の T6）。1 / 2（左右）/ 2（上下）/ 4。
+   * 3 分割は入れない（レイアウトが別物になるうえ、ほとんど使われない）。
+   */
+  private layoutMenu(): RadialMenu {
+    const go = (kind: LayoutKind, label: string, sub: string, icon: string) => ({
+      label,
+      sub,
+      icon,
+      run: () => this.setLayout(kind),
+    });
+    return {
+      N: go("single", "1 画面", "Single", ICONS.layout1),
+      E: go("cols", "2 画面（左右）", "Two Columns", ICONS.layoutCols),
+      S: go("quad", "4 画面", "Four", ICONS.layoutQuad),
+      W: go("rows", "2 画面（上下）", "Two Rows", ICONS.layoutRows),
+    };
+  }
+
+  /** タップで 1 → 2 → 4 → 1 と回す。縦持ちの「2」は上下にする。 */
+  private cycleLayout(): void {
+    // 縦持ちなら「2」は上下（横に割ると細長くなりすぎる）
+    const two: LayoutKind = byId("stage").classList.contains("portrait") ? "rows" : "cols";
+    const next: LayoutKind =
+      this.viewport.layout === "single" ? two : this.viewport.layout === "quad" ? "single" : "quad";
+    this.setLayout(next);
+  }
+
+  private setLayout(kind: LayoutKind): void {
+    if (this.state.mode === "uv" && kind !== "single") {
+      this.hud.toast("UV モードの 3D は 1 画面です");
+      return;
+    }
+    this.viewport.setLayout(kind);
+    this.viewport.applyDisplayAll();
+    this.viewport.rebuildOverlay();
+    this.renderToolColumn();
+    this.refresh();
+    this.hud.toast(`${LAYOUT_LABEL[kind]}`);
   }
 
   private selectModeMenu(): RadialMenu {
@@ -3403,6 +3504,15 @@ export class App {
         radialList: () => this.savedCameraItems(),
         options: () => [cameraSection(this.optionsState(), this.panelHost())],
         onTap: () => {},
+      },
+      {
+        kind: "button",
+        id: "layout",
+        icon: () => LAYOUT_ICONS[this.viewport.layout],
+        title: "分割（タップで 1 → 2 → 4 · 長押しで選ぶ）",
+        pressed: () => this.viewport.layout !== "single",
+        radial: () => this.layoutMenu(),
+        onTap: () => this.cycleLayout(),
       },
       { kind: "separator" },
       { kind: "label", text: "追加" },
@@ -4567,6 +4677,8 @@ export class App {
 
   private async saveProject(): Promise<void> {
     const { packMbz } = await import("../core/index.js");
+    // 分割と各ペインのカメラも一緒に残す（`25` の T6）
+    this.state.doc.layout = this.viewport.saveLayout();
     const bytes = packMbz(this.state.doc, { appVersion: "0.1.0" });
     const name = `${this.state.doc.objects[0]?.name ?? "scene"}.mbz`;
     const r = await saveAs(bytes, name);
@@ -4582,6 +4694,7 @@ export class App {
       this.state.doc = doc;
       this.state.select(doc.objects[0] ?? null);
       this.history.clear();
+      this.viewport.restoreLayout(doc.layout);
       this.viewport.syncAll();
       this.viewport.frameSelected();
       this.refresh();

@@ -619,6 +619,37 @@ const scenes = {
     await new Promise((r2) => setTimeout(r2, 250));
   },
 
+  /** `25` の T6: 4 分割。パース / 上 / 前 / 右。右下がアクティブ。 */
+  "25-t6-quad": async () => {
+    const app = window.macbeth;
+    app.state.doc.objects.length = 0;
+    const cube = app.state.doc.addObject("cube");
+    const sphere = app.state.doc.addObject("sphere");
+    sphere.transform.position = [1.9, 0.3, -0.6];
+    sphere.params.radius = 0.7;
+    sphere.rebuild();
+    app.viewport.syncAll();
+    app.setCompMode("object");
+    app.state.select(cube);
+    app.setLayoutForTest("quad");
+    await new Promise((r) => setTimeout(r, 200));
+    for (const p of app.viewport.panes) p.cam.distance = 6.2;
+    app.viewport.applyCameraAll();
+
+    // 右下（右ビュー）を触ってアクティブにし、そのペインだけワイヤーにする
+    const pane3d = document.getElementById("pane3d");
+    const pr = pane3d.getBoundingClientRect();
+    const gl = document.getElementById("gl");
+    const at = { clientX: pr.left + pr.width * 0.75, clientY: pr.top + pr.height * 0.8 };
+    for (const type of ["pointerdown", "pointerup"]) {
+      gl.dispatchEvent(new PointerEvent(type, { pointerId: 81, pointerType: "touch", bubbles: true, cancelable: true, ...at }));
+    }
+    await new Promise((r) => setTimeout(r, 150));
+    app.setDisplay("wire");
+    app.refresh();
+    await new Promise((r) => setTimeout(r, 250));
+  },
+
   /** `23` の T4: ブリッジの分割数 3。上下の縁の間に輪が 2 本入る。 */
   "23-t4-bridge": async () => {
     const app = window.macbeth;
