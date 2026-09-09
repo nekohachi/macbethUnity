@@ -680,10 +680,16 @@ export class App {
 
     let note: string;
     if (t.kind === "scale") {
-      applyGestureTransform(drag, o, { scale: t.scale });
+      // ALT を押しながらなら、つまんだ向きの軸だけ伸ばす（`25` の T2）
+      const axis = this.state.modOn("alt") ? this.gestureScaleAxis(t.axis) : null;
+      applyGestureTransform(drag, o, {
+        scale: axis
+          ? ([axis.x ? t.scale : 1, axis.y ? t.scale : 1, axis.z ? t.scale : 1] as [number, number, number])
+          : t.scale,
+      });
       // つまんだ時点で「移動」ではなくなるので、UV を保つのはここでやめる
       this.preserve = null;
-      note = `スケール <kbd>×${t.scale.toFixed(2)}</kbd>`;
+      note = `スケール ${axis ? `<kbd>${axis.name}</kbd> ` : ""}<kbd>×${t.scale.toFixed(2)}</kbd>`;
     } else if (t.axis === "vertical") {
       // 画面の上がプラス Y
       const amount = -t.pixels * view.pixelToWorld;
@@ -713,6 +719,18 @@ export class App {
     this.refreshManipulator();
     this.hud.refreshStats();
     byId("hudHint").innerHTML = `${note} · 指 3 本`;
+  }
+
+  /**
+   * ALT + つまみの軸（`25` の T2）。
+   * 縦につまめば Y、横につまめば**カメラから見て横のワールド軸**（X か Z）。
+   */
+  private gestureScaleAxis(axis: "vertical" | "horizontal"): { name: string; x: boolean; y: boolean; z: boolean } {
+    if (axis === "vertical") return { name: "Y", x: false, y: true, z: false };
+    const right = this.gestureView?.horizontal ?? this.screenRightAxis();
+    return right.x !== 0
+      ? { name: "X", x: true, y: false, z: false }
+      : { name: "Z", x: false, y: false, z: true };
   }
 
   private endGestureTransform(): void {

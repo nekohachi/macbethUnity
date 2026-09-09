@@ -4630,6 +4630,89 @@ check(
   `開く ${drawerKeepsOpen.opened} → F で残る ${drawerKeepsOpen.afterF} → 3D で閉じる ${!drawerKeepsOpen.after3d}`,
 );
 
+/* 43z-13. 3 本指 + ALT で軸を決めたスケール（`25` の T2） */
+const axisScale = await page.evaluate(async (center) => {
+  const app = window.macbeth;
+  app.state.doc.objects.length = 0;
+  const object = app.state.doc.addObject("cube");
+  app.viewport.syncAll();
+  app.setCompMode("object");
+  app.state.select(object);
+  app.viewport.setView("persp");
+  app.viewport.frameSelected();
+  app.refresh();
+  await new Promise((r) => setTimeout(r, 80));
+
+  const canvas = document.getElementById("gl");
+  const fire = (type, id, x, y) =>
+    canvas.dispatchEvent(
+      new PointerEvent(type, {
+        pointerId: id,
+        pointerType: "touch",
+        isPrimary: id === 111,
+        clientX: x,
+        clientY: y,
+        buttons: type === "pointerup" ? 0 : 1,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  /** 指 3 本を縦（または横）に開く。 */
+  const pinch = async (vertical) => {
+    object.transform.scale = [1, 1, 1];
+    app.viewport.syncAll();
+    const p = vertical
+      ? [
+          [center.x, center.y - 40],
+          [center.x, center.y],
+          [center.x, center.y + 40],
+        ]
+      : [
+          [center.x - 40, center.y],
+          [center.x, center.y],
+          [center.x + 40, center.y],
+        ];
+    p.forEach(([x, y], i) => fire("pointerdown", 111 + i, x, y));
+    for (let step = 1; step <= 10; step++) {
+      p.forEach(([x, y], i) => {
+        const k = i === 0 ? -1 : i === 2 ? 1 : 0;
+        fire("pointermove", 111 + i, vertical ? x : x + k * step * 6, vertical ? y + k * step * 6 : y);
+      });
+      await wait(8);
+    }
+    const scale = [...object.transform.scale];
+    p.forEach(([x, y], i) => fire("pointerup", 111 + i, x, y));
+    await wait(40);
+    return scale;
+  };
+
+  app.state.mods.alt = "on";
+  const vertical = await pinch(true);
+  const horizontal = await pinch(false);
+  app.state.mods.alt = "off";
+  const uniform = await pinch(true);
+
+  app.state.select(null);
+  app.state.doc.objects.length = 0;
+  app.viewport.syncAll();
+  app.refresh();
+  return { vertical, horizontal, uniform };
+}, ON_MESH);
+check(
+  "3 本指 + ALT で軸を決めたスケール",
+  axisScale.vertical[1] > 1.05 &&
+    Math.abs(axisScale.vertical[0] - 1) < 1e-6 &&
+    Math.abs(axisScale.vertical[2] - 1) < 1e-6 &&
+    (axisScale.horizontal[0] > 1.05 || axisScale.horizontal[2] > 1.05) &&
+    Math.abs(axisScale.horizontal[1] - 1) < 1e-6 &&
+    axisScale.uniform[0] > 1.05 &&
+    Math.abs(axisScale.uniform[0] - axisScale.uniform[1]) < 1e-6,
+  `縦 [${axisScale.vertical.map((v) => v.toFixed(2))}] / 横 [${axisScale.horizontal.map((v) => v.toFixed(2))}] / ` +
+    `ALT なし [${axisScale.uniform.map((v) => v.toFixed(2))}]`,
+);
+
 /* 44. ツール列のグループ（`21` の 4 章） */
 
 /* 44-1. ボタンは 7 つ、右のオプションパネルは無い */

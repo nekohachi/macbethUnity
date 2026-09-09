@@ -209,16 +209,20 @@ export function updateDrag(
 export function applyGestureTransform(
   drag: DragState,
   object: SceneObject,
-  t: { scale?: number; move?: Vector3 },
+  t: { scale?: number | [number, number, number]; move?: Vector3 },
 ): void {
-  // 裏返らないように下限を置く
-  const s = Math.max(0.02, t.scale ?? 1);
+  // 裏返らないように下限を置く。軸ごとの倍率にも同じ下限（`25` の T2）
+  const raw = t.scale ?? 1;
+  const s =
+    typeof raw === "number"
+      ? new Vector3(Math.max(0.02, raw), Math.max(0.02, raw), Math.max(0.02, raw))
+      : new Vector3(Math.max(0.02, raw[0]), Math.max(0.02, raw[1]), Math.max(0.02, raw[2]));
   const move = t.move ?? new Vector3();
   const pivot = drag.pivot;
   const target = drag.target;
 
-  /** ピボットからの距離を s 倍して、軸に沿って動かす。 */
-  const place = (p: Vector3): Vector3 => p.clone().sub(pivot).multiplyScalar(s).add(pivot).add(move);
+  /** ピボットからの距離を成分ごとに伸ばして、軸に沿って動かす。 */
+  const place = (p: Vector3): Vector3 => p.clone().sub(pivot).multiply(s).add(pivot).add(move);
 
   if (target.kind === "object") {
     const t0 = target.transform;
@@ -227,7 +231,7 @@ export function applyGestureTransform(
     object.transform = {
       position: [moved.x, moved.y, moved.z],
       rotation: [...t0.rotation],
-      scale: [t0.scale[0] * s, t0.scale[1] * s, t0.scale[2] * s],
+      scale: [t0.scale[0] * s.x, t0.scale[1] * s.y, t0.scale[2] * s.z],
     };
     return;
   }

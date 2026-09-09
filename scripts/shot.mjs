@@ -493,6 +493,54 @@ const scenes = {
     await new Promise((r) => setTimeout(r, 200));
   },
 
+  /** `25` の T2: 3 本指 + ALT で Y だけ伸ばしたところ。 */
+  "25-t2-axis-scale": async () => {
+    const app = window.macbeth;
+    app.state.doc.objects.length = 0;
+    const object = app.state.doc.addObject("cube");
+    app.viewport.syncAll();
+    app.setCompMode("object");
+    app.state.select(object);
+    app.viewport.setView("persp");
+    app.viewport.frameSelected();
+    app.state.mods.alt = "on";
+    app.refresh();
+    await new Promise((r) => setTimeout(r, 80));
+
+    const canvas = document.getElementById("gl");
+    const r = canvas.getBoundingClientRect();
+    const cx = r.x + r.width * 0.46;
+    const cy = r.y + r.height * 0.55;
+    const fire = (type, id, x, y) =>
+      canvas.dispatchEvent(
+        new PointerEvent(type, {
+          pointerId: id,
+          pointerType: "touch",
+          isPrimary: id === 121,
+          clientX: x,
+          clientY: y,
+          buttons: type === "pointerup" ? 0 : 1,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    const p = [
+      [cx, cy - 40],
+      [cx, cy],
+      [cx, cy + 40],
+    ];
+    p.forEach(([x, y], i) => fire("pointerdown", 121 + i, x, y));
+    for (let step = 1; step <= 10; step++) {
+      p.forEach(([x, y], i) => {
+        const k = i === 0 ? -1 : i === 2 ? 1 : 0;
+        fire("pointermove", 121 + i, x, y + k * step * 5);
+      });
+      await new Promise((r2) => setTimeout(r2, 8));
+    }
+    // 指は置いたまま撮る（ヒントに「スケール Y ×…」が出ている）
+    await new Promise((r2) => setTimeout(r2, 150));
+  },
+
   /** `23` の T4: ブリッジの分割数 3。上下の縁の間に輪が 2 本入る。 */
   "23-t4-bridge": async () => {
     const app = window.macbeth;

@@ -79,7 +79,7 @@ export interface GestureHandlers {
  * `pixels` は開始時点からの画面上の移動量（符号つき）。
  */
 export type GestureDelta =
-  | { kind: "scale"; scale: number }
+  | { kind: "scale"; scale: number; axis: "vertical" | "horizontal" }
   | { kind: "swipe"; axis: "vertical" | "horizontal"; pixels: number };
 
 interface PointerRecord {
@@ -103,6 +103,11 @@ interface Cluster {
   spread: number;
   /** ポインタ ID → 重心まわりの角度（ラジアン）。回転量はこれとの差の平均で出す。 */
   angles: Map<number, number>;
+  /**
+   * つまんでいる向き（`25` の T2）。いちばん離れた 2 本を結ぶ線の傾きで決める。
+   * 45° で縦横に倒す。ALT + つまみの軸スケールが使う。
+   */
+  axis: "vertical" | "horizontal";
 }
 
 function clusterOf(pointers: Map<number, PointerRecord>): Cluster {
@@ -121,7 +126,22 @@ function clusterOf(pointers: Map<number, PointerRecord>): Cluster {
     spread += Math.hypot(p.x - cx, p.y - cy);
     angles.set(id, Math.atan2(p.y - cy, p.x - cx));
   }
-  return { cx, cy, spread: spread / n, angles };
+  // つまんでいる向き。いちばん離れた 2 本の並びで決める（`25` の T2）
+  let axis: "vertical" | "horizontal" = "horizontal";
+  const list = [...pointers.values()];
+  let far = -1;
+  for (let i = 0; i < list.length; i++) {
+    for (let j = i + 1; j < list.length; j++) {
+      const dx = list[j].x - list[i].x;
+      const dy = list[j].y - list[i].y;
+      const d = dx * dx + dy * dy;
+      if (d > far) {
+        far = d;
+        axis = Math.abs(dy) >= Math.abs(dx) ? "vertical" : "horizontal";
+      }
+    }
+  }
+  return { cx, cy, spread: spread / n, angles, axis };
 }
 
 /** 開始時点からの回転量。指ごとの角度差を [-π, π] に畳んで平均する。 */
@@ -170,7 +190,7 @@ interface Gesture {
   /** そのフレームで動いた指。全員そろってから測るために使う（3 本指）。 */
   fresh?: Set<number>;
   /** 3 本指で確定した中身。一度決まったら変えない（誤操作防止）。 */
-  delta?: { kind: "scale" } | { kind: "swipe"; axis: "vertical" | "horizontal" };
+  delta?: { kind: "scale"; axis: "vertical" | "horizontal" } | { kind: "swipe"; axis: "vertical" | "horizontal" };
   zoomOnly?: boolean;
   pivot?: Vector3;
   moved?: boolean;
@@ -427,18 +447,20 @@ export class GestureRouter {
         // ここで中身を 1 つに決める。以後は入れ替わらない
         g.delta =
           pinch >= swipe
-            ? { kind: "scale" }
+            ? // つまむ向きは確定した時点で決めて、以後は変えない（`25` の T2）
+              { kind: "scale", axis: now.axis }
             : { kind: "swipe", axis: Math.abs(dy) >= Math.abs(dx) ? "vertical" : "horizontal" };
         // 確定した時点を基準にし直して飛びを防ぐ
         g.basis = now;
         return;
       }
 
-      const kind = g.delta ?? { kind: "scale" as const };
+      const kind = g.delta ?? { kind: "scale" as const, axis: now.axis };
       if (kind.kind === "scale") {
         this.h.transformUpdate({
           kind: "scale",
           scale: basis.spread > 1e-6 ? now.spread / basis.spread : 1,
+          axis: kind.axis,
         });
       } else {
         this.h.transformUpdate({
