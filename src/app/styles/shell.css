@@ -239,6 +239,23 @@ button{font-family:inherit; font-size:inherit; color:inherit; background:none; b
 .vp.split .pane3d{left:50%; border-left:1px solid var(--line)}
 .stage.portrait .vp.split .paneuv{right:0; bottom:50%}
 .stage.portrait .vp.split .pane3d{left:0; top:50%; border-left:none; border-top:1px solid var(--line)}
+/* ベンチ画面（30 の T1）。?bench=1 のときだけ出る */
+.bench{position:fixed; inset:auto 16px 16px 16px; max-height:82vh; overflow:auto; z-index:80;
+  background:rgba(18,21,25,.96); border:1px solid var(--line-soft); border-radius:var(--radius);
+  box-shadow:0 12px 40px rgba(0,0,0,.6); padding:12px 14px}
+.bench-head{font-size:10px; color:var(--text-faint); line-height:1.6; margin-bottom:8px}
+.bench-head b{font-size:13px; color:var(--text)}
+.bench-head i{font-style:normal; word-break:break-all}
+.bench-row{display:grid; grid-template-columns:1fr 92px 130px; gap:8px; align-items:baseline;
+  padding:4px 0; border-top:1px solid var(--line)}
+.bench-row i{font-style:normal; font-size:11px; color:var(--text)}
+.bench-row b{font-family:"IBM Plex Mono",monospace; font-size:13px; text-align:right; color:var(--text)}
+.bench-row span{font-size:10px; color:var(--text-faint)}
+.bench-row[data-over="true"] b{color:var(--warn)}
+.bench-status{padding:6px 0; font-size:11px; color:var(--accent)}
+.bench-foot{display:flex; gap:6px; margin-top:10px}
+.bench-foot .act{flex:1}
+
 /* 3 本指のひねりの角度（26 の T1）。指の重心の上に出す小さな札 */
 .twist-pop{position:fixed; z-index:60; transform:translateX(-50%); pointer-events:none;
   display:flex; align-items:baseline; gap:6px; padding:5px 10px;

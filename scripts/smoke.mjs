@@ -6039,6 +6039,33 @@ check(
     `履歴 ${heavy.entry?.kind} ${heavy.entry?.bytes}B`,
 );
 
+/* 43z-28. ベンチ画面が出て数字が入る（`30` の T1） */
+// 別のページとして開く（?bench=1&quick=1 は小さめの大きさ）
+{
+  const bench = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+  await bench.goto(`http://localhost:${PORT}${BASE}${ENTRY}?bench=1&quick=1`, { waitUntil: "load" });
+  await bench.waitForSelector(".bench[data-done='true']", { timeout: 60000 });
+  const table = await bench.evaluate(() => {
+    const rows = [...document.querySelectorAll(".bench-row")].map((r) => ({
+      label: r.querySelector("i")?.textContent ?? "",
+      value: r.querySelector("b")?.textContent ?? "",
+    }));
+    const json = JSON.parse(window.macbethBench());
+    return { rows, head: document.querySelector(".bench-head b")?.textContent ?? "", keys: json.rows.map((r) => r.key), agent: !!json.agent };
+  });
+  await bench.close();
+  check(
+    "ベンチ画面が出て数字が入る",
+    table.head === "ベンチ" &&
+      table.rows.length >= 5 &&
+      table.rows.every((r) => /[0-9]/.test(r.value)) &&
+      table.keys.includes("B2b") &&
+      table.keys.includes("B4") &&
+      table.agent,
+    `${table.rows.length} 行 / ${table.rows.map((r) => `${r.label.split("（")[0]} ${r.value}`).join(" · ")}`,
+  );
+}
+
 /* 44. ツール列のグループ（`21` の 4 章） */
 
 /* 44-1. ボタンは 7 つ、右のオプションパネルは無い */

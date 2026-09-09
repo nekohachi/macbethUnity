@@ -1000,7 +1000,22 @@ const scenes = {
     app.uv.refreshHighlight();
     app.uv.view.frameUnit();
   },
+
+  /** `30` の T1: ベンチ画面。数字は CI のものなので当てにしない（表の形だけ）。 */
+  "30-t1-bench": async () => {
+    // `?bench=1&quick=1` で開いている。表が埋まるまで待つ
+    await new Promise((done) => {
+      const tick = () => {
+        if (document.querySelector(".bench[data-done='true']")) done();
+        else setTimeout(tick, 100);
+      };
+      tick();
+    });
+  },
 };
+
+/** URL に足す問い合わせ（`?bench=1` など）。場面ごとに決める。 */
+const QUERIES = { "30-t1-bench": "?bench=1&quick=1" };
 
 const scene = scenes[NAME];
 if (!scene) {
@@ -1034,9 +1049,10 @@ const browser = await chromium.launch({
 // 画面の大きさは SHOT_SIZE=幅x高さ で変えられる
 const [SW, SH] = (process.env.SHOT_SIZE ?? "1280x800").split("x").map(Number);
 const page = await browser.newPage({ viewport: { width: SW, height: SH } });
-await page.goto(`http://localhost:${PORT}${BASE}${ENTRY}`, { waitUntil: "load" });
+await page.goto(`http://localhost:${PORT}${BASE}${ENTRY}${QUERIES[NAME] ?? ""}`, { waitUntil: "load" });
 await page.waitForFunction(() => window.macbeth?.state.doc.objects.length > 0, null, { timeout: 5000 });
 
+page.setDefaultTimeout(180000);
 await page.evaluate(scene);
 // 「両方」の表示にして、2D と 3D の両方が写るようにする
 if (NAME.startsWith("20-t2") || NAME.startsWith("20-t3") || NAME.startsWith("20-t4") || NAME.startsWith("20-t5")) {

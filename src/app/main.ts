@@ -32,6 +32,15 @@ if (import.meta.env.PROD && "serviceWorker" in navigator) {
 const app = new App();
 void app.boot();
 
+// ベンチ画面（`30` の T1）。`?bench=1` のときだけ読み込む。
+// ふだんのバンドルには入らない（動的 import）
+const params = new URLSearchParams(location.search);
+if (params.get("bench")) {
+  void import("./bench.js").then(({ runBench }) => {
+    void app.boot().then(() => runBench(app, params.get("quick") === "1"));
+  });
+}
+
 // デバッグ用。コンソールから状態を覗けるようにしておく。
 // core も出しておく（通し確認から書き出しを直に叩くため）
 Object.assign(window, { macbeth: app, macbethCore: core });

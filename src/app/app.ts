@@ -333,7 +333,8 @@ const PRIMITIVE_ICONS: Record<string, string> = {
 export class App {
   readonly state = new AppState();
   readonly history = new History(this.state);
-  private viewport: Viewport;
+  /** ベンチ画面（`30` の T1）と通し確認から触る。 */
+  readonly viewport: Viewport;
   private picker: Picker;
   private selector: Selector;
   private autosave = new Autosave(this.state);
