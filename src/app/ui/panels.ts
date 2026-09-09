@@ -8,6 +8,7 @@ import { PRIMITIVES } from "../../core/index.js";
 import type { SceneObject } from "../../core/index.js";
 import { el } from "./dom.js";
 import { ICONS, iconSvg } from "./icons.js";
+import { openRadial, type RadialMenu } from "./radial.js";
 
 export interface PanelHost {
   /** スライダーを動かしている最中（履歴には積まない）。 */
@@ -52,9 +53,17 @@ export interface PanelHost {
   onCamReset(): void;
   /** 「次に追加するプリミティブ」のパラメータ（`21` の 2.7）。 */
   onDefaultParamChange(kind: string, key: string, value: number): void;
-  onSelect(object: SceneObject): void;
+  /** 行をタップ。`additive` は SHF（3D の Shift + クリックと同じ）。 */
+  onSelect(object: SceneObject, additive?: boolean): void;
   onRename(object: SceneObject, name: string): void;
-  onOutlinerMenu(object: SceneObject, x: number, y: number): void;
+  /** 行の長押しで出すサークルメニューの中身（`24` の T2）。 */
+  outlinerMenu(object: SceneObject): RadialMenu;
+  /** F を押しながらなぞったときの範囲選択。id の並びで、最後の 1 つが `selected` になる。 */
+  onSelectRange(ids: string[]): void;
+  /** クラスターの F を押している最中か（3D の矩形選択と同じ状態）。 */
+  frameHeld(): boolean;
+  /** SHF が効いているか（クラスターのラッチ、またはキーボード）。 */
+  shiftHeld(e: PointerEvent): boolean;
   /** アウトライナ（`19` の 3.3、`24` の T1）。 */
   onVisible(object: SceneObject, visible: boolean): void;
   onLock(object: SceneObject, locked: boolean): void;
@@ -868,6 +877,7 @@ export function renderLayers(
   selected: SceneObject | null,
   host: PanelHost,
   opened: Set<string>,
+  also: Set<SceneObject> = new Set(),
 ): void {
   body.textContent = "";
   if (!objects.length) {
@@ -879,7 +889,9 @@ export function renderLayers(
     const o = objects[i];
     const wrap = el("div", "lyitem");
     const row = el("div", "lyrow");
-    row.setAttribute("aria-selected", String(o === selected));
+    // SHF で足したものも選択として光らせる。最後に選んだものだけ濃く（`24` の T2）
+    row.setAttribute("aria-selected", String(o === selected || also.has(o)));
+    if (o === selected) row.dataset.primary = "true";
     row.dataset.id = o.id;
 
     const thumb = el("div", "thumb");
@@ -918,6 +930,25 @@ export function renderLayers(
       host.onLock(o, !o.locked);
     });
     row.appendChild(lock);
+
+    // 並び替えのつまみ。長押しはメニューに使うので、入れ替えはここからだけ（`24` の T2）
+    const grip = el("button", "lygrip");
+    grip.title = "ドラッグで並び替え";
+    grip.innerHTML =
+      '<svg viewBox="0 0 8 12" fill="currentColor" width="8" height="12">' +
+      [
+        [2, 2],
+        [6, 2],
+        [2, 6],
+        [6, 6],
+        [2, 10],
+        [6, 10],
+      ]
+        .map(([cx, cy]) => `<circle cx="${cx}" cy="${cy}" r="1"/>`)
+        .join("") +
+      "</svg>";
+    attachOutlinerGrip(grip, row, host);
+    row.appendChild(grip);
 
     const more = el("button", "more", opened.has(o.id) ? "▾" : "▸");
     more.title = "プロパティ";
@@ -958,69 +989,87 @@ function transformSectionFor(o: SceneObject, host: PanelHost): HTMLElement | nul
 }
 
 /**
- * アウトライナの行の操作（`19` の 3.3）。
- * タップで選択、ダブルタップで改名、長押しでメニュー、長押しのままドラッグで並び替え。
+ * アウトライナの行の操作（`19` の 3.3、`24` の T2）。
+ *
+ * - タップ = 選択（SHF で足す / 外す）
+ * - ダブルタップ = 名前の変更
+ * - **長押し = その場にサークルメニュー**。指を離さずに方位へ引いて選べる
+ * - **F を押しながらなぞる** = その間の行をまとめて選ぶ
+ * - 縦のドラッグは一覧のスクロール（`touch-action: pan-y`）
+ *
+ * 並び替えは右端のつまみ（`attachOutlinerGrip`）に分けてある。前は長押しが
+ * 並び替え待ちを兼ねていて、指が数 px 動くだけでメニューまで届かなかった。
  */
 function attachOutlinerRow(row: HTMLElement, o: SceneObject, host: PanelHost): void {
+  const HOLD_MS = 420;
+  const MOVE_PX = 12;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let sx = 0;
   let sy = 0;
+  let pid: number | null = null;
+  /** サークルメニューを出した。離しても選択はしない。 */
   let opened = false;
+  /** F を押しながらのなぞり。 */
+  let sweeping = false;
   let lastTap = 0;
-  /** 長押しが成立して、並び替えを待っている状態。 */
-  let holding = false;
+  /** 一覧の入れ物。行と違って描き直しても残る。 */
+  let listEl: HTMLElement | null = null;
 
-  row.addEventListener("touchstart", (e) => e.preventDefault(), { passive: false });
-  row.addEventListener("contextmenu", (e) => e.preventDefault());
-  row.addEventListener("pointerdown", (e) => {
-    sx = e.clientX;
-    sy = e.clientY;
-    opened = false;
-    holding = false;
-    if (e.pointerType === "mouse" && e.button === 2) {
-      opened = true;
-      host.onOutlinerMenu(o, e.clientX, e.clientY);
-      return;
-    }
-    timer = setTimeout(() => {
-      // まず並び替えを待つ。動かさずに離したらメニュー
-      holding = true;
-      row.classList.add("dragging");
-    }, 420);
-  });
-  const stop = () => {
+  const cancel = () => {
     if (timer !== null) clearTimeout(timer);
     timer = null;
   };
-  row.addEventListener("pointermove", (e) => {
-    if (!holding) {
-      if (Math.hypot(e.clientX - sx, e.clientY - sy) > 12) stop();
-      return;
-    }
-    // 掴んだまま上下に動かすと入れ替わる
-    const list = row.parentElement?.parentElement;
-    if (!list) return;
-    const rows = [...list.querySelectorAll<HTMLElement>(".lyrow")];
-    const from = rows.indexOf(row);
-    const over = rows.findIndex((r) => {
+  const listen = (on: boolean) => {
+    const fn = on ? window.addEventListener : window.removeEventListener;
+    fn("pointermove", onMove as EventListener);
+    fn("pointerup", onUp as EventListener);
+    fn("pointercancel", onUp as EventListener);
+  };
+
+  /**
+   * 押し始めた行から、今指がある行までをまとめて選ぶ。
+   *
+   * 選ぶたびに一覧は描き直されて行の要素は入れ替わるので、
+   * 掴んだ要素ではなく**一覧そのもの**と id を頼りに引き直す。
+   */
+  const sweepTo = (clientY: number): void => {
+    const rows = rowsOf(listEl);
+    if (!rows.length) return;
+    const from = rows.findIndex((r) => r.dataset.id === o.id);
+    if (from < 0) return;
+    let to = rows.findIndex((r) => {
       const b = r.getBoundingClientRect();
-      return e.clientY >= b.top && e.clientY <= b.bottom;
+      return clientY >= b.top && clientY <= b.bottom;
     });
-    if (over >= 0 && over !== from) {
-      opened = true;
-      host.onReorder(from, over);
-    }
-  });
-  row.addEventListener("pointerup", (e) => {
-    const wasHolding = holding;
-    stop();
-    row.classList.remove("dragging");
-    holding = false;
-    if (opened) return;
-    if (wasHolding) {
-      host.onOutlinerMenu(o, e.clientX, e.clientY);
+    if (to < 0) to = clientY < rows[0].getBoundingClientRect().top ? 0 : rows.length - 1;
+    const span = from <= to ? rows.slice(from, to + 1) : rows.slice(to, from + 1).reverse();
+    // 最後の 1 つが `selected` になるので、指が今いる行を最後に置く
+    host.onSelectRange(span.map((r) => r.dataset.id ?? "").filter(Boolean));
+  };
+
+  const onMove = (e: PointerEvent) => {
+    if (e.pointerId !== pid) return;
+    if (sweeping) {
+      sweepTo(e.clientY);
       return;
     }
+    if (Math.hypot(e.clientX - sx, e.clientY - sy) > MOVE_PX) cancel();
+  };
+  const onUp = (e: PointerEvent) => {
+    if (e.pointerId !== pid) return;
+    cancel();
+    pid = null;
+    listen(false);
+    row.classList.remove("sweeping");
+    const wasSweeping = sweeping;
+    sweeping = false;
+    // サークルメニューを開いていたら、決定はそちらが受け取る
+    if (opened || wasSweeping) {
+      opened = false;
+      return;
+    }
+    // 動かして離したならスクロールだったので、選択は変えない
+    if (Math.hypot(e.clientX - sx, e.clientY - sy) > MOVE_PX) return;
     const now = performance.now();
     if (now - lastTap < 400) {
       lastTap = 0;
@@ -1028,13 +1077,97 @@ function attachOutlinerRow(row: HTMLElement, o: SceneObject, host: PanelHost): v
       return;
     }
     lastTap = now;
-    host.onSelect(o);
+    host.onSelect(o, host.shiftHeld(e));
+  };
+
+  row.addEventListener("contextmenu", (e) => e.preventDefault());
+  row.addEventListener("pointerdown", (e) => {
+    // つまみ・目・ロック・「>」の上なら、行の操作は始めない
+    if ((e.target as HTMLElement).closest("button")) return;
+    pid = e.pointerId;
+    sx = e.clientX;
+    sy = e.clientY;
+    opened = false;
+    sweeping = false;
+    listEl = row.closest(".pbody");
+    listen(true);
+    if (host.frameHeld()) {
+      // F を押しながら = なぞって範囲選択。スクロールに取られないように止める
+      e.preventDefault();
+      sweeping = true;
+      row.classList.add("sweeping");
+      sweepTo(e.clientY);
+      return;
+    }
+    if (e.pointerType === "mouse" && e.button === 2) {
+      opened = true;
+      openRadial(host.outlinerMenu(o), e.clientX, e.clientY);
+      return;
+    }
+    timer = setTimeout(() => {
+      opened = true;
+      openRadial(host.outlinerMenu(o), sx, sy);
+    }, HOLD_MS);
   });
-  row.addEventListener("pointercancel", () => {
-    stop();
-    row.classList.remove("dragging");
-    holding = false;
+}
+
+/** 一覧の中の行を、上から順に。 */
+function rowsOf(list: HTMLElement | null): HTMLElement[] {
+  return list ? [...list.querySelectorAll<HTMLElement>(".lyrow")] : [];
+}
+
+/**
+ * 並び替えのつまみ。掴んで上下に動かすと行が入れ替わる（`24` の T2）。
+ *
+ * 入れ替えるたびに一覧は描き直されるので、掴んだ要素は途中で無くなる。
+ * 追いかけるのは id で、購読は `window` に置く。
+ */
+function attachOutlinerGrip(grip: HTMLElement, row: HTMLElement, host: PanelHost): void {
+  let pid: number | null = null;
+  let listEl: HTMLElement | null = null;
+  const id = row.dataset.id ?? "";
+
+  const listen = (on: boolean) => {
+    const fn = on ? window.addEventListener : window.removeEventListener;
+    fn("pointermove", onMove as EventListener);
+    fn("pointerup", onUp as EventListener);
+    fn("pointercancel", onUp as EventListener);
+  };
+  const onMove = (e: PointerEvent) => {
+    if (e.pointerId !== pid) return;
+    const rows = rowsOf(listEl);
+    const from = rows.findIndex((r) => r.dataset.id === id);
+    const over = rows.findIndex((r) => {
+      const b = r.getBoundingClientRect();
+      return e.clientY >= b.top && e.clientY <= b.bottom;
+    });
+    if (from >= 0 && over >= 0 && over !== from) host.onReorder(from, over);
+  };
+  const onUp = (e: PointerEvent) => {
+    if (e.pointerId !== pid) return;
+    pid = null;
+    listen(false);
+    for (const r of rowsOf(listEl)) r.classList.remove("dragging");
+  };
+
+  grip.addEventListener("touchstart", (e) => e.preventDefault(), { passive: false });
+  grip.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    pid = e.pointerId;
+    listEl = row.closest(".pbody");
+    listen(true);
+    row.classList.add("dragging");
   });
+}
+
+/**
+ * その行の名前を入力に変える（サークルメニューの「名前変更」から。`24` の T2）。
+ * 行が出ていなければ何もしない。
+ */
+export function renameInOutliner(body: HTMLElement, object: SceneObject, host: PanelHost): void {
+  const row = body.querySelector<HTMLElement>(`.lyrow[data-id="${CSS.escape(object.id)}"]`);
+  if (row) startRename(row, object, host);
 }
 
 function startRename(row: HTMLElement, o: SceneObject, host: PanelHost): void {

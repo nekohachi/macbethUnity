@@ -3982,6 +3982,168 @@ check(
     `× で閉じる ${outliner.closedByButton}・外を触って閉じる ${outliner.closed}`,
 );
 
+/* 43e-2. アウトライナの長押しサークルメニュー（`24` の T2） */
+const outlinerMenu = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const objectsBefore = app.state.doc.objects.length;
+  document.getElementById("btnPanels").click();
+  await new Promise((r) => setTimeout(r, 250));
+  const drawer = document.querySelector(".drawer");
+  const row = drawer.querySelector(".lyrow");
+  const b = row.getBoundingClientRect();
+  const at = { clientX: b.x + b.width / 2, clientY: b.y + b.height / 2 };
+
+  // つまみ以外を少し動かしても並びは変わらない
+  const orderBefore = app.state.doc.objects.map((o) => o.name).join(",");
+  row.dispatchEvent(new PointerEvent("pointerdown", { pointerId: 30, pointerType: "touch", bubbles: true, ...at }));
+  window.dispatchEvent(
+    new PointerEvent("pointermove", { pointerId: 30, pointerType: "touch", bubbles: true, clientX: at.clientX, clientY: at.clientY + 20 }),
+  );
+  window.dispatchEvent(
+    new PointerEvent("pointerup", { pointerId: 30, pointerType: "touch", bubbles: true, clientX: at.clientX, clientY: at.clientY + 20 }),
+  );
+  const orderAfterDrag = app.state.doc.objects.map((o) => o.name).join(",");
+
+  // つまみを掴んで下の行へ運ぶと入れ替わる
+  const grip = drawer.querySelector(".lyrow .lygrip");
+  const g = grip.getBoundingClientRect();
+  const second = drawer.querySelectorAll(".lyrow")[1].getBoundingClientRect();
+  grip.dispatchEvent(
+    new PointerEvent("pointerdown", { pointerId: 32, pointerType: "touch", bubbles: true, cancelable: true, clientX: g.x + 4, clientY: g.y + 8 }),
+  );
+  window.dispatchEvent(
+    new PointerEvent("pointermove", { pointerId: 32, pointerType: "touch", bubbles: true, clientX: g.x + 4, clientY: second.y + second.height / 2 }),
+  );
+  window.dispatchEvent(new PointerEvent("pointerup", { pointerId: 32, pointerType: "touch", bubbles: true, clientX: g.x + 4, clientY: second.y }));
+  const orderAfterGrip = app.state.doc.objects.map((o) => o.name).join(",");
+
+  // 長押しでサークルメニュー
+  row.dispatchEvent(new PointerEvent("pointerdown", { pointerId: 31, pointerType: "touch", bubbles: true, ...at }));
+  await new Promise((r) => setTimeout(r, 500));
+  const svg = document.querySelector(".radial svg");
+  const labels = svg ? [...svg.querySelectorAll("text")].map((t) => t.textContent) : [];
+  // 北（名前変更）へ引いて離す
+  const hub = svg
+    ? [...svg.querySelectorAll("circle")].reduce((best, c) =>
+        Number(c.getAttribute("r")) > Number(best.getAttribute("r")) ? c : best,
+      )
+    : null;
+  const cx = hub ? Number(hub.getAttribute("cx")) : 0;
+  const cy = hub ? Number(hub.getAttribute("cy")) : 0;
+  for (const type of ["pointermove", "pointerup"]) {
+    window.dispatchEvent(
+      new PointerEvent(type, { pointerId: 31, pointerType: "touch", bubbles: true, clientX: cx, clientY: cy - 110 }),
+    );
+  }
+  await new Promise((r) => setTimeout(r, 120));
+  const renaming = !!document.querySelector(".olinput");
+  document.querySelector(".olinput")?.blur();
+
+  document.getElementById("btnPanels").click();
+  app.state.doc.objects.length = objectsBefore;
+  app.viewport.syncAll();
+  return {
+    labels,
+    renaming,
+    orderKept: orderBefore === orderAfterDrag,
+    reordered: orderBefore !== orderAfterGrip,
+    radial: !!svg,
+  };
+});
+check(
+  "アウトライナの長押しでサークルメニュー",
+  outlinerMenu.radial &&
+    outlinerMenu.labels.includes("名前変更") &&
+    outlinerMenu.labels.includes("結合") &&
+    outlinerMenu.renaming &&
+    outlinerMenu.orderKept &&
+    outlinerMenu.reordered,
+  `${outlinerMenu.labels.filter((t) => t && t !== "キャンセル").slice(0, 8).join(" · ")} / ` +
+    `北で名前入力 ${outlinerMenu.renaming} / つまみ以外では並ばない ${outlinerMenu.orderKept} / つまみで並ぶ ${outlinerMenu.reordered}`,
+);
+
+/* 43e-3. アウトライナで複数選択（SHF となぞり）（`24` の T2） */
+const outlinerMulti = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const objectsBefore = app.state.doc.objects.length;
+  app.state.doc.objects.length = 0;
+  for (let i = 0; i < 3; i++) app.state.doc.addObject("cube").transform.position = [i * 1.5, 0, 0];
+  app.viewport.syncAll();
+  app.setCompMode("object");
+  app.state.select(app.state.doc.objects[0]);
+  app.refresh();
+  document.getElementById("btnPanels").click();
+  await new Promise((r) => setTimeout(r, 250));
+  const drawer = document.querySelector(".drawer");
+  const tap = (row, opts = {}) => {
+    const b = row.getBoundingClientRect();
+    const at = { clientX: b.x + b.width / 2, clientY: b.y + b.height / 2 };
+    row.dispatchEvent(new PointerEvent("pointerdown", { pointerId: 40, pointerType: "touch", bubbles: true, ...at, ...opts }));
+    window.dispatchEvent(new PointerEvent("pointerup", { pointerId: 40, pointerType: "touch", bubbles: true, ...at, ...opts }));
+  };
+
+  // SHF + タップで足す
+  app.state.mods.shift = "on";
+  tap(drawer.querySelectorAll(".lyrow")[1]);
+  const afterShift = app.state.also.size;
+  app.state.mods.shift = "off";
+
+  // F を押しながら 1 行目から 3 行目までなぞる
+  app.state.select(app.state.doc.objects[2]);
+  app.refresh();
+  await new Promise((r) => setTimeout(r, 60));
+  // 行は選ぶたびに描き直されるので、そのつど位置を測り直す
+  const rowAt = (i) => drawer.querySelectorAll(".lyrow")[i].getBoundingClientRect();
+  const first = rowAt(0);
+  app.setFrameHeldForTest(true);
+  drawer.querySelectorAll(".lyrow")[0].dispatchEvent(
+    new PointerEvent("pointerdown", {
+      pointerId: 41,
+      pointerType: "touch",
+      bubbles: true,
+      cancelable: true,
+      clientX: first.x + 40,
+      clientY: first.y + first.height / 2,
+    }),
+  );
+  let lastY = first.y + first.height / 2;
+  for (let i = 0; i < 3; i++) {
+    const b = rowAt(i);
+    lastY = b.y + b.height / 2;
+    window.dispatchEvent(
+      new PointerEvent("pointermove", { pointerId: 41, pointerType: "touch", bubbles: true, clientX: b.x + 40, clientY: lastY }),
+    );
+  }
+  window.dispatchEvent(
+    new PointerEvent("pointerup", { pointerId: 41, pointerType: "touch", bubbles: true, clientX: first.x + 40, clientY: lastY }),
+  );
+  app.setFrameHeldForTest(false);
+  await new Promise((r) => setTimeout(r, 120));
+  const picked = app.state.selectedObjects().length;
+  const litRows = drawer.querySelectorAll('.lyrow[aria-selected="true"]').length;
+
+  // そのまま結合すると 1 つになる
+  const menu = app.panelHostForTest().outlinerMenu(app.state.selected);
+  menu.E.run();
+  const afterCombine = app.state.doc.objects.length;
+
+  document.getElementById("btnPanels").click();
+  app.state.doc.objects.length = 0;
+  app.state.select(null);
+  app.viewport.syncAll();
+  app.refresh();
+  void objectsBefore;
+  return { afterShift, picked, litRows, afterCombine };
+});
+check(
+  "アウトライナで複数選択できる",
+  outlinerMulti.afterShift === 1 &&
+    outlinerMulti.picked === 3 &&
+    outlinerMulti.litRows === 3 &&
+    outlinerMulti.afterCombine === 1,
+  `SHF で +${outlinerMulti.afterShift} / なぞって ${outlinerMulti.picked} 個（光る行 ${outlinerMulti.litRows}）→ 結合で ${outlinerMulti.afterCombine} 個`,
+);
+
 /* 44. ツール列のグループ（`21` の 4 章） */
 
 /* 44-1. ボタンは 7 つ、右のオプションパネルは無い */

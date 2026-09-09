@@ -107,6 +107,7 @@ import {
   panelShell,
   primitiveSection,
   renderLayers,
+  renameInOutliner,
   selectSection,
   snapSection,
   softSelectSection,
@@ -308,6 +309,12 @@ export class App {
     return this.panelHost();
   }
 
+  /** 通し確認からクラスターの F の押下を真似るための入口（`24` の T2）。 */
+  setFrameHeldForTest(on: boolean): void {
+    this.fHeld = on;
+    if (!on) this.fChord = false;
+  }
+
   /** 通し確認から選択の同期を叩くための入口。 */
   pushSelectionToUvForTest(): void {
     this.pushSelectionToUv();
@@ -333,6 +340,8 @@ export class App {
   private layersPanel: HTMLElement | null = null;
   /** スライダーを触り始めたときの状態。離したときに履歴へ積む。 */
   private paramSnapshot: ReturnType<History["snapshot"]> | null = null;
+  /** スライダーを指で掴んでいる最中か。掴んでいる間はパネルを描き直さない。 */
+  private sliderDrag = false;
   private drag: DragState | null = null;
   /**
    * ペンと指で掴んだが、まだ動きが確かでないもの（docs/17 の 3 章）。
@@ -456,6 +465,20 @@ export class App {
     this.buildCluster();
     this.bindKeyboard();
     this.bindTopBar();
+
+    // スライダーを掴んでいる間はパネルを描き直さない（`refresh` が見る）
+    document.addEventListener(
+      "pointerdown",
+      (e) => {
+        if ((e.target as HTMLElement | null)?.classList?.contains("slider")) this.sliderDrag = true;
+      },
+      true,
+    );
+    for (const t of ["pointerup", "pointercancel"] as const) {
+      window.addEventListener(t, () => {
+        this.sliderDrag = false;
+      });
+    }
 
     window.addEventListener("resize", () => this.viewport.resize());
     this.viewport.resize();
@@ -3668,12 +3691,30 @@ export class App {
         const params = (this.state.primitiveDefaults[kind] ??= defaultParams(kind));
         params[key] = value;
       },
-      onSelect: (o) => {
-        this.state.select(o);
+      onSelect: (o, additive) => {
+        // SHF を足したときは 3D の Shift + クリックと同じ扱い（`24` の T2）
+        if (additive) this.state.addObject(o);
+        else this.state.select(o);
         this.viewport.applyDisplayAll();
         this.viewport.rebuildOverlay();
         this.refresh();
       },
+      onSelectRange: (ids) => {
+        const byId = new Map(this.state.doc.objects.map((o) => [o.id, o]));
+        const list = ids.map((id) => byId.get(id)).filter((o): o is SceneObject => !!o && !o.locked);
+        if (!list.length) return;
+        // 指が今いる行（並びの最後）が「最後に選んだもの」になる
+        const last = list[list.length - 1];
+        this.state.select(last);
+        for (const o of list) if (o !== last) this.state.also.add(o);
+        // なぞったので、F を離してもフレームはしない
+        this.fChord = true;
+        this.viewport.applyDisplayAll();
+        this.viewport.rebuildOverlay();
+        this.refresh();
+      },
+      frameHeld: () => this.fHeld,
+      shiftHeld: (e) => this.state.modOn("shift") || e.shiftKey,
       onRename: (o, name) => {
         this.history.push("名前変更");
         o.name = name;
@@ -3705,42 +3746,42 @@ export class App {
       },
       onLayersChanged: () => this.renderPanels(),
       thumbnail: (o) => this.thumbnailOf(o),
-      onOutlinerMenu: (o, x, y) => {
-        openRadial(
-          {
-            N: { label: "名前変更", sub: "Rename", icon: ICONS.rename, run: () => this.hud.toast("行をダブルタップでも変更できます") },
-            E: {
-              label: "複製",
-              sub: "Duplicate",
-              icon: ICONS.dup,
-              run: () => {
-                this.state.select(o);
-                this.doDuplicate();
-              },
-            },
-            S: {
-              label: "削除",
-              sub: "Delete",
-              icon: ICONS.del,
-              run: () => {
-                this.state.select(o);
-                this.doDelete();
-              },
-            },
-            W: {
-              label: "フレーム",
-              sub: "Frame",
-              icon: ICONS.frame,
-              run: () => {
-                this.state.select(o);
-                this.refresh();
-                this.viewport.frameSelected();
-              },
+      outlinerMenu: (o) => {
+        // 選んでいないものを押したときだけ、まずそれを選ぶ。
+        // すでに選択に入っていれば触らない（複数選んで結合したいので）
+        if (o !== this.state.selected && !this.state.also.has(o)) {
+          this.state.select(o);
+          this.viewport.applyDisplayAll();
+          this.viewport.rebuildOverlay();
+          this.refresh();
+        }
+        return {
+          N: {
+            label: "名前変更",
+            sub: "Rename",
+            icon: ICONS.rename,
+            run: () => {
+              if (this.outlinerBody) renameInOutliner(this.outlinerBody, o, this.panelHost());
             },
           },
-          x,
-          y,
-        );
+          NE: { label: "複製", sub: "Duplicate", icon: ICONS.dup, run: () => this.doDuplicate() },
+          E: { label: "結合", sub: "Combine", icon: ICONS.prim, run: () => this.doCombine() },
+          SE: { label: "分離", sub: "Separate", icon: ICONS.vVertFace, run: () => this.doSeparate() },
+          S: { label: "削除", sub: "Delete", icon: ICONS.del, run: () => this.doDelete() },
+          SW: {
+            label: "フレーム",
+            sub: "Frame",
+            icon: ICONS.frame,
+            run: () => this.viewport.frameSelected(),
+          },
+          W: { label: "中心にピボット", sub: "Center Pivot", icon: ICONS.vObj, run: () => this.doCenterPivot() },
+          NW: {
+            label: "アトリビュートの転送…",
+            sub: "Transfer",
+            icon: ICONS.dup,
+            run: () => this.hud.toast("アトリビュートの転送は `24` の T6 で入ります"),
+          },
+        };
       },
     };
   }
@@ -3753,6 +3794,7 @@ export class App {
         this.state.selected,
         this.panelHost(),
         this.openedLayers,
+        this.state.also,
       );
     }
   }
@@ -4196,7 +4238,9 @@ export class App {
     this.hud.refreshStats();
     for (const g of this.gauges) g.paint();
     this.updateHistoryButtons();
-    // スライダーを触っている最中に描き直すと掴んでいる指が外れる
-    if (!this.paramSnapshot) this.renderPanels();
+    // スライダーを触っている最中に描き直すと掴んでいる指が外れる。
+    // 判定は「指が乗っているか」で見る（履歴の控えで見ると、離した合図を
+    // 取りこぼしたときにパネルが二度と描き直されなくなる）
+    if (!this.sliderDrag) this.renderPanels();
   }
 }
