@@ -449,9 +449,10 @@ const inSculpt = await page.evaluate(() => ({
 }));
 await page.evaluate(() => window.macbeth.setMode("model"));
 check(
-  "スカルプトは 3D が出て、段のボタンが並ぶ",
+  "スカルプトは 3D が出て、筆と段のボタンが並ぶ",
   !inSculpt.stub && !inSculpt.stage && inSculpt.label === "スカルプト" &&
-    inSculpt.groups[0] === "level" && inSculpt.groups.includes("display") &&
+    inSculpt.groups[0] === "brush" && inSculpt.groups[1] === "level" &&
+    inSculpt.groups.includes("display") &&
     inSculpt.groups.includes("camera") && inSculpt.groups.includes("layout"),
   `予定表 ${inSculpt.stub} / ツール ${inSculpt.groups.join(" · ")} / ゲージ「${inSculpt.gauge}」`,
 );
@@ -700,6 +701,36 @@ const strokeCheck = await page.evaluate(async () => {
   await new Promise((r) => setTimeout(r, 60));
 
   const shownAfter = ball.shown(app.state.shownLevel(ball)).positions;
+  // 対称: X の正負で同じだけ動いているか（`33` の T4）
+  const symOn = (() => {
+    const shown = ball.shown(app.state.shownLevel(ball));
+    let worst = 0;
+    let pairs = 0;
+    for (let v = 0; v < shown.vertexCount; v++) {
+      const x = shownBefore[v * 3];
+      if (x <= 0.02) continue;
+      const dy = shownAfter[v * 3 + 1] - shownBefore[v * 3 + 1];
+      if (Math.abs(dy) < 1e-6) continue;
+      // 鏡の位置にいちばん近い頂点を探す
+      let best = -1;
+      let bestD = Infinity;
+      for (let u = 0; u < shown.vertexCount; u++) {
+        const d =
+          (shownBefore[u * 3] + x) ** 2 +
+          (shownBefore[u * 3 + 1] - shownBefore[v * 3 + 1]) ** 2 +
+          (shownBefore[u * 3 + 2] - shownBefore[v * 3 + 2]) ** 2;
+        if (d < bestD) {
+          bestD = d;
+          best = u;
+        }
+      }
+      if (best < 0 || bestD > 1e-6) continue;
+      const mdy = shownAfter[best * 3 + 1] - shownBefore[best * 3 + 1];
+      worst = Math.max(worst, Math.abs(mdy - dy));
+      pairs++;
+    }
+    return { worst, pairs };
+  })();
   let movedCount = 0;
   let biggest = 0;
   for (let i = 0; i < shownBefore.length; i += 3) {
@@ -735,7 +766,7 @@ const strokeCheck = await page.evaluate(async () => {
   app.state.comp.clear();
   app.history.clear();
   app.refresh();
-  return { probe, level: ball.activeLevel, movedCount, biggest, level0Moved, entry, backOff, redoOff, hint: document.getElementById("hudHint").textContent };
+  return { symOn, probe, level: ball.activeLevel, movedCount, biggest, level0Moved, entry, backOff, redoOff, hint: document.getElementById("hudHint").textContent };
 });
 check(
   "ストロークで盛り上がり、レベル 0 は動かず、取り消すと戻る",
@@ -747,6 +778,13 @@ check(
   `${strokeCheck.movedCount} 頂点が動く（最大 ${strokeCheck.biggest.toFixed(4)}）/ レベル 0 は ${strokeCheck.level0Moved} 頂点 / ` +
     `取り消しで戻る ${strokeCheck.backOff < 1e-6} / やり直せる ${strokeCheck.redoOff < 1e-6} / ` +
     `段 ${strokeCheck.level} · 彫れる ${strokeCheck.probe.canSculpt} · 当たり ${strokeCheck.probe.hit ? "あり" : "なし"}`,
+);
+
+/* 17j2. X 対称で左右が同じだけ動く（`33` の T4） */
+check(
+  "X 対称で左右が同じだけ動く",
+  strokeCheck.symOn.pairs > 3 && strokeCheck.symOn.worst < 1e-5,
+  `${strokeCheck.symOn.pairs} 組で見て、左右の差は最大 ${strokeCheck.symOn.worst.toExponential(1)}`,
 );
 
 /* 17j. ストロークの履歴は差分で小さい（`33` の T3） */

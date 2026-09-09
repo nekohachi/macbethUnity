@@ -30,6 +30,13 @@ export interface StrokeInput {
   strength: number;
   /** Standard だけ効く（凹ませる）。 */
   invert: boolean;
+  /**
+   * X = 0 からこの距離より近い頂点を**触らない**（`33` の T4）。
+   *
+   * 対称で 2 回当てるとき、中心線の頂点は両方の呼び出しで拾われて 2 回動き、
+   * そこだけ深くなって筋が出る。鏡映側の呼び出しにこれを渡して逃がす。
+   */
+  excludeNearX?: number;
 }
 
 /** ブラシが当たった範囲。 */
@@ -181,17 +188,26 @@ export function applyStroke(mesh: Mesh, fp: Footprint, tri: Uint32Array, input: 
 
   const p = mesh.positions;
   const weights = new Float32Array(n);
+  const guard = input.excludeNearX ?? 0;
   for (let i = 0; i < n; i++) {
     const v = fp.verts[i];
+    // 中心線の頂点は 1 回目の呼び出しで動かしてある（`33` の T4）
+    if (guard > 0 && Math.abs(p[v * 3]) < guard) continue;
     const d = Math.hypot(p[v * 3] - input.point[0], p[v * 3 + 1] - input.point[1], p[v * 3 + 2] - input.point[2]);
     weights[i] = falloff(d / input.radius) * input.strength;
   }
 
   const moved: number[] = [];
   if (input.kind === "standard") {
-    // 法線方向へ。動く量は半径に比例させる（大きい筆は深く彫れる）
+    // 法線方向へ。動く量は半径に比例させる（大きい筆は深く彫れる）。
+    //
+    // **1 回ぶんは小さくする。** ストロークは半径の 1/4 ごとに当てるので、
+    // 1 回なぞるだけで同じ頂点に 8 回ほど乗る。指示書の 0.25 だと 1 回の
+    // ストロークで半径の 2 倍も盛れてしまい、形が破綻した（`33` の T3 の絵）。
+    // 0.08 だと 1 なぞりで半径の 3 割ほど（強度 1・筆圧 1 のとき）。
+    // ここは手触りの数字なので、実機で触ってから決め直してよい
     const normals = localNormals(mesh, fp, tri, index);
-    const amount = input.radius * 0.25 * (input.invert ? -1 : 1);
+    const amount = input.radius * 0.08 * (input.invert ? -1 : 1);
     for (let i = 0; i < n; i++) {
       const w = weights[i] * amount;
       if (w === 0) continue;

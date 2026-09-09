@@ -1001,6 +1001,46 @@ const scenes = {
     app.uv.view.frameUnit();
   },
 
+  /** `33` の T3: 球に何本か彫って、筆の円が出ているところ。 */
+  "33-t3-stroke": async () => {
+    const app = window.macbeth;
+    const core = window.macbethCore;
+    app.state.doc.objects.length = 0;
+    const ball = app.state.doc.addMesh(
+      core.PRIMITIVES.sphere.build({ ...core.defaultParams("sphere"), sdAxis: 28, sdHeight: 20 }),
+      "Head",
+    );
+    app.viewport.syncAll();
+    app.state.select(ball);
+    app.setMode("sculpt");
+    await app.levelForTest("add");
+    await app.levelForTest("add");
+    app.viewport.frameSelected();
+    app.setDisplay("shaded");
+    app.refresh();
+    await new Promise((r) => setTimeout(r, 200));
+
+    const pane = document.getElementById("pane3d").getBoundingClientRect();
+    const gl = document.getElementById("gl");
+    const cx = pane.left + pane.width / 2;
+    const cy = pane.top + pane.height / 2;
+    const ev = (type, x, y) =>
+      new PointerEvent(type, {
+        pointerId: 88, pointerType: "pen", bubbles: true, cancelable: true,
+        clientX: x, clientY: y, pressure: 0.9, buttons: type === "pointerup" ? 0 : 1,
+      });
+    // 3 本ほど彫る
+    for (const dy of [-40, 0, 40]) {
+      gl.dispatchEvent(ev("pointerdown", cx - 50, cy + dy));
+      for (let i = 1; i <= 12; i++) gl.dispatchEvent(ev("pointermove", cx - 50 + i * 8, cy + dy));
+      gl.dispatchEvent(ev("pointerup", cx + 46, cy + dy));
+      await new Promise((r) => setTimeout(r, 30));
+    }
+    // 筆の円を出しておく
+    gl.dispatchEvent(new PointerEvent("pointermove", { pointerId: 89, pointerType: "pen", bubbles: true, clientX: cx + 20, clientY: cy - 20 }));
+    await new Promise((r) => setTimeout(r, 120));
+  },
+
   /** `32` の T3: 段のボタンを長押しして、一覧（段ごとの面数と推定メモリ）を開いたところ。 */
   "32-t3-level": async () => {
     const app = window.macbeth;

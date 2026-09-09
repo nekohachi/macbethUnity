@@ -20,6 +20,8 @@ import {
   catmullClark,
   defaultParams,
   estimateLevelBytes,
+  applyStroke,
+  strokeFootprint,
   refitBvh,
   Multires,
   type Mesh,
@@ -27,6 +29,7 @@ import {
 import type { App } from "./app.js";
 import { el } from "./ui/dom.js";
 import { buildFromGeometry, loadWasm, subdivGeometry, type WasmModule } from "./wasm/index.js";
+import { fitBrushRadius, levelsOf } from "./levels.js";
 
 /** 1 行分の結果。 */
 interface Row {
@@ -351,6 +354,69 @@ export async function runBench(app: App, quick: boolean, size?: number): Promise
     value: gaps.length ? median(gaps) : 0,
     unit: "ms",
     note: "60fps なら 16.7ms で頭打ち",
+  });
+
+  /* B6 — ストロークの 1 コマ（`33` の T5）。**ここが 16ms に入るかで決まる** */
+  //
+  // いちばん上の段で彫るのと、1 つ下で彫るのを分ける。下で彫ると上の段へ
+  // 伝えるぶんだけ重くなるはずで、この 2 つは桁で違う見込み。
+  app.state.doc.objects.length = 0;
+  const sculpted = app.state.doc.addMesh(base.clone(), "bench-sculpt");
+  sculpted.multires = multi.deltas.map((d, i) => ({
+    level: i + 1,
+    delta: d ? d.slice() : new Float32Array(multi.level(i + 1).vertexCount * 3),
+  }));
+  sculpted.activeLevel = 2;
+  app.state.select(sculpted);
+  app.setMode("sculpt");
+  app.viewport.syncAll();
+  app.viewport.frameSelected();
+  app.refresh();
+  await breathe();
+
+  const stack = levelsOf(sculpted);
+  const brushRadius = fitBrushRadius(sculpted);
+  const strokeAt = (level: number): { ms: number; verts: number } => {
+    sculpted.activeLevel = level;
+    app.viewport.rebuildObject(sculpted);
+    const view = app.viewport.viewOf(sculpted)!;
+    const target = app.viewport.meshOf(sculpted);
+    // てっぺんのあたりを 1 回なでる
+    const point: [number, number, number] = [0, Math.max(...[...target.positions].filter((_, i) => i % 3 === 1)), 0];
+    let touched = 0;
+    const ms = timeIt(5, () => {
+      const fp = strokeFootprint(target, app.viewport.bvhOf(view), view.tri.tri, point, brushRadius);
+      const moved = applyStroke(target, fp, view.tri.tri, {
+        kind: "standard",
+        point,
+        radius: brushRadius,
+        strength: 0.5,
+        invert: false,
+      });
+      touched = moved.length;
+      stack.sculptAt(level, moved);
+      app.viewport.refreshMoved(sculpted, moved);
+    });
+    return { ms, verts: touched };
+  };
+
+  const topStroke = strokeAt(2);
+  await add({
+    key: "B6a",
+    label: `ストロークの 1 コマ・いちばん上の段（${faces(multi.level(2).faceCount)}）`,
+    value: topStroke.ms,
+    unit: "ms",
+    target: 16,
+    note: "",
+  });
+  const below = strokeAt(1);
+  await add({
+    key: "B6b",
+    label: "ストロークの 1 コマ・1 つ下の段（上へ伝える）",
+    value: below.ms,
+    unit: "ms",
+    target: 16,
+    note: `触った頂点 上 ${topStroke.verts} / 下 ${below.verts}`,
   });
 
   /* B5 — メモリ */

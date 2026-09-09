@@ -77,6 +77,7 @@ import {
 import {
   AppState,
   brushAt,
+  type BrushKind,
   type CompMode,
   type Display,
   type EditKind,
@@ -308,6 +309,13 @@ const LAYOUT_LABEL: Record<LayoutKind, string> = {
   cols: "2 画面（左右）",
   rows: "2 画面（上下）",
   quad: "4 画面",
+};
+
+/** ブラシのアイコン（`33` の T4）。 */
+const BRUSH_ICONS: Record<BrushKind, string> = {
+  standard: ICONS.smooth,
+  move: ICONS.move,
+  smooth: ICONS.shade,
 };
 
 const DISPLAY_ICONS: Record<Display, string> = {
@@ -3858,6 +3866,18 @@ export class App {
     const model = this.modelToolColumn();
     const shared = model.filter((e) => e.kind === "button" && ["display", "camera", "layout"].includes(e.id));
     return [
+      { kind: "label", text: "筆" },
+      {
+        kind: "button",
+        id: "brush",
+        icon: () => BRUSH_ICONS[this.state.brush.kind],
+        title: "ブラシ（長押しで スタンダード / ムーブ / スムース · 対称）",
+        pressed: () => this.state.brush.symmetryX,
+        badge: () => (this.state.brush.symmetryX ? "X" : ""),
+        radial: () => this.brushMenu(),
+        onTap: () => {},
+      },
+      { kind: "separator" },
       { kind: "label", text: "段" },
       {
         kind: "button",
@@ -3874,6 +3894,36 @@ export class App {
       { kind: "label", text: "シェード" },
       ...shared,
     ];
+  }
+
+  /** ブラシの長押しメニュー（`33` の T4）。種類と対称。 */
+  private brushMenu(): RadialMenu {
+    const pick = (kind: BrushKind, label: string, sub: string): RadialItem => ({
+      label,
+      sub,
+      icon: BRUSH_ICONS[kind],
+      run: () => {
+        this.state.brush.kind = kind;
+        this.renderToolColumn();
+        this.hud.toast(`${label}ブラシ`);
+      },
+    });
+    const sym = this.state.brush.symmetryX;
+    return {
+      N: pick("standard", "スタンダード", "Standard"),
+      E: pick("move", "ムーブ", "Move"),
+      W: pick("smooth", "スムース", "Smooth"),
+      S: {
+        label: sym ? "対称を切る" : "対称を入れる",
+        sub: "ローカル X",
+        icon: ICONS.sym,
+        run: () => {
+          this.state.brush.symmetryX = !sym;
+          this.renderToolColumn();
+          this.hud.toast(this.state.brush.symmetryX ? "X 対称 オン" : "X 対称 オフ");
+        },
+      },
+    };
   }
 
   /* ---- 段（サブディビジョンレベル）。`32` の T3 -------------------------- */

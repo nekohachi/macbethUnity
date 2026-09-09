@@ -154,6 +154,8 @@ export class StrokeDriver {
         ...input,
         point: [-point[0], point[1], point[2]],
         move: move ? [-move[0], move[1], move[2]] : undefined,
+        // 中心線の頂点は 1 回目で動かしてある。2 度動かすと筋が出る
+        excludeNearX: radius * 0.01,
       };
       any = this.hit(live, mirrored) || any;
     }

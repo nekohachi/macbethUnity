@@ -287,3 +287,44 @@ describe("段への取り込み（sculptAt）", () => {
     expect(multi.level(1).getPosition(2)[1]).toBeCloseTo(p[1] + 0.1, 5);
   });
 });
+
+describe("対称の中心線（`33` の T4）", () => {
+  it("excludeNearX を渡すと中心近くの頂点を触らない", () => {
+    const mesh = plane();
+    const before = mesh.positions.slice();
+    stroke(mesh, { ...base, kind: "standard", point: [0, 0, 0], excludeNearX: 0.05 });
+    let nearMoved = 0;
+    let farMoved = 0;
+    for (let v = 0; v < mesh.vertexCount; v++) {
+      const d = Math.hypot(
+        mesh.positions[v * 3] - before[v * 3],
+        mesh.positions[v * 3 + 1] - before[v * 3 + 1],
+        mesh.positions[v * 3 + 2] - before[v * 3 + 2],
+      );
+      if (d === 0) continue;
+      if (Math.abs(before[v * 3]) < 0.05) nearMoved++;
+      else farMoved++;
+    }
+    expect(nearMoved).toBe(0);
+    expect(farMoved).toBeGreaterThan(0);
+  });
+
+  it("鏡映して 2 回当てても、中心線が二重に動かない", () => {
+    // 1 回目（右）と 2 回目（左・中心線よけ）を当て、
+    // 中心線の頂点が「1 回ぶん」しか動いていないことを見る
+    const twice = plane();
+    const once = plane();
+    const at: [number, number, number] = [0.15, 0, 0];
+    stroke(twice, { ...base, kind: "standard", point: at });
+    stroke(twice, { ...base, kind: "standard", point: [-at[0], at[1], at[2]], excludeNearX: base.radius * 0.01 });
+    stroke(once, { ...base, kind: "standard", point: at });
+
+    // X = 0 の頂点は、1 回だけ当てたものと同じだけ動いている
+    for (let v = 0; v < once.vertexCount; v++) {
+      if (Math.abs(plane().positions[v * 3]) > 1e-6) continue;
+      const a = Math.abs(twice.positions[v * 3 + 1] - plane().positions[v * 3 + 1]);
+      const b = Math.abs(once.positions[v * 3 + 1] - plane().positions[v * 3 + 1]);
+      expect(a).toBeCloseTo(b, 6);
+    }
+  });
+});

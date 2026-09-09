@@ -841,8 +841,12 @@ export class Viewport {
     view.surface.material = mat;
     // 透けているときは「裏面 → 表面」の 2 回に分けて描く（`27` の T4）
     this.applyBackPass(view, mat, opacity < 1 && view.surface.visible && !this.state.cullBack);
-    view.wire.visible = d === "wire" || d === "shadedWire" || selected;
-    view.wire.material = !selected
+    // 選んでいるものはワイヤを出す（コンポーネントが見えるように）。ただし
+    // **スカルプトでは出さない**（`33` の T4）。段を上げると数万本になって
+    // 彫った面が見えなくなるし、そこで選ぶコンポーネントも無い
+    const wireForSelection = selected && this.state.mode !== "sculpt";
+    view.wire.visible = d === "wire" || d === "shadedWire" || wireForSelection;
+    view.wire.material = !wireForSelection
       ? MAT.wire
       : this.state.compMode === "object"
         ? MAT.wireSel
