@@ -212,8 +212,8 @@ export function applyStroke(mesh: Mesh, fp: Footprint, tri: Uint32Array, input: 
     // **1 打ちぶんの深さ**（ZBrush に合わせた。`33` の直し）。
     // 打つ間隔は半径の 1/4 なので、1 回なぞると同じ頂点に 8 打ちほど乗る。
     // 強さ 1 で 1 なぞり ≒ 半径の半分（0.0625 × 8 = 0.5）になる。
-    // 既定の強さは 0.25（ZBrush の Z Intensity 25）なので、
-    // ふつうに 1 回なぞると半径の 1 割強。重ねれば深くなる。
+    // 既定の強さは 0.67（実機で触って決めた。ZBrush の Z Intensity 67 相当）
+    // なので、ふつうに 1 回なぞると半径の 1/3 ほど。重ねれば深くなる。
     const normals = localNormals(mesh, fp, tri, index);
     const amount = input.radius * DAB_DEPTH * (input.invert ? -1 : 1);
     for (let i = 0; i < n; i++) {

@@ -265,9 +265,9 @@ export class AppState {
    */
   brush: BrushState = {
     kind: "standard",
-    // ZBrush の Z Intensity 25 に合わせる（0〜1 で 0.25）。
-    // 一撃で決めるのではなく、重ねて彫っていく強さ
-    strength: 0.25,
+    // **実機で触って決めた値**（2026-09-09）。ZBrush の Z Intensity で言えば
+    // 67 にあたる。0.25（ZBrush の既定）は控えめすぎるとのことだった
+    strength: 0.67,
     radius: 0.4,
     invert: false,
     pressureSize: true,

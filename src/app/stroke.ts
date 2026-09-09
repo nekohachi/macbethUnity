@@ -26,6 +26,8 @@ interface Live {
   touched: Set<number>;
   /** 何コマ当てたか。0 なら履歴に積まない。 */
   hits: number;
+  /** まだ段と描画に反映していない頂点。1 イベントぶんためて一度に流す。 */
+  pending: Set<number>;
   /**
    * 次の 1 打ちまでに、あとどれだけ進んだかの繰り越し（`33` の直し）。
    *
@@ -89,9 +91,10 @@ export class StrokeDriver {
     const o = this.state.selected!;
     const at = this.hitLocal(p);
     if (!at) return false;
-    this.live = { object: o, level: o.activeLevel, last: at, touched: new Set(), hits: 0, carry: 0 };
+    this.live = { object: o, level: o.activeLevel, last: at, touched: new Set(), pending: new Set(), hits: 0, carry: 0 };
     this.history.beginSculpt(o, o.activeLevel);
     this.stamp(at, pressure, null);
+    this.flush(this.live);
     return true;
   }
 
@@ -121,6 +124,7 @@ export class StrokeDriver {
 
     if (this.state.brush.kind === "move") {
       this.stamp(at, pressure, [dx, dy, dz]);
+      this.flush(live);
       live.last = at;
       return;
     }
@@ -136,6 +140,7 @@ export class StrokeDriver {
       this.stamp([live.last[0] + dx * t, live.last[1] + dy * t, live.last[2] + dz * t], pressure, null);
     }
     live.carry = dabs >= MAX_DABS ? 0 : total - dabs * spacing;
+    this.flush(live);
     live.last = at;
   }
 
@@ -144,6 +149,9 @@ export class StrokeDriver {
     const live = this.live;
     this.live = null;
     if (!live) return;
+    // ためたぶんを取りこぼさない（ふつうは `move` で流れているが、
+    // 押してすぐ離したときはここが最後の機会）
+    this.flush(live);
     if (!live.hits) {
       this.history.abortPending();
       return;
@@ -155,8 +163,12 @@ export class StrokeDriver {
 
   /** 途中でやめる（指が増えた、モードが変わった）。 */
   abort(): void {
-    if (!this.live) return;
+    const live = this.live;
+    if (!live) return;
     this.live = null;
+    // やめても座標は戻さない（前からそう）。**段のデルタだけ置いていくと
+    // 座標と食い違う**ので、ここでも流してからやめる
+    this.flush(live);
     this.history.abortPending();
   }
 
@@ -192,7 +204,14 @@ export class StrokeDriver {
     if (any) live.hits++;
   }
 
-  /** 1 回ぶん。触った頂点を控えてから動かす（控えは「動かす前」の値）。 */
+  /**
+   * 1 打ちぶん。触った頂点を控えてから動かす（控えは「動かす前」の値）。
+   *
+   * **座標を書き換えるだけ**にして、段への取り込みと描画は `flush` に回す。
+   * 1 回のイベントで何打ちも当たるので（半径の 1/4 ごと）、打つたびに
+   * デルタの取り直しと頂点バッファの書き換えをしていると、同じ頂点を
+   * 何度も往復することになる。
+   */
   private hit(live: Live, input: StrokeInput): boolean {
     const o = live.object;
     const view = this.viewport.viewOf(o);
@@ -202,18 +221,38 @@ export class StrokeDriver {
     const fp = strokeFootprint(mesh, bvh, view.tri.tri, input.point, input.radius);
     if (!fp.verts.length) return false;
 
-    const stack = levelsOf(o);
-    const delta = stack.deltas[live.level - 1];
+    const delta = levelsOf(o).deltas[live.level - 1];
     // 動かす前のデルタを控える。同じ頂点を何度なぞっても最初の値が残る
     if (delta) this.history.trackSculpt(fp.verts, delta);
 
     const moved = applyStroke(mesh, fp, view.tri.tri, input);
     if (!moved.length) return false;
-    stack.sculptAt(live.level, moved);
-    for (const v of moved) live.touched.add(v);
-    // 法線は据え置きで、動いた頂点だけ書き換える
-    this.viewport.refreshMoved(o, moved);
+    for (const v of moved) {
+      live.touched.add(v);
+      live.pending.add(v);
+    }
     return true;
+  }
+
+  /**
+   * ここまでに動かした頂点を、段と描画に 1 度だけ反映する。
+   *
+   * 打つたびにやらず、**1 イベントにまとめる**。太い筆ほど効く。
+   * 25 万四角形・既定の筆（半径 0.23）で 1 打ち 21.7ms のうち、
+   * ここが 9.9ms（デルタ 1.0 + 描画と木 8.9）。1 イベントで 3 打ち当たれば
+   * 65ms → 45ms になる。
+   *
+   * **代わりに、同じイベントの中では木（BVH）の箱が少し古い。**
+   * `refreshMoved` が箱を取り直すのを後ろに回すため。1 打ちで動く量は
+   * 半径の 1/16 なので葉の箱に対して十分小さく、拾い落としは出ない。
+   */
+  private flush(live: Live): void {
+    if (!live.pending.size) return;
+    const verts = Uint32Array.from(live.pending);
+    live.pending.clear();
+    levelsOf(live.object).sculptAt(live.level, verts);
+    // 法線は据え置きで、動いた頂点だけ書き換える
+    this.viewport.refreshMoved(live.object, verts);
   }
 }
 

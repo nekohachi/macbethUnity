@@ -119,13 +119,14 @@ export function asMb(bytes: number): string {
  * オブジェクトの大きさからブラシの半径を決める（`33` の T1）。
  *
  * 半径はワールド単位なので、小さい像と大きい像で同じ数字では使えない。
- * 対角の **3%** を初期値にする。**選び直したときだけ**呼ぶこと（ユーザーが
+ * 対角の **6.6%** を初期値にする。**選び直したときだけ**呼ぶこと（ユーザーが
  * ゲージで決めた値を毎回上書きしてはいけない）。
  *
- * 8% から下げた（`33` の直し）。ZBrush の Draw Size の既定に近いのと、
- * 1 コマで触る頂点が減って軽くなるため。8% だと 92 万四角形で 8 万頂点に
- * 触っていて、1 コマ 100ms を超えていた（実機のベンチ B6a）。
- * 面積は半径の 2 乗で効くので、3% にすると 7 分の 1 になる。
+ * **実機で触って決めた値**（2026-09-09）。既定の球（対角 3.46）で 0.23 になる。
+ * 8% → 3% と下げたが、3% は細すぎるとのことだったので間に戻した。
+ *
+ * **太さは 1 コマの重さに直結する**（触る頂点は半径の 2 乗で増える）。
+ * ここを変えたらベンチの B6 を測り直すこと。
  */
 export function fitBrushRadius(o: SceneObject): number {
   const p = o.mesh.positions;
@@ -145,5 +146,5 @@ export function fitBrushRadius(o: SceneObject): number {
     if (p[v + 2] > maxZ) maxZ = p[v + 2];
   }
   const diagonal = Math.hypot(maxX - minX, maxY - minY, maxZ - minZ);
-  return Math.max(0.01, Math.min(10, diagonal * 0.03));
+  return Math.max(0.01, Math.min(10, diagonal * 0.066));
 }
