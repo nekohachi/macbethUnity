@@ -424,6 +424,75 @@ const scenes = {
     await new Promise((r) => setTimeout(r, 200));
   },
 
+  /** `24` の T6: アトリビュートの転送（前）。左が元（分割 2）、右が先（分割 8）。 */
+  "24-t6-transfer-before": async () => {
+    const app = window.macbeth;
+    app.state.doc.objects.length = 0;
+    // 元は分割の粗い板、先は細かい板。UV の張り方だけを写す
+    const source = app.state.doc.addObject("plane");
+    source.params.sdW = 2;
+    source.params.sdH = 2;
+    source.rebuild();
+    source.transform.position = [-1.2, 0, 0];
+    const target = app.state.doc.addObject("plane");
+    target.params.sdW = 8;
+    target.params.sdH = 8;
+    target.rebuild();
+    target.transform.position = [1.2, 0, 0];
+    // 先の UV を横に潰しておく（転送前は模様が伸びて見える）
+    const tu = target.mesh.uvSets.get("map1");
+    for (let i = 0; i < tu.length; i += 2) tu[i] *= 0.25;
+    app.viewport.syncAll();
+    app.setDisplay("checker");
+    app.panelHostForTest().onCheckerChange("cellsPreview", 8);
+    app.panelHostForTest().onCheckerChange("cells", 0);
+    app.state.select(target);
+    app.state.also.add(source);
+    app.viewport.setView("top");
+    app.viewport.frameSelected();
+    app.viewport.cam.distance = 5;
+    app.viewport.applyCamera();
+    app.refresh();
+    
+    await new Promise((r) => setTimeout(r, 200));
+  },
+
+  /** `24` の T6: アトリビュートの転送（後）。左が元（分割 2）、右が先（分割 8）。 */
+  "24-t6-transfer-after": async () => {
+    const app = window.macbeth;
+    app.state.doc.objects.length = 0;
+    // 元は分割の粗い板、先は細かい板。UV の張り方だけを写す
+    const source = app.state.doc.addObject("plane");
+    source.params.sdW = 2;
+    source.params.sdH = 2;
+    source.rebuild();
+    source.transform.position = [-1.2, 0, 0];
+    const target = app.state.doc.addObject("plane");
+    target.params.sdW = 8;
+    target.params.sdH = 8;
+    target.rebuild();
+    target.transform.position = [1.2, 0, 0];
+    // 先の UV を横に潰しておく（転送前は模様が伸びて見える）
+    const tu = target.mesh.uvSets.get("map1");
+    for (let i = 0; i < tu.length; i += 2) tu[i] *= 0.25;
+    app.viewport.syncAll();
+    app.setDisplay("checker");
+    app.panelHostForTest().onCheckerChange("cellsPreview", 8);
+    app.panelHostForTest().onCheckerChange("cells", 0);
+    app.state.select(target);
+    app.state.also.add(source);
+    app.viewport.setView("top");
+    app.viewport.frameSelected();
+    app.viewport.cam.distance = 5;
+    app.viewport.applyCamera();
+    app.refresh();
+    const host = app.panelHostForTest();
+    // 2 つは離して置いてあるので、ローカル空間（それぞれの原点まわり）で写す
+    host.onTransfer("space", "local");
+    host.onTransfer("run");
+    await new Promise((r) => setTimeout(r, 200));
+  },
+
   /** `23` の T4: ブリッジの分割数 3。上下の縁の間に輪が 2 本入る。 */
   "23-t4-bridge": async () => {
     const app = window.macbeth;

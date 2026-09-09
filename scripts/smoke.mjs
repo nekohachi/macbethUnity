@@ -4411,6 +4411,67 @@ check(
     `最後に使ったもの ${uvColumn.lastUvCut} / 切って ${uvColumn.afterCut} 島 → タップで ${uvColumn.afterSew} 島`,
 );
 
+/* 43z-9. アトリビュートの転送（`24` の T6） */
+const transfer = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const objectsBefore = app.state.doc.objects.length;
+  app.state.doc.objects.length = 0;
+  const source = app.state.doc.addObject("cube");
+  const target = app.state.doc.addObject("cube");
+  target.transform.position = [2, 0, 0];
+  app.viewport.syncAll();
+  app.setCompMode("object");
+
+  // 元の UV を半分に縮める
+  const su = source.mesh.uvSets.get("map1");
+  for (let i = 0; i < su.length; i++) su[i] *= 0.5;
+  const tuBefore = Float32Array.from(target.mesh.uvSets.get("map1"));
+
+  // 元 → 先の順に選ぶ（最後に選んだものが先）
+  app.state.select(source);
+  app.state.addObject(target);
+  app.state.selected = target;
+  app.state.also.clear();
+  app.state.also.add(source);
+  app.refresh();
+
+  // アウトライナの長押しメニュー北西からカットインを開く
+  const menu = app.panelHostForTest().outlinerMenu(target);
+  menu.NW.run();
+  await new Promise((r) => setTimeout(r, 120));
+  const cutin = document.querySelector('.cutin[data-gauge="transfer"]');
+  const title = cutin?.querySelector(".attr-title")?.textContent ?? "";
+
+  // コンポーネントで実行
+  const host = app.panelHostForTest();
+  host.onTransfer("space", "component");
+  host.onTransfer("run");
+  await new Promise((r) => setTimeout(r, 120));
+  const tu = target.mesh.uvSets.get("map1");
+  let same = true;
+  for (let i = 0; i < su.length; i++) if (Math.abs(tu[i] - su[i]) > 1e-6) same = false;
+  const gotRecipe = !!target.uv;
+
+  app.doUndo();
+  await new Promise((r) => setTimeout(r, 120));
+  const undone = target.mesh.uvSets.get("map1");
+  let restored = true;
+  for (let i = 0; i < tuBefore.length; i++) if (Math.abs(undone[i] - tuBefore[i]) > 1e-6) restored = false;
+
+  document.body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, clientX: 2, clientY: 2 }));
+  app.state.select(null);
+  app.state.doc.objects.length = 0;
+  app.viewport.syncAll();
+  app.refresh();
+  void objectsBefore;
+  return { title, same, gotRecipe, restored };
+});
+check(
+  "アトリビュートの転送",
+  transfer.title.includes("→") && transfer.same && transfer.gotRecipe && transfer.restored,
+  `「${transfer.title}」/ UV が一致 ${transfer.same}（レシピ ${transfer.gotRecipe}）/ 取り消しで戻る ${transfer.restored}`,
+);
+
 /* 44. ツール列のグループ（`21` の 4 章） */
 
 /* 44-1. ボタンは 7 つ、右のオプションパネルは無い */

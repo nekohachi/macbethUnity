@@ -47,6 +47,8 @@ export interface PanelHost {
   onCheckerChange(key: "cells" | "cellsPreview" | "pattern", value: number | string): void;
   /** 3D の表示（`23` の T6）。裏面を描かない / グリッド。 */
   onDisplayToggle(key: "cullBack" | "showGrid", on: boolean): void;
+  /** アトリビュートの転送（`24` の T6）。 */
+  onTransfer(key: "positions" | "uvs" | "space" | "swap" | "run", value?: boolean | string): void;
   /** 回転の刻み（度。0 でなし）。 */
   onRotateStepChange(deg: number): void;
   onPreventNegativeScaleChange(on: boolean): void;
@@ -212,6 +214,8 @@ export interface OptionsState {
   /** 裏面を描かない / 床のグリッド（`23` の T6）。 */
   cullBack: boolean;
   showGrid: boolean;
+  /** アトリビュートの転送（`24` の T6）。source / target は名前（決まらなければ null）。 */
+  transfer: { positions: boolean; uvs: boolean; space: string; source: string | null; target: string | null };
   cam: { focal: number; near: number; far: number; ortho: boolean };
   /** 次に追加するプリミティブの種類と、その既定値（`21` の 2.7）。 */
   nextPrimitive: string;
@@ -809,6 +813,59 @@ export function displaySections(state: OptionsState, host: PanelHost): HTMLEleme
   const out = [displaySection(state, host)];
   if (state.display === "checker") out.push(checkerSection(state, host));
   return out;
+}
+
+/**
+ * アトリビュートの転送（`24` の T6）。元 → 先と、何を写すか。
+ * 元は「SHF で足したもの」、先は「最後に選んだもの」（Maya と同じ順）。
+ */
+export function transferSection(state: OptionsState, host: PanelHost): HTMLElement {
+  const s = section("アトリビュートの転送", "TRANSFER");
+  const t = state.transfer;
+  const head = el("div", "row");
+  if (t.source && t.target) {
+    head.appendChild(el("div", "attr-title", `${t.source} → ${t.target}`));
+    const swap = el("button", "act", "⇄");
+    swap.title = "元と先を入れ替える";
+    swap.addEventListener("click", () => host.onTransfer("swap"));
+    head.appendChild(swap);
+  } else {
+    head.appendChild(el("div", "hint", "元を 1 つ選んでください（SHF + タップで足す）"));
+  }
+  s.appendChild(head);
+
+  checkbox(s, "位置", t.positions, (v) => host.onTransfer("positions", v));
+  checkbox(s, "UV", t.uvs, (v) => host.onTransfer("uvs", v));
+
+  const row = el("div", "row");
+  row.appendChild(el("label", undefined, "空間"));
+  const group = el("div", "segmented");
+  for (const [key, label] of [
+    ["component", "コンポーネント"],
+    ["world", "ワールド"],
+    ["local", "ローカル"],
+  ] as const) {
+    const b = el("button", "seg") as HTMLButtonElement;
+    b.textContent = label;
+    b.setAttribute("aria-pressed", String(t.space === key));
+    b.addEventListener("click", () => host.onTransfer("space", key));
+    group.appendChild(b);
+  }
+  row.appendChild(group);
+  s.appendChild(row);
+
+  const run = el("button", "act", "転送する") as HTMLButtonElement;
+  run.disabled = !t.source || !t.target;
+  run.addEventListener("click", () => host.onTransfer("run"));
+  s.appendChild(run);
+  s.appendChild(
+    el(
+      "div",
+      "hint",
+      "コンポーネントは番号でそのまま写します（分割が同じときだけ）。\nワールドは、先の頂点ごとに元の面のいちばん近い点から取ります。",
+    ),
+  );
+  return s;
 }
 
 /** カメラ。`openCameraPopup` の中身をここへ移した。 */

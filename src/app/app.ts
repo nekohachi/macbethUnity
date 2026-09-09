@@ -15,6 +15,9 @@ import {
   combineMeshes,
   rebuildRecipeFor,
   recipeFromMesh,
+  transferAttributes,
+  transformPoint,
+  type SampleSpace,
   recompute,
   type CameraBookmark,
   connectEdges,
@@ -112,6 +115,7 @@ import {
   selectSection,
   snapSection,
   softSelectSection,
+  transferSection,
   transformSection,
   uvSnapSection,
   uvUnfoldSection,
@@ -2859,6 +2863,106 @@ export class App {
     );
   }
 
+  /* ---- アトリビュートの転送（`24` の T6） ------------------------------ */
+
+  /**
+   * 転送の元。SHF で足したものが 1 つだけのときに決まる。
+   * 先は `state.selected`（最後に選んだもの）。Maya と同じ「先に元、最後に先」。
+   */
+  private transferSource(): SceneObject | null {
+    if (!this.state.selected || this.state.also.size !== 1) return null;
+    const source = [...this.state.also][0];
+    return source === this.state.selected ? null : source;
+  }
+
+  /** 転送のカットインを開く（アウトライナの長押しメニューから）。 */
+  private openTransferOptions(): void {
+    const anchor = this.toolPanelBody?.querySelector<HTMLElement>('[data-group="select"]');
+    if (!anchor) return;
+    this.openToolOptions(anchor, "transfer", () => [transferSection(this.optionsState(), this.panelHost())]);
+  }
+
+  /** 元 → 先を入れ替える。 */
+  private swapTransfer(): void {
+    const source = this.transferSource();
+    const target = this.state.selected;
+    if (!source || !target) return;
+    this.state.select(source);
+    this.state.also.add(target);
+    this.viewport.applyDisplayAll();
+    this.refresh();
+  }
+
+  /** 実行。位置と UV を写して履歴に積む。 */
+  private runTransfer(): void {
+    const source = this.transferSource();
+    const target = this.state.selected;
+    if (!source || !target) {
+      this.hud.toast("元を 1 つ選んでください（SHF + タップで足す）");
+      return;
+    }
+    const opts = this.state.transfer;
+    if (!opts.positions && !opts.uvs) {
+      this.hud.toast("位置か UV のどちらかを選んでください");
+      return;
+    }
+    // 上位レベルやスカルプトレイヤーは対応関係が壊れるので、先に捨ててもらう
+    if (target.multires.length || target.sculptLayers.length) {
+      this.hud.toast("先のマルチレゾを捨ててから実行してください");
+      return;
+    }
+    const r = transferAttributes(
+      { mesh: source.mesh, transform: source.transform },
+      { mesh: target.mesh, transform: target.transform },
+      opts,
+    );
+    if (!r) {
+      this.hud.toast("トポロジが違います（コンポーネントは分割が同じときだけ）");
+      return;
+    }
+    const snapshot = this.history.snapshot();
+    if (r.positions) target.mesh.positions.set(r.positions);
+    if (r.uv) {
+      target.mesh.uvSets.set(UV_SET, r.uv);
+      // 切れ目は写した UV から取り直す（元のレシピは先のトポロジに合わない）
+      target.uv = recipeFromMesh(target.mesh);
+      target.uvHeat = null;
+    }
+    this.history.commit("アトリビュートの転送", snapshot);
+    this.viewport.rebuildObject(target);
+    this.viewport.rebuildOverlay();
+    this.uv?.rebuild();
+    this.refresh();
+    // 離れて置いてあるものをワールドで写すと、いちばん近い点が全部「縁」になる。
+    // 気づきにくいので、重なっていないときだけ言い添える
+    const apart = opts.space === "world" && !this.overlapsInWorld(source, target);
+    this.hud.toast(
+      `転送 — 頂点 ${target.mesh.vertexCount} / 一致 ${r.matched}` +
+        (apart ? "（2 つが重なっていません。ローカルのほうが合うかもしれません）" : ""),
+    );
+  }
+
+  /** 2 つのワールドの箱が重なっているか。転送の言い添えに使う。 */
+  private overlapsInWorld(a: SceneObject, b: SceneObject): boolean {
+    const box = (o: SceneObject): [number[], number[]] => {
+      const lo = [Infinity, Infinity, Infinity];
+      const hi = [-Infinity, -Infinity, -Infinity];
+      for (let v = 0; v < o.mesh.vertexCount; v++) {
+        const p = o.mesh.getPosition(v);
+        const w = transformPoint(o.transform, p[0], p[1], p[2]);
+        for (let k = 0; k < 3; k++) {
+          if (w[k] < lo[k]) lo[k] = w[k];
+          if (w[k] > hi[k]) hi[k] = w[k];
+        }
+      }
+      return [lo, hi];
+    };
+    const [alo, ahi] = box(a);
+    const [blo, bhi] = box(b);
+    for (let k = 0; k < 3; k++) if (ahi[k] < blo[k] || bhi[k] < alo[k]) return false;
+    return true;
+  }
+
   /** 選んだ頂点どうしを結んで面を分ける。 */
   private doConnectVertices(): void {
     const o = this.requireComponents("vertex", 2);
@@ -3478,6 +3582,11 @@ export class App {
       display: this.state.display,
       cullBack: this.state.cullBack,
       showGrid: this.state.showGrid,
+      transfer: {
+        ...this.state.transfer,
+        source: this.transferSource()?.name ?? null,
+        target: this.transferSource() ? (this.state.selected?.name ?? null) : null,
+      },
       cam: this.state.camOpts,
       nextPrimitive: kind,
       nextPrimitiveParams: this.state.primitiveDefaults[kind] ?? defaultParams(kind),
@@ -3716,6 +3825,15 @@ export class App {
       },
       onUvHeatChange: (on) => this.toggleUvHeat(on),
       onCheckerChange: (key, value) => this.setChecker(key, value),
+      onTransfer: (key, value) => {
+        if (key === "run") this.runTransfer();
+        else if (key === "swap") this.swapTransfer();
+        else if (key === "space") this.state.transfer.space = value as SampleSpace;
+        else this.state.transfer[key] = !!value;
+        this.remember("transfer", JSON.stringify(this.state.transfer));
+        // 実行と入れ替えのあとも、カットインを今の状態で開き直す
+        if (this.popup?.dataset.gauge === "transfer") this.openTransferOptions();
+      },
       onDisplayToggle: (key, on) => {
         if (key === "cullBack") {
           this.state.cullBack = on;
@@ -3855,8 +3973,8 @@ export class App {
           NW: {
             label: "アトリビュートの転送…",
             sub: "Transfer",
-            icon: ICONS.dup,
-            run: () => this.hud.toast("アトリビュートの転送は `24` の T6 で入ります"),
+            icon: ICONS.options,
+            run: () => this.openTransferOptions(),
           },
         };
       },
@@ -3917,6 +4035,12 @@ export class App {
     try {
       const ui = JSON.parse(read("ui") ?? "null") as Partial<AppState["ui"]> | null;
       if (ui) this.state.ui = { ...this.state.ui, ...ui };
+    } catch {
+      /* 保存が壊れていても既定で始める */
+    }
+    try {
+      const tr = JSON.parse(read("transfer") ?? "null") as Partial<AppState["transfer"]> | null;
+      if (tr) this.state.transfer = { ...this.state.transfer, ...tr };
     } catch {
       /* 保存が壊れていても既定で始める */
     }

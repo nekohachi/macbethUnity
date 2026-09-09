@@ -4,7 +4,7 @@
  * core は状態を持たない純粋な関数とデータ構造なので、どのオブジェクトが
  * 選ばれていて、どのモードで、どのツールなのかは全部ここに集める。
  */
-import { Document, type CameraBookmark, type SceneObject } from "../core/index.js";
+import { Document, type CameraBookmark, type SampleSpace, type SceneObject } from "../core/index.js";
 import type { CheckerPattern } from "./render/checker.js";
 
 export type Mode = "model" | "uv" | "sculpt" | "material";
@@ -228,6 +228,15 @@ export class AppState {
    * `localStorage` に残す。
    */
   checker: { cells: number; pattern: CheckerPattern } = { cells: 8, pattern: "checker" };
+  /**
+   * アトリビュートの転送（`24` の T6）。何を写すかと、どの空間で対応を取るか。
+   * `localStorage` に残す。
+   */
+  transfer: { positions: boolean; uvs: boolean; space: SampleSpace } = {
+    positions: false,
+    uvs: true,
+    space: "world",
+  };
   /**
    * 画面まわりの好み（`24` の T4）。上段の「表示」から触る。
    * `localStorage` に残す。
