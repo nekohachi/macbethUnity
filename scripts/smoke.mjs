@@ -6051,7 +6051,13 @@ check(
       value: r.querySelector("b")?.textContent ?? "",
     }));
     const json = JSON.parse(window.macbethBench());
-    return { rows, head: document.querySelector(".bench-head b")?.textContent ?? "", keys: json.rows.map((r) => r.key), agent: !!json.agent };
+    return {
+      rows,
+      head: document.querySelector(".bench-head b")?.textContent ?? "",
+      keys: json.rows.map((r) => r.key),
+      agent: !!json.agent,
+      wasm: window.macbethWasm ? { add: window.macbethWasm.add(2, 3), bytes: window.macbethWasm.bytes } : null,
+    };
   });
   await bench.close();
   check(
@@ -6063,6 +6069,20 @@ check(
       table.keys.includes("B4") &&
       table.agent,
     `${table.rows.length} 行 / ${table.rows.map((r) => `${r.label.split("（")[0]} ${r.value}`).join(" · ")}`,
+  );
+
+  /* 43z-29. wasm が読めて呼べる（`30` の T2） */
+  check(
+    "wasm が読めて呼べる",
+    !!table.wasm && table.wasm.add === 5 && table.wasm.bytes > 1000,
+    table.wasm ? `add(2,3) = ${table.wasm.add} / ${table.wasm.bytes} バイト` : "読めなかった",
+  );
+
+  /* 43z-30. 細分割の wasm が JS と並んで出る（`30` の T3） */
+  check(
+    "ベンチに細分割の JS と wasm が並ぶ",
+    table.keys.includes("B1b") && table.keys.includes("B1b-wasm"),
+    table.keys.filter((k) => k.startsWith("B1")).join(" / "),
   );
 }
 

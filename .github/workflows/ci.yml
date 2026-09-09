@@ -33,3 +33,44 @@ jobs:
           name: smoke-screenshot
           path: smoke.png
           if-no-files-found: ignore
+
+  # wasm を組み直して、コミットしてあるものと食い違ったら書き戻す（`30` の T2）。
+  # 生成物（src/wasm/）はリポジトリに入れてある。手元に clang が無くても
+  # テストと通し確認が通るようにするため。
+  wasm:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref || github.ref_name }}
+      - name: clang と wasm-ld を入れる
+        run: sudo apt-get update && sudo apt-get install -y clang lld
+      - name: 組む
+        run: ./native/build.sh
+      - name: 食い違いを見る
+        id: diff
+        run: |
+          if git diff --quiet -- src/wasm; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "コミットしてあるものと同じでした"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            git diff --stat -- src/wasm
+          fi
+      # 同じリポジトリへの push のときだけ書き戻す。fork からの PR では
+      # 書き込めないので、そのときは失敗させて手元で組み直してもらう
+      - name: 書き戻す
+        if: steps.diff.outputs.changed == 'true' && github.event_name == 'push'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/wasm
+          git commit -m "wasm を組み直す（CI）"
+          git push origin HEAD:"${{ github.ref_name }}"
+      - name: 手元で組み直してもらう
+        if: steps.diff.outputs.changed == 'true' && github.event_name != 'push'
+        run: |
+          echo "src/wasm/ がコミットしてあるものと違います。native/build.sh を走らせて入れ直してください" >&2
+          exit 1

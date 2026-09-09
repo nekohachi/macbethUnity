@@ -14,6 +14,7 @@
 import { PRIMITIVES, buildBvh, catmullClark, defaultParams, refitBvh, Multires, type Mesh } from "../core/index.js";
 import type { App } from "./app.js";
 import { el } from "./ui/dom.js";
+import { buildFromGeometry, loadWasm, subdivGeometry, type WasmModule } from "./wasm/index.js";
 
 /** 1 行分の結果。 */
 interface Row {
@@ -104,25 +105,77 @@ export async function runBench(app: App, quick: boolean): Promise<void> {
     note: `頂点 ${heavy.vertexCount}`,
   });
 
-  /* B1 — Catmull-Clark 1 レベル */
+  /* B1 — Catmull-Clark 1 レベル。JS と wasm を並べる（`30` の T3） */
+  const wasm: WasmModule | null = await loadWasm();
+  // 通し確認から「読めて呼べる」を見るため（`30` の T2）
+  Object.assign(window, {
+    macbethWasm: wasm ? { add: (a: number, b: number) => wasm.exports.mb_add(a, b), bytes: wasm.byteLength } : null,
+  });
   const midMesh = sphere(mid.axis, mid.height);
+  const midFaces = (midMesh.faceCount / 10000).toFixed(0);
+  const bigFaces = (quads / 10000).toFixed(0);
+
   const b1mid = timeIt(3, () => void catmullClark(midMesh));
   await add({
     key: "B1a",
-    label: `細分割 1 レベル（${(midMesh.faceCount / 10000).toFixed(0)} 万四角形）`,
+    label: `細分割 1 レベル JS（${midFaces} 万四角形）`,
     value: b1mid,
     unit: "ms",
     note: "レベルを 1 つ上げる待ち時間",
   });
+  if (wasm) {
+    const w = timeIt(3, () => void buildFromGeometry(midMesh, subdivGeometry(wasm, midMesh)!));
+    await add({
+      key: "B1a-wasm",
+      label: `細分割 1 レベル wasm（${midFaces} 万四角形）`,
+      value: w,
+      unit: "ms",
+      note: `JS の ${(b1mid / Math.max(w, 0.001)).toFixed(1)} 倍`,
+    });
+  }
+
   const b1big = timeIt(1, () => void catmullClark(heavy));
   await add({
     key: "B1b",
-    label: `細分割 1 レベル（${(quads / 10000).toFixed(0)} 万四角形）`,
+    label: `細分割 1 レベル JS（${bigFaces} 万四角形）`,
     value: b1big,
     unit: "ms",
     target: 1500,
     note: "",
   });
+  if (wasm) {
+    // 形だけと、メッシュに組むところを分けて出す。組む側は JS のままなので、
+    // ここが大きければ次は MeshBuilder を出す番になる
+    let g = subdivGeometry(wasm, heavy)!;
+    const wGeom = timeIt(1, () => {
+      g = subdivGeometry(wasm, heavy)!;
+    });
+    const wBuild = timeIt(1, () => void buildFromGeometry(heavy, g));
+    await add({
+      key: "B1b-wasm",
+      label: `細分割 1 レベル wasm（${bigFaces} 万四角形）`,
+      value: wGeom + wBuild,
+      unit: "ms",
+      target: 1500,
+      note: "",
+    });
+    await add({
+      key: "B1b-wasm-geom",
+      label: "　うち wasm の計算",
+      value: wGeom,
+      unit: "ms",
+      note: `JS 全体の ${(b1big / Math.max(wGeom + wBuild, 0.001)).toFixed(1)} 倍`,
+    });
+    await add({
+      key: "B1b-wasm-build",
+      label: "　うち JS でメッシュに組む",
+      value: wBuild,
+      unit: "ms",
+      note: `wasm が使ったヒープ ${(wasm.used() / 1048576).toFixed(0)} MB`,
+    });
+  } else {
+    await add({ key: "B1b-wasm", label: "細分割 1 レベル wasm", value: 0, unit: "ms", note: "wasm が読めない" });
+  }
 
   /* B2 — 接空間デルタの取り直し（動いた頂点のぶんだけ） */
   const base = sphere(baseSize.axis, baseSize.height);
