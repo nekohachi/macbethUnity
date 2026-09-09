@@ -31,6 +31,8 @@ interface SceneObjectJson {
   transform: ReturnType<typeof identityTransform>;
   visible: boolean;
   locked?: boolean;
+  /** 不透明度（`25` の T4）。無ければ 1。 */
+  opacity?: number;
   activeLevel: number;
   exportedTopologyHash: string | null;
   multires: Array<{ level: number; count: number }>;
@@ -86,6 +88,7 @@ export function packMbz(doc: Document, options: PackOptions = {}): Uint8Array {
         transform: o.transform,
         visible: o.visible,
         locked: o.locked,
+        opacity: o.opacity,
         activeLevel: o.activeLevel,
         exportedTopologyHash: o.exportedTopologyHash,
         multires: o.multires.map((m) => ({ level: m.level, count: m.delta.length })),
@@ -176,6 +179,7 @@ export function unpackMbz(bytes: Uint8Array): UnpackResult {
     o.transform = j.transform ?? identityTransform();
     o.visible = j.visible ?? true;
     o.locked = j.locked ?? false;
+    o.opacity = typeof j.opacity === "number" ? Math.max(0, Math.min(1, j.opacity)) : 1;
     o.activeLevel = j.activeLevel ?? 0;
     o.exportedTopologyHash = j.exportedTopologyHash ?? null;
 

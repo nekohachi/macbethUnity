@@ -111,6 +111,7 @@ import {
   panelShell,
   primitiveSection,
   renderLayers,
+  attributeSection,
   renameInOutliner,
   selectSection,
   snapSection,
@@ -345,7 +346,7 @@ export class App {
   private zones: Record<string, Zone> = { tools: "left" };
   private toolPanelBody: HTMLElement | null = null;
   private outlinerBody: HTMLElement | null = null;
-  /** アウトライナで開いている行。 */
+  /** アトリビュート欄で開いている区画（`25` の T3）。 */
   private openedLayers = new Set<string>();
   /** サムネイルの控え。開いたときに作って、形が変わるまで使い回す。 */
   private thumbs = new Map<string, { url: string; stamp: string }>();
@@ -356,6 +357,8 @@ export class App {
   private paramSnapshot: ReturnType<History["snapshot"]> | null = null;
   /** スライダーを指で掴んでいる最中か。掴んでいる間はパネルを描き直さない。 */
   private sliderDrag = false;
+  /** 不透明度を引いている間の控え（`25` の T4）。離したときに履歴へ積む。 */
+  private opacitySnapshot: ReturnType<History["snapshot"]> | null = null;
   /** 「拡張」ゲージを引き始めたときの選択（`24` の T3）。 */
   private growBase: number[] | null = null;
   private drag: DragState | null = null;
@@ -3638,6 +3641,7 @@ export class App {
       selected: this.state.selected,
       soft: this.state.soft,
       canGrow: this.state.compMode !== "object" && this.state.comp.size > 0,
+      alsoCount: this.state.also.size,
       cut: this.state.cut,
       bevel: this.state.bevel,
       bevelActive: this.bevel.active,
@@ -3996,6 +4000,22 @@ export class App {
       },
       frameHeld: () => this.fHeld,
       shiftHeld: (e) => this.state.modOn("shift") || e.shiftKey,
+      onRenamePrompt: (o) => {
+        if (this.outlinerBody) renameInOutliner(this.outlinerBody, o, this.panelHost());
+      },
+      onAttrFold: () => this.remember("attrFold", [...this.openedLayers].join(",")),
+      onOpacityInput: (o, value) => {
+        this.opacitySnapshot ??= this.history.snapshot();
+        o.opacity = Math.max(0, Math.min(1, value));
+        this.viewport.applyDisplayAll();
+      },
+      onOpacityCommit: (o) => {
+        if (!this.opacitySnapshot) return;
+        this.history.commit("不透明度", this.opacitySnapshot);
+        this.opacitySnapshot = null;
+        this.renderPanels();
+        void o;
+      },
       onRename: (o, name) => {
         this.history.push("名前変更");
         o.name = name;
@@ -4069,16 +4089,15 @@ export class App {
   }
 
   private renderPanels(): void {
-    if (this.outlinerBody) {
-      renderLayers(
-        this.outlinerBody,
-        this.state.doc.objects,
-        this.state.selected,
-        this.panelHost(),
-        this.openedLayers,
-        this.state.also,
-      );
-    }
+    const body = this.outlinerBody;
+    if (!body) return;
+    const host = this.panelHost();
+    body.textContent = "";
+    // 選んでいるものの値を、いつも同じ場所に（`25` の T3）
+    body.appendChild(attributeSection(this.optionsState(), host, this.openedLayers));
+    const list = el("div", "lylist");
+    body.appendChild(list);
+    renderLayers(list, this.state.doc.objects, this.state.selected, host, this.state.also);
   }
 
   /** 開いているカットインを、中身を作り直して開き直す（トグルを押したときなど）。 */
@@ -4131,6 +4150,7 @@ export class App {
     } catch {
       /* 保存が壊れていても既定で始める */
     }
+    for (const key of (read("attrFold") ?? "").split(",")) if (key) this.openedLayers.add(key);
     this.state.cullBack = read("cullBack") === "true";
     this.state.showGrid = read("showGrid") !== "false";
     const segs = Number(read("bridgeSegments"));

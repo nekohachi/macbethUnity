@@ -541,6 +541,25 @@ const scenes = {
     await new Promise((r2) => setTimeout(r2, 150));
   },
 
+  /** `25` の T3: アトリビュート欄がアウトライナの上に出る。 */
+  "25-t3-attrs": async () => {
+    const app = window.macbeth;
+    app.state.doc.objects.length = 0;
+    for (const kind of ["cube", "sphere", "cylinder"]) app.state.doc.addObject(kind);
+    app.state.doc.objects[0].transform.position = [-1.7, 0, 0];
+    app.state.doc.objects[2].transform.position = [1.7, 0, 0];
+    app.viewport.syncAll();
+    app.setCompMode("object");
+    app.state.select(app.state.doc.objects[1]);
+    app.state.doc.objects[1].transform.position = [0, 0.4, 0];
+    app.viewport.frameSelected();
+    app.viewport.cam.distance = 7;
+    app.viewport.applyCamera();
+    app.refresh();
+    document.getElementById("btnPanels").click();
+    await new Promise((r) => setTimeout(r, 300));
+  },
+
   /** `23` の T4: ブリッジの分割数 3。上下の縁の間に輪が 2 本入る。 */
   "23-t4-bridge": async () => {
     const app = window.macbeth;

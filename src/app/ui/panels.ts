@@ -64,6 +64,13 @@ export interface PanelHost {
   /** 行をタップ。`additive` は SHF（3D の Shift + クリックと同じ）。 */
   onSelect(object: SceneObject, additive?: boolean): void;
   onRename(object: SceneObject, name: string): void;
+  /** アトリビュート欄の見出しをダブルタップ。行の入力を開く（`25` の T3）。 */
+  onRenamePrompt(object: SceneObject): void;
+  /** 折りたたみの開閉が変わった。覚えておく（`25` の T3）。 */
+  onAttrFold(): void;
+  /** 不透明度（`25` の T4）。引いている間と、離したとき。 */
+  onOpacityInput(object: SceneObject, value: number): void;
+  onOpacityCommit(object: SceneObject): void;
   /** 行の長押しで出すサークルメニューの中身（`24` の T2）。 */
   outlinerMenu(object: SceneObject): RadialMenu;
   /** F を押しながらなぞったときの範囲選択。id の並びで、最後の 1 つが `selected` になる。 */
@@ -181,6 +188,8 @@ export interface OptionsState {
   soft: { strength: number; radius: number };
   /** 拡張が効く状態か（コンポーネントを選んでいる）。 */
   canGrow: boolean;
+  /** SHF で足した数（アトリビュート欄の見出しに出す）。 */
+  alsoCount: number;
   cut: { snapStep: number; edgeFlow: boolean };
   bevel: { width: number; segments: number };
   /** ベベルを確定した直後か。作り直せる間だけ出す。 */
@@ -1007,12 +1016,102 @@ export function uvSnapSection(uv: NonNullable<OptionsState["uv"]>, state: Option
 }
 
 /** アウトライナを描き直す。 */
+/**
+ * アウトライナの上に出す「今の選択の値」（`25` の T3。Maya のチャンネルボックス）。
+ *
+ * 行の「>」で開く形をやめて、**いつも同じ場所に、選んでいるものの値**を出す。
+ * 折りたたみの開閉は `opened` に覚える（呼び出し側が `localStorage` に残す）。
+ */
+export function attributeSection(state: OptionsState, host: PanelHost, opened: Set<string>): HTMLElement {
+  const wrap = el("div", "attrs");
+  const o = state.selected;
+  if (!o) {
+    wrap.appendChild(el("div", "empty", "オブジェクトを選ぶと、\nここに値が出ます"));
+    return wrap;
+  }
+
+  const head = el("div", "attr-head");
+  const name = el("div", "attr-title", o.name);
+  if (state.alsoCount) name.appendChild(el("span", undefined, `+${state.alsoCount}`));
+  head.appendChild(name);
+  head.addEventListener("dblclick", () => host.onRenamePrompt(o));
+  wrap.appendChild(head);
+
+  /** 折りたためる区画。開閉は名前で覚える。 */
+  const fold = (key: string, title: string, badge: string, openByDefault: boolean): HTMLElement => {
+    const f = foldedSection(title, badge);
+    const details = f.wrap.querySelector("details") as HTMLDetailsElement;
+    details.open = opened.has(key) || (openByDefault && !opened.has(`!${key}`));
+    details.addEventListener("toggle", () => {
+      opened.delete(key);
+      opened.delete(`!${key}`);
+      opened.add(details.open ? key : `!${key}`);
+      host.onAttrFold();
+    });
+    wrap.appendChild(f.wrap);
+    return f.body;
+  };
+
+  // トランスフォーム（移動 / 回転 / スケール）
+  const t = fold("xform", "トランスフォーム", "TRANSFORM", true);
+  const ts = section("", "");
+  ts.firstElementChild?.remove();
+  tripleRow(ts, "移動", o.transform.position as [number, number, number], 3, (axis, v) =>
+    host.onTransformInput(o, "position", axis, v),
+  );
+  tripleRow(ts, "回転", state.rotationEuler, 1, (axis, v) => host.onTransformInput(o, "rotation", axis, v));
+  tripleRow(ts, "スケール", o.transform.scale as [number, number, number], 3, (axis, v) =>
+    host.onTransformInput(o, "scale", axis, v),
+  );
+  t.appendChild(ts);
+
+  // 表示（不透明度・表示・ロック）
+  const d = fold("show", "表示", "DISPLAY", true);
+  const ds = el("div", "sect");
+  paramRow(ds, {
+    label: "不透明度",
+    value: o.opacity,
+    min: 0,
+    max: 1,
+    step: 0.01,
+    onInput: (v) => host.onOpacityInput(o, v),
+    onCommit: () => host.onOpacityCommit(o),
+  });
+  checkbox(ds, "表示", o.visible, (v) => host.onVisible(o, v));
+  checkbox(ds, "ロック", o.locked, (v) => host.onLock(o, v));
+  d.appendChild(ds);
+
+  // 入力ノード（パラメトリックのときだけ）
+  if (o.parametric && PRIMITIVES[o.kind]) {
+    const p = fold("input", "入力ノード", PRIMITIVES[o.kind].en.toUpperCase(), true);
+    const ps = el("div", "sect");
+    for (const spec of PRIMITIVES[o.kind].params) {
+      paramRow(ps, {
+        label: spec.label,
+        value: o.params[spec.key] ?? spec.value,
+        min: spec.min,
+        max: spec.max,
+        step: spec.step,
+        onInput: (v) => host.onParamInput(o, spec.key, v),
+        onCommit: () => host.onParamCommit(o, `${spec.label} を変更`),
+      });
+    }
+    p.appendChild(ps);
+  }
+
+  // メッシュの情報（既定は閉じている）
+  const m = fold("mesh", "メッシュ", "MESH", false);
+  const stats = o.mesh.stats();
+  m.appendChild(el("div", "hint", `頂点 ${stats.vertices} · エッジ ${stats.edges} · 面 ${stats.faces}`));
+
+  return wrap;
+}
+
 export function renderLayers(
   body: HTMLElement,
   objects: SceneObject[],
   selected: SceneObject | null,
   host: PanelHost,
-  opened: Set<string>,
   also: Set<SceneObject> = new Set(),
 ): void {
   body.textContent = "";
@@ -1086,42 +1185,10 @@ export function renderLayers(
     attachOutlinerGrip(grip, row, host);
     row.appendChild(grip);
 
-    const more = el("button", "more", opened.has(o.id) ? "▾" : "▸");
-    more.title = "プロパティ";
-    more.addEventListener("pointerdown", (e) => e.stopPropagation());
-    more.addEventListener("click", (e) => {
-      e.stopPropagation();
-      if (opened.has(o.id)) opened.delete(o.id);
-      else opened.add(o.id);
-      host.onLayersChanged();
-    });
-    row.appendChild(more);
-
     attachOutlinerRow(row, o, host);
     wrap.appendChild(row);
-
-    if (opened.has(o.id)) {
-      const props = el("div", "lyprops");
-      const t = transformSectionFor(o, host);
-      if (t) props.appendChild(t);
-      const stats = o.mesh.stats();
-      props.appendChild(el("div", "hint", `頂点 ${stats.vertices} · エッジ ${stats.edges} · 面 ${stats.faces}`));
-      wrap.appendChild(props);
-    }
     body.appendChild(wrap);
   }
-}
-
-/** アウトライナの行を開いたときのトランスフォーム。数値だけ（`21` の 2.7 でパラメータは「追加」へ）。 */
-function transformSectionFor(o: SceneObject, host: PanelHost): HTMLElement | null {
-  const s = section("トランスフォーム", "TRANSFORM");
-  tripleRow(s, "移動", o.transform.position as [number, number, number], 3, (axis, v) =>
-    host.onTransformInput(o, "position", axis, v),
-  );
-  tripleRow(s, "スケール", o.transform.scale as [number, number, number], 3, (axis, v) =>
-    host.onTransformInput(o, "scale", axis, v),
-  );
-  return s;
 }
 
 /**

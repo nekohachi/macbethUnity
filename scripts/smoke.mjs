@@ -4713,6 +4713,59 @@ check(
     `ALT なし [${axisScale.uniform.map((v) => v.toFixed(2))}]`,
 );
 
+/* 43z-14. アトリビュート欄がアウトライナの上に出る（`25` の T3） */
+const attrs = await page.evaluate(async () => {
+  const app = window.macbeth;
+  app.state.doc.objects.length = 0;
+  const sphere = app.state.doc.addObject("sphere");
+  app.viewport.syncAll();
+  app.setCompMode("object");
+  app.state.select(sphere);
+  app.refresh();
+  if (!document.querySelector(".drawer.open")) document.getElementById("btnPanels").click();
+  await new Promise((r) => setTimeout(r, 250));
+
+  const attrs = document.querySelector(".drawer .attrs");
+  const heads = attrs ? [...attrs.querySelectorAll(".sect-h span")].map((h) => h.textContent) : [];
+  const noMore = document.querySelectorAll(".drawer .lyrow .more").length;
+  const title = attrs?.querySelector(".attr-title")?.textContent ?? "";
+
+  // 「入力ノード」のスライダーを動かすとパラメータが変わる
+  const before = { ...sphere.params };
+  const sliders = [...(attrs?.querySelectorAll("input.slider") ?? [])];
+  const axis = sliders[sliders.length - 1];
+  if (axis) {
+    axis.value = String(Number(axis.value) + 4);
+    axis.dispatchEvent(new Event("input", { bubbles: true }));
+    axis.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+  await new Promise((r) => setTimeout(r, 120));
+  const paramMoved = Object.keys(before).some((k) => before[k] !== sphere.params[k]);
+
+  // 何も選ばないと案内文だけ
+  app.state.select(null);
+  app.refresh();
+  await new Promise((r) => setTimeout(r, 120));
+  const emptyText = document.querySelector(".drawer .attrs .empty")?.textContent ?? "";
+
+  document.getElementById("btnPanels").click();
+  app.state.doc.objects.length = 0;
+  app.viewport.syncAll();
+  app.refresh();
+  return { heads, noMore, title, paramMoved, emptyText };
+});
+check(
+  "アトリビュート欄がアウトライナの上に出る",
+  attrs.heads.includes("トランスフォーム") &&
+    attrs.heads.includes("入力ノード") &&
+    attrs.heads.includes("表示") &&
+    attrs.noMore === 0 &&
+    attrs.title.startsWith("Sphere") &&
+    attrs.paramMoved &&
+    attrs.emptyText.includes("オブジェクトを選ぶと"),
+  `「${attrs.title}」/ 区画 ${attrs.heads.join(" · ")} / 行の「>」 ${attrs.noMore} 個 / パラメータ ${attrs.paramMoved} / 空 「${attrs.emptyText.replace("\n", " ")}」`,
+);
+
 /* 44. ツール列のグループ（`21` の 4 章） */
 
 /* 44-1. ボタンは 7 つ、右のオプションパネルは無い */

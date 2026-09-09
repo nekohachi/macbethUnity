@@ -17,6 +17,7 @@ interface ObjectSnapshot {
   transform: Transform;
   visible: boolean;
   locked: boolean;
+  opacity: number;
   activeLevel: number;
   mesh: Mesh;
   /**
@@ -84,6 +85,7 @@ export class History {
         transform: cloneTransform(o.transform),
         visible: o.visible,
         locked: o.locked,
+        opacity: o.opacity,
         activeLevel: o.activeLevel,
         mesh: o.mesh.clone(),
         uv: o.uv ? cloneRecipe(o.uv) : null,
@@ -149,6 +151,7 @@ export class History {
       o.transform = cloneTransform(s.transform);
       o.visible = s.visible;
       o.locked = s.locked;
+      o.opacity = s.opacity;
       o.activeLevel = s.activeLevel;
       o.mesh = s.mesh.clone();
       o.uv = s.uv ? cloneRecipe(s.uv) : null;
