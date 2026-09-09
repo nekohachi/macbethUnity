@@ -11,7 +11,7 @@
  *   https://…/app/?bench=1&quick=1  ごく小さい（通し確認と、手元で形を見るとき）
  *
  * 結果は表に出て、「コピー」で JSON がクリップボードへ入る。下のボタンで
- * 大きさを選び直せる。**100 万四角形はメモリを 2GB 以上使う**ので、
+ * 大きさを選び直せる。**100 万四角形は計算の途中で 1GB を大きく越える**ので、
  * iPad mini のような端末では途中でタブが落ちる。落ちたら小さい方で測る。
  */
 import { PRIMITIVES, buildBvh, catmullClark, defaultParams, refitBvh, Multires, type Mesh } from "../core/index.js";
@@ -49,6 +49,11 @@ function timeIt(runs: number, fn: () => void): number {
 
 /** 待たせて画面を描かせる（長い計算の合間に表を更新するため）。 */
 const breathe = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+
+/** 面の数の見せ方。1 万に満たないと「0 万」になってしまうので、そこは実数で。 */
+function faces(n: number): string {
+  return n >= 10000 ? `${(n / 10000).toFixed(0)} 万四角形` : `${n} 四角形`;
+}
 
 function sphere(axis: number, height: number): Mesh {
   return PRIMITIVES.sphere.build({ ...defaultParams("sphere"), sdAxis: axis, sdHeight: height });
@@ -118,7 +123,7 @@ export async function runBench(app: App, quick: boolean, size?: number): Promise
   const quads = heavy.faceCount;
   await add({
     key: "B0",
-    label: `メッシュを作る（${(quads / 10000).toFixed(0)} 万四角形）`,
+    label: `メッシュを作る（${faces(quads)}）`,
     value: b0,
     unit: "ms",
     note: `頂点 ${heavy.vertexCount}`,
@@ -131,13 +136,13 @@ export async function runBench(app: App, quick: boolean, size?: number): Promise
     macbethWasm: wasm ? { add: (a: number, b: number) => wasm.exports.mb_add(a, b), bytes: wasm.byteLength } : null,
   });
   const midMesh = sphere(mid.axis, mid.height);
-  const midFaces = (midMesh.faceCount / 10000).toFixed(0);
-  const bigFaces = (quads / 10000).toFixed(0);
+  const midFaces = faces(midMesh.faceCount);
+  const bigFaces = faces(quads);
 
   const b1mid = timeIt(3, () => void catmullClark(midMesh));
   await add({
     key: "B1a",
-    label: `細分割 1 レベル JS（${midFaces} 万四角形）`,
+    label: `細分割 1 レベル JS（${midFaces}）`,
     value: b1mid,
     unit: "ms",
     note: "レベルを 1 つ上げる待ち時間",
@@ -146,7 +151,7 @@ export async function runBench(app: App, quick: boolean, size?: number): Promise
     const w = timeIt(3, () => void buildFromGeometry(midMesh, subdivGeometry(wasm, midMesh)!));
     await add({
       key: "B1a-wasm",
-      label: `細分割 1 レベル wasm（${midFaces} 万四角形）`,
+      label: `細分割 1 レベル wasm（${midFaces}）`,
       value: w,
       unit: "ms",
       note: `JS の ${(b1mid / Math.max(w, 0.001)).toFixed(1)} 倍`,
@@ -156,7 +161,7 @@ export async function runBench(app: App, quick: boolean, size?: number): Promise
   const b1big = timeIt(1, () => void catmullClark(heavy));
   await add({
     key: "B1b",
-    label: `細分割 1 レベル JS（${bigFaces} 万四角形）`,
+    label: `細分割 1 レベル JS（${bigFaces}）`,
     value: b1big,
     unit: "ms",
     target: 1500,
@@ -172,7 +177,7 @@ export async function runBench(app: App, quick: boolean, size?: number): Promise
     const wBuild = timeIt(1, () => void buildFromGeometry(heavy, g));
     await add({
       key: "B1b-wasm",
-      label: `細分割 1 レベル wasm（${bigFaces} 万四角形）`,
+      label: `細分割 1 レベル wasm（${bigFaces}）`,
       value: wGeom + wBuild,
       unit: "ms",
       target: 1500,
@@ -205,7 +210,7 @@ export async function runBench(app: App, quick: boolean, size?: number): Promise
   const top = multi.level(2);
   await add({
     key: "B2a",
-    label: `レベル 2 まで組む（${(top.faceCount / 10000).toFixed(0)} 万四角形）`,
+    label: `レベル 2 まで組む（${faces(top.faceCount)}）`,
     value: b2build,
     unit: "ms",
     note: `ベース ${base.faceCount} 面`,
@@ -234,13 +239,15 @@ export async function runBench(app: App, quick: boolean, size?: number): Promise
 
   /* B3 — BVH */
   const tris = heavy.triangulate();
+  const triCount = (tris.tri.length / 3) | 0;
+  const triMan = triCount >= 10000 ? `${(triCount / 10000) | 0} 万三角形` : `${triCount} 三角形`;
   let bvh = buildBvh(heavy.positions, tris);
   const b3build = timeIt(1, () => {
     bvh = buildBvh(heavy.positions, tris);
   });
   await add({
     key: "B3a",
-    label: `BVH を作る（${((tris.tri.length / 3 / 10000) | 0)} 万三角形）`,
+    label: `BVH を作る（${triMan}）`,
     value: b3build,
     unit: "ms",
     note: "トポロジを変えたときだけ",
@@ -258,7 +265,6 @@ export async function runBench(app: App, quick: boolean, size?: number): Promise
   app.refresh();
   await breathe();
   const vp = app.viewport;
-  const triMan = ((tris.tri.length / 3 / 10000) | 0).toString();
 
   // `renderer.render` は GL に命令を積むだけで返る。そのまま測ると 0.3ms のような
   // 意味のない数字が出るので、**GPU が描き終わるのを待ってから**測る。
@@ -273,7 +279,7 @@ export async function runBench(app: App, quick: boolean, size?: number): Promise
   const b4gpu = timeIt(10, drawAndWait);
   await add({
     key: "B4a",
-    label: `描画 1 フレーム・GPU まで待つ（${triMan} 万三角形）`,
+    label: `描画 1 フレーム・GPU まで待つ（${triMan}）`,
     value: b4gpu,
     unit: "ms",
     target: 16,

@@ -8,19 +8,108 @@
  * 動いた頂点の周りだけ計算し直しても、同じ式を同じ順序で通るようにするため
  * （docs/08 の V6。2 つ書くと必ずずれる）。
  */
-import { Mesh, MeshBuilder, edgeKey, faceUvs } from "./mesh.js";
+import { Mesh, edgeKey } from "./mesh.js";
 
 type Vec3 = [number, number, number];
 
-/** 面ごとの UV から、その面の平均 UV を求める。 */
-function averageUv(rows: number[][]): number[] {
-  let u = 0,
-    v = 0;
-  for (const r of rows) {
-    u += r[0];
-    v += r[1];
+/**
+ * 細分割の出力を `Mesh` に組む（`32` の T1）。
+ *
+ * **`MeshBuilder` は通さない。** 出力は「全部四角形・番号は決まっている・
+ * 潰れた面は出ない」と分かっているので、溶接も重複の除去も要らない。
+ * typed array を直に埋めるぶん、100 万四角形で数秒とギガ単位のメモリが浮く
+ * （`MeshBuilder` は `number[]` にコーナーを積むため）。
+ *
+ * JS 版（`SubdivPlan.build`）と wasm 版（`app/wasm/subdiv.ts`）の**両方が
+ * ここを通る**。組み立てが 1 本なら、両者の一致テストが両方を守る。
+ *
+ * @param source 元のメッシュ。UV・ポリグループ・マテリアル・クリースの元。
+ * @param positions 出力頂点の座標。3 × 出力頂点数。
+ * @param quads 出力面の頂点番号。4 × 出力面数。**元のコーナーと同じ並び**。
+ * @param edgePointOf クリースの引き継ぎだけに使う。(a, b) のエッジ点の出力番号。
+ *   無ければ -1。元にクリースが無ければ呼ばれない。
+ */
+export function assembleQuads(
+  source: Mesh,
+  positions: Float32Array,
+  quads: Uint32Array,
+  edgePointOf: (a: number, b: number) => number,
+): Mesh {
+  const outFaces = (quads.length / 4) | 0;
+  const faceOffsets = new Uint32Array(outFaces + 1);
+  for (let i = 0; i <= outFaces; i++) faceOffsets[i] = i * 4;
+
+  const polygroup = new Uint16Array(outFaces);
+  const materialId = new Uint16Array(outFaces);
+
+  const names = [...source.uvSets.keys()];
+  const src = names.map((n) => source.uvSets.get(n)!);
+  const dst = names.map(() => new Float32Array(outFaces * 8));
+
+  let q = 0;
+  for (let f = 0; f < source.faceCount; f++) {
+    const s = source.faceOffsets[f];
+    const n = source.faceOffsets[f + 1] - s;
+    const group = source.polygroup[f];
+    const material = source.materialId[f];
+
+    for (let k = 0; k < src.length; k++) {
+      const uv = src[k];
+      const out = dst[k];
+      // 面の平均 UV（面点のぶん）。面ごとに 1 度だけ
+      let au = 0,
+        av = 0;
+      for (let i = 0; i < n; i++) {
+        au += uv[(s + i) * 2];
+        av += uv[(s + i) * 2 + 1];
+      }
+      au /= n;
+      av /= n;
+      for (let i = 0; i < n; i++) {
+        const c = (s + i) * 2;
+        const nx = (s + ((i + 1) % n)) * 2;
+        const pv = (s + ((i - 1 + n) % n)) * 2;
+        // この面の i 番目のコーナーから生まれる四角形は (q + i) 番
+        const w = (q + i) * 8;
+        out[w] = uv[c];
+        out[w + 1] = uv[c + 1];
+        out[w + 2] = (uv[c] + uv[nx]) / 2;
+        out[w + 3] = (uv[c + 1] + uv[nx + 1]) / 2;
+        out[w + 4] = au;
+        out[w + 5] = av;
+        out[w + 6] = (uv[pv] + uv[c]) / 2;
+        out[w + 7] = (uv[pv + 1] + uv[c + 1]) / 2;
+      }
+    }
+
+    for (let i = 0; i < n; i++) {
+      polygroup[q + i] = group;
+      materialId[q + i] = material;
+    }
+    q += n;
   }
-  return [u / rows.length, v / rows.length];
+
+  const uvSets = new Map<string, Float32Array>();
+  for (let k = 0; k < names.length; k++) uvSets.set(names[k], dst[k]);
+  const out = new Mesh(positions, faceOffsets, quads, { uvSets, polygroup, materialId });
+
+  // クリースは 1 段ごとに 1 減らし、分割された両側に引き継ぐ（semi-sharp の規則）
+  for (const [key, value] of source.crease) {
+    const next = value - 1;
+    if (next <= 0) continue;
+    const sep = key.indexOf("_");
+    const a = Number(key.slice(0, sep));
+    const b = Number(key.slice(sep + 1));
+    const mid = edgePointOf(a, b);
+    if (mid < 0) continue;
+    out.setCrease(a, mid, next);
+    out.setCrease(mid, b, next);
+  }
+  for (const [v, s] of source.cornerSharp) {
+    const next = s - 1;
+    if (next > 0) out.cornerSharp.set(v, next);
+  }
+  return out;
 }
 
 /**
@@ -266,66 +355,35 @@ export class SubdivPlan {
     for (let v = 0; v < this.vertexCount; v++) writeVertexPoint(v);
   }
 
+  /**
+   * 出力の四角形を並べる。1 つの入力コーナーから 1 つの四角形が出るので、
+   * 並びは入力のコーナー順そのまま。wasm 版もこの並びを守る。
+   */
+  quads(): Uint32Array {
+    let corners = 0;
+    for (let f = 0; f < this.faceCount; f++) corners += this.faceVerts[f].length;
+    const out = new Uint32Array(corners * 4);
+    let q = 0;
+    for (let f = 0; f < this.faceCount; f++) {
+      const verts = this.faceVerts[f];
+      const n = verts.length;
+      const center = this.faceBase + f;
+      for (let i = 0; i < n; i++, q++) {
+        const v = verts[i];
+        out[q * 4] = v;
+        out[q * 4 + 1] = this.edgePointOf(v, verts[(i + 1) % n]);
+        out[q * 4 + 2] = center;
+        out[q * 4 + 3] = this.edgePointOf(verts[(i - 1 + n) % n], v);
+      }
+    }
+    return out;
+  }
+
   /** 細分割したメッシュを作る。UV とクリースも持ち越す。 */
   build(mesh: Mesh): Mesh {
     const pos = new Float32Array(this.outCount * 3);
     this.positions(mesh, pos);
-
-    // 組み立て。頂点の順序を安定させるため、頂点点 → エッジ点 → 面点の順で採番する。
-    const b = new MeshBuilder({ weld: false });
-    for (let i = 0; i < this.outCount; i++) b.vertex(pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2]);
-
-    for (let f = 0; f < this.faceCount; f++) {
-      const verts = this.faceVerts[f];
-      const uvs = faceUvs(mesh, f);
-      const group = mesh.polygroup[f];
-      const material = mesh.materialId[f];
-      const n = verts.length;
-      const faceUvAvg = new Map<string, number[]>();
-      if (uvs) for (const [name, rows] of uvs) faceUvAvg.set(name, averageUv(rows));
-      for (let i = 0; i < n; i++) {
-        const v = verts[i];
-        const vn = verts[(i + 1) % n];
-        const vp = verts[(i - 1 + n) % n];
-        let uv: Map<string, number[][]> | undefined;
-        if (uvs) {
-          uv = new Map();
-          for (const [name, rows] of uvs) {
-            const cur = rows[i] ?? [0, 0];
-            const next = rows[(i + 1) % n] ?? [0, 0];
-            const prev = rows[(i - 1 + n) % n] ?? [0, 0];
-            uv.set(name, [
-              cur,
-              [(cur[0] + next[0]) / 2, (cur[1] + next[1]) / 2],
-              faceUvAvg.get(name)!,
-              [(prev[0] + cur[0]) / 2, (prev[1] + cur[1]) / 2],
-            ]);
-          }
-        }
-        b.face([v, this.edgePointOf(v, vn), this.faceBase + f, this.edgePointOf(vp, v)], {
-          uv,
-          polygroup: group,
-          materialId: material,
-        });
-      }
-    }
-
-    const out = b.build();
-    // クリースは 1 段ごとに 1 減らし、分割された両側に引き継ぐ（semi-sharp の規則）
-    for (const [key, value] of mesh.crease) {
-      const next = value - 1;
-      if (next <= 0) continue;
-      const [a, bb] = key.split("_").map(Number);
-      const mid = this.edgePointOf(a, bb);
-      if (mid < 0) continue;
-      out.setCrease(a, mid, next);
-      out.setCrease(mid, bb, next);
-    }
-    for (const [v, s] of mesh.cornerSharp) {
-      const next = s - 1;
-      if (next > 0) out.cornerSharp.set(v, next);
-    }
-    return out;
+    return assembleQuads(mesh, pos, this.quads(), (a, b) => this.edgePointOf(a, b));
   }
 }
 

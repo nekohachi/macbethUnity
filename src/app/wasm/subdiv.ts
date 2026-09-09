@@ -7,7 +7,7 @@
  *
  * 読めなければ `null` を返す。呼ぶ側は `catmullClark` に落ちる。
  */
-import { Mesh, MeshBuilder, edgeKey } from "../../core/index.js";
+import { assembleQuads, edgeKey, type Mesh } from "../../core/index.js";
 import { loadWasm, type WasmModule } from "./module.js";
 
 /** wasm が返した形。すべて JS 側へ写し取ったもの。 */
@@ -102,97 +102,24 @@ export function subdivGeometry(mod: WasmModule, mesh: Mesh): SubdivGeometry | nu
 /**
  * wasm が出した形に、UV とクリースを載せてメッシュにする。
  *
- * UV の配り方は `subdivide.ts` と同じ（面ごとに線形）。ただし 1 コーナーごとに
- * Map と配列を作ると 100 万四角形で数百万個の割り当てになるので、**入れ物を
- * 使い回す**。`MeshBuilder.face` は渡された表をその場で読むだけなので、
- * 中身を書き換えて何度でも渡してよい。
+ * 組み立ては core の `assembleQuads` に任せる（`32` の T1）。JS 版の細分割と
+ * 同じ 1 本を通るので、`tests/subdiv-wasm.test.ts` の一致テストが両方を守る。
+ * ここでやるのは、エッジ点の引き当て（クリースの引き継ぎ用）だけ。
  */
 export function buildFromGeometry(mesh: Mesh, g: SubdivGeometry): Mesh {
-  const b = new MeshBuilder({ weld: false });
-  const pos = g.positions;
-  for (let i = 0; i < g.outCount; i++) b.vertex(pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2]);
-
-  // 使い回す入れ物。四角形なので 1 面 4 行で足りる
-  const names = [...mesh.uvSets.keys()];
-  const sets = names.map((n) => mesh.uvSets.get(n)!);
-  const rows: number[][][] = names.map(() => [
-    [0, 0],
-    [0, 0],
-    [0, 0],
-    [0, 0],
-  ]);
-  const scratch = new Map<string, number[][]>();
-  names.forEach((n, k) => scratch.set(n, rows[k]));
-  const uvArg = names.length ? scratch : undefined;
-  const avgU = new Float64Array(names.length);
-  const avgV = new Float64Array(names.length);
-
-  let q = 0;
-  for (let f = 0; f < mesh.faceCount; f++) {
-    const s = mesh.faceOffsets[f];
-    const n = mesh.faceOffsets[f + 1] - s;
-    const group = mesh.polygroup[f];
-    const material = mesh.materialId[f];
-
-    // 面の平均 UV（面点のぶん）
-    for (let k = 0; k < sets.length; k++) {
-      const uv = sets[k];
-      let u = 0,
-        v = 0;
-      for (let i = 0; i < n; i++) {
-        u += uv[(s + i) * 2];
-        v += uv[(s + i) * 2 + 1];
+  // クリースがあるときだけ引き当ての表を作る。100 万四角形では
+  // 文字列キーの表そのものが重いので、要らないなら作らない
+  let at: Map<string, number> | null = null;
+  const edgePointOf = (a: number, b: number): number => {
+    if (!at) {
+      at = new Map();
+      for (let e = 0; e < g.edgeList.length / 2; e++) {
+        at.set(edgeKey(g.edgeList[e * 2], g.edgeList[e * 2 + 1]), g.edgeBase + e);
       }
-      avgU[k] = u / n;
-      avgV[k] = v / n;
     }
-
-    for (let i = 0; i < n; i++, q++) {
-      for (let k = 0; k < sets.length; k++) {
-        const uv = sets[k];
-        const r = rows[k];
-        const c = (s + i) * 2;
-        const nx = (s + ((i + 1) % n)) * 2;
-        const pv = (s + ((i - 1 + n) % n)) * 2;
-        r[0][0] = uv[c];
-        r[0][1] = uv[c + 1];
-        r[1][0] = (uv[c] + uv[nx]) / 2;
-        r[1][1] = (uv[c + 1] + uv[nx + 1]) / 2;
-        r[2][0] = avgU[k];
-        r[2][1] = avgV[k];
-        r[3][0] = (uv[pv] + uv[c]) / 2;
-        r[3][1] = (uv[pv + 1] + uv[c + 1]) / 2;
-      }
-      b.face([g.quads[q * 4], g.quads[q * 4 + 1], g.quads[q * 4 + 2], g.quads[q * 4 + 3]], {
-        uv: uvArg,
-        polygroup: group,
-        materialId: material,
-      });
-    }
-  }
-
-  const out = b.build();
-  // クリースは 1 段ごとに 1 減らし、分割された両側に引き継ぐ（`subdivide.ts` と同じ）
-  if (mesh.crease.size) {
-    const at = new Map<string, number>();
-    for (let e = 0; e < g.edgeList.length / 2; e++) {
-      at.set(edgeKey(g.edgeList[e * 2], g.edgeList[e * 2 + 1]), g.edgeBase + e);
-    }
-    for (const [key, value] of mesh.crease) {
-      const next = value - 1;
-      if (next <= 0) continue;
-      const [a, bb] = key.split("_").map(Number);
-      const mid = at.get(edgeKey(a, bb));
-      if (mid === undefined) continue;
-      out.setCrease(a, mid, next);
-      out.setCrease(mid, bb, next);
-    }
-  }
-  for (const [v, s] of mesh.cornerSharp) {
-    const next = s - 1;
-    if (next > 0) out.cornerSharp.set(v, next);
-  }
-  return out;
+    return at.get(edgeKey(a, b)) ?? -1;
+  };
+  return assembleQuads(mesh, g.positions, g.quads, edgePointOf);
 }
 
 /** wasm で 1 レベル細分割する。使えなければ `null`（呼ぶ側が JS 版へ落ちる）。 */
