@@ -331,6 +331,145 @@ export function buildVertexSlots(
 }
 
 /**
+ * 法線を作り直すときの控え（`40` の T2）。`sculpt.ts` の `scratch` と同じ考えで、
+ * **`Set` / `Map` を作らず**、生成番号で「この回に触ったか」を見分ける。
+ * 面法線は面ごとに 1 回だけ計算して `faceNor` に置く。
+ */
+const normalScratch = {
+  gen: 0,
+  faceGen: new Uint32Array(0),
+  faceNor: new Float32Array(0),
+  vertGen: new Uint32Array(0),
+};
+
+/**
+ * 動いた頂点の周りだけ、面のジオメトリの法線を作り直す（`40` の T2）。
+ *
+ * 前は離すたびに `surfaceGeometry` で丸ごと作り直していた（25 万四角形で 764ms）。
+ * 変わる法線は**動いた頂点を含む面と、その面の頂点（1 リング）**だけなので、
+ * そこだけ計算して `nor` に書く。結果は `surfaceGeometry` と同じ式
+ * （面法線の和、スムージング角度で分ける）なので、作り直した場合と一致する。
+ *
+ * 面の隣は `slots`（頂点 → コーナー → 三角形 → 面）から引く。`vertexFaces()` は
+ * メッシュ全体の `Map` を作るのでここでは使わない。
+ *
+ * 返すのは書き換えた頂点の数（テストとベンチ用）。
+ */
+export function refreshSurfaceNormals(
+  mesh: Mesh,
+  tri: Triangulation,
+  slots: VertexSlots,
+  nor: Float32Array,
+  verts: Iterable<number>,
+  angleDeg: number,
+): number {
+  const s = normalScratch;
+  if (s.faceGen.length < mesh.faceCount) {
+    s.faceGen = new Uint32Array(mesh.faceCount);
+    s.faceNor = new Float32Array(mesh.faceCount * 3);
+  }
+  if (s.vertGen.length < mesh.vertexCount) s.vertGen = new Uint32Array(mesh.vertexCount);
+  const stamp = ++s.gen;
+  const { faceGen, faceNor, vertGen } = s;
+  const { surfaceOffsets, surfaceSlots } = slots;
+  const cosA = Math.cos((angleDeg * Math.PI) / 180) - 1e-4;
+
+  // 面法線は `mesh.faceNormal` と同じ式（Newell）。**ここに書き写してある**のは、
+  // 戻り値の配列を面ごとに作らないため（1 コマで 1 万面を越える）
+  const p = mesh.positions;
+  const { faceOffsets, faceCorners } = mesh;
+  const ensureFace = (f: number): void => {
+    if (faceGen[f] === stamp) return;
+    faceGen[f] = stamp;
+    const s0 = faceOffsets[f];
+    const cnt = faceOffsets[f + 1] - s0;
+    let nx = 0,
+      ny = 0,
+      nz = 0;
+    let a = faceCorners[s0 + cnt - 1];
+    let ax = p[a * 3],
+      ay = p[a * 3 + 1],
+      az = p[a * 3 + 2];
+    for (let i = 0; i < cnt; i++) {
+      const b = faceCorners[s0 + i];
+      const bx = p[b * 3],
+        by = p[b * 3 + 1],
+        bz = p[b * 3 + 2];
+      nx += (ay - by) * (az + bz);
+      ny += (az - bz) * (ax + bx);
+      nz += (ax - bx) * (ay + by);
+      a = b;
+      ax = bx;
+      ay = by;
+      az = bz;
+    }
+    const len = Math.hypot(nx, ny, nz) || 1;
+    faceNor[f * 3] = nx / len;
+    faceNor[f * 3 + 1] = ny / len;
+    faceNor[f * 3 + 2] = nz / len;
+  };
+
+  // 1. 動いた頂点を含む面。法線を作り直す面はこれだけ
+  const faces: number[] = [];
+  for (const v of verts) {
+    if (v < 0 || v >= mesh.vertexCount) continue;
+    for (let i = surfaceOffsets[v]; i < surfaceOffsets[v + 1]; i++) {
+      const f = tri.triToFace[(surfaceSlots[i] / 3) | 0];
+      if (faceGen[f] === stamp) continue;
+      ensureFace(f);
+      faces.push(f);
+    }
+  }
+  // 2. その面の頂点すべて（動いていない頂点も、隣の面が動けば法線が変わる）
+  const ring: number[] = [];
+  for (const f of faces) {
+    for (let c = mesh.faceOffsets[f]; c < mesh.faceOffsets[f + 1]; c++) {
+      const v = mesh.faceCorners[c];
+      if (vertGen[v] === stamp) continue;
+      vertGen[v] = stamp;
+      ring.push(v);
+    }
+  }
+  // 3. 頂点ごとに、隣の面の法線を（角度で選んで）足す。コーナーごとに書く
+  const around: number[] = [];
+  for (const v of ring) {
+    around.length = 0;
+    for (let i = surfaceOffsets[v]; i < surfaceOffsets[v + 1]; i++) {
+      const f = tri.triToFace[(surfaceSlots[i] / 3) | 0];
+      if (!around.includes(f)) {
+        around.push(f);
+        ensureFace(f);
+      }
+    }
+    for (let i = surfaceOffsets[v]; i < surfaceOffsets[v + 1]; i++) {
+      const slot = surfaceSlots[i];
+      const base = tri.triToFace[(slot / 3) | 0];
+      const bx = faceNor[base * 3],
+        by = faceNor[base * 3 + 1],
+        bz = faceNor[base * 3 + 2];
+      let nx = 0,
+        ny = 0,
+        nz = 0;
+      for (const g of around) {
+        const mx = faceNor[g * 3],
+          my = faceNor[g * 3 + 1],
+          mz = faceNor[g * 3 + 2];
+        if (mx * bx + my * by + mz * bz >= cosA) {
+          nx += mx;
+          ny += my;
+          nz += mz;
+        }
+      }
+      const L = Math.hypot(nx, ny, nz) || 1;
+      nor[slot * 3] = nx / L;
+      nor[slot * 3 + 1] = ny / L;
+      nor[slot * 3 + 2] = nz / L;
+    }
+  }
+  return ring.length;
+}
+
+/**
  * 見せるメッシュから描画用の一式を作る。
  *
  * `mesh` は `o.mesh`（レベル 0）とはかぎらない。スカルプトで段を上げていれば

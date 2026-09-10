@@ -396,8 +396,20 @@ export class AppState {
      */
     fingerCamera: false,
   };
-  /** 裏面を描かない（`23` の T6）。既定はオフ（両面）。 */
+  /** 裏面を描かない（`23` の T6）。既定はオフ（両面）。モデリング用。 */
   cullBack = false;
+  /**
+   * スカルプトで裏面を描かない（`40` の T4）。既定はオン。
+   * 裏面を描くだけで 1 フレームが 1.5 倍になるので、彫るときは切る。
+   * 薄い板を彫る人のために切り替えは残す。
+   */
+  sculptCullBack = true;
+  /** いまのモードで効く「裏面を描かない」。描画側はこちらを見る。 */
+  get cullBackNow(): boolean {
+    return this.mode === "sculpt" ? this.sculptCullBack : this.cullBack;
+  }
+  /** スカルプトに入る前の表示（`40` の T4）。戻すときここへ戻す。 */
+  displayBeforeSculpt: Display | null = null;
   /** 床のグリッドを出す（`23` の T6）。既定はオン。 */
   showGrid = true;
   /** Maya の既定と同じ 30°。 */

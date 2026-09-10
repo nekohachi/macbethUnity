@@ -61,6 +61,10 @@ interface Live {
    * ゆっくり動かすほど濃くなって、同じ線を引いても結果が変わってしまう。
    */
   carry: number;
+  /** 法線を直したあと、何コマ飛ばすか（`40` の T3 の予算）。 */
+  normalDebt: number;
+  /** 法線を飛ばしたコマがあった。離すときに触った頂点の周りをまとめて直す。 */
+  skippedNormals: boolean;
 }
 
 const scratch = new Vector3();
@@ -71,6 +75,12 @@ const dirScratch = new Vector3();
  * 狭いほど濃く、なめらかになる。
  */
 const DAB_SPACING = 0.25;
+
+/**
+ * 引いている間に法線へ使ってよい 1 コマあたりの時間（`40` の T3）。
+ * これを越えたぶんだけ次のコマを飛ばす（4ms かかれば 1 コマ、8ms なら 2 コマ）。
+ */
+const NORMAL_BUDGET_MS = 3;
 
 /** 1 回の動きで打つ上限。カメラが飛んだときの暴発よけ。 */
 const MAX_DABS = 24;
@@ -139,6 +149,8 @@ export class StrokeDriver {
       pending: new Set(),
       hits: 0,
       carry: 0,
+      normalDebt: 0,
+      skippedNormals: false,
     };
     if (role === "mask") this.history.beginMask(o, o.activeLevel);
     else this.history.beginSculpt(o, o.activeLevel);
@@ -236,8 +248,10 @@ export class StrokeDriver {
       this.history.commitPending(live.erase ? "マスクを消した" : "マスクを描いた");
       return;
     }
-    // 動かしている間は法線が古い。ここで正しくする（`29` の B-T6 と同じ形）
-    this.viewport.refreshPositions(live.object);
+    // 法線は `flush` のたびに直している（`40` の T3）。ここで丸ごと作り直しは
+    // **しない**（前は `refreshPositions` で 25 万四角形 764ms。離すたびに止まっていた）。
+    // 念のため触った頂点の周りをもう一度だけ通す（コマ飛ばしをしたときの取りこぼし）
+    if (live.skippedNormals) this.viewport.refreshNormals(live.object, live.touched);
     this.history.commitPending(`${BRUSH_LABEL[live.kind]}で彫った`);
   }
 
@@ -397,8 +411,22 @@ export class StrokeDriver {
       return;
     }
     levelsOf(live.object).sculptAt(live.level, verts);
-    // 法線は据え置きで、動いた頂点だけ書き換える
+    // 動いた頂点だけ書き換える
     this.viewport.refreshMoved(live.object, verts);
+    // 法線も動いた頂点の周りだけ直す（`40` の T3）。陰影が引いている間に付いてくる。
+    //
+    // **予算つき。** 太い筆では 1 コマで 1 万頂点を越え、法線だけで彫るのと同じだけ
+    // かかる（CI・25 万で 17ms）。かかった時間ぶんだけ次のコマを飛ばして、
+    // 平均で `NORMAL_BUDGET_MS` に収める。飛ばした分は離すときにまとめて直す
+    if (live.normalDebt > 0) {
+      live.normalDebt--;
+      live.skippedNormals = true;
+      return;
+    }
+    const t0 = performance.now();
+    this.viewport.refreshNormals(live.object, verts);
+    const took = performance.now() - t0;
+    live.normalDebt = Math.min(8, Math.floor(took / NORMAL_BUDGET_MS));
   }
 }
 

@@ -45,6 +45,7 @@ import {
   positionGeometry,
   maskColorAt,
   maskColors,
+  refreshSurfaceNormals,
   surfaceGeometry,
   valenceColors,
   wireGeometry,
@@ -873,6 +874,7 @@ export class Viewport {
    * 離したときに 1 回だけこちらを通す**（`29` の B-T6）。
    */
   refreshPositions(o: SceneObject): void {
+    this.refreshPositionsCount++;
     const view = this.views.get(o.id);
     if (!view) return this.rebuildObject(o);
     const mesh = this.meshOf(o);
@@ -892,6 +894,32 @@ export class Viewport {
       view.polesStamp = undefined;
       this.applyPoles(view);
     }
+  }
+
+  /**
+   * `refreshPositions` を通した回数（通し確認用。`40` の T6）。
+   * 彫って離しても増えないことを見る。
+   */
+  refreshPositionsCount = 0;
+
+  /**
+   * 動いた頂点の周りだけ法線を作り直す（`40` の T2）。
+   *
+   * `refreshMoved` は位置だけ書くので陰影が古い。前は離したときに
+   * `refreshPositions` で丸ごと作り直していた（25 万四角形で 764ms）。
+   * これは触った面と 1 リングだけなので、引いている間も毎コマ通せる（T3）。
+   * 木は `refreshMoved` が触った三角形だけ取り直しているので触らない。
+   */
+  refreshNormals(o: SceneObject, verts: Iterable<number>): void {
+    const view = this.views.get(o.id);
+    if (!view) return this.rebuildObject(o);
+    const mesh = this.meshOf(o);
+    const slots = (view.slots ??= buildVertexSlots(mesh.vertexCount, view.tri, view.edges));
+    if (slots.surfaceOffsets.length !== mesh.vertexCount + 1) return this.refreshPositions(o);
+    const attr = view.surface.geometry.getAttribute("normal") as BufferAttribute | undefined;
+    if (!attr) return this.refreshPositions(o);
+    refreshSurfaceNormals(mesh, view.tri, slots, attr.array as Float32Array, verts, this.shadingAngle);
+    attr.needsUpdate = true;
   }
 
   /**
@@ -1066,12 +1094,12 @@ export class Viewport {
       mat.transparent = opacity < 1;
       mat.opacity = opacity;
       mat.depthWrite = opacity >= 1;
-      mat.side = this.state.cullBack ? FrontSide : DoubleSide;
+      mat.side = this.state.cullBackNow ? FrontSide : DoubleSide;
       mat.needsUpdate = true;
     }
     view.surface.material = mat;
     // 透けているときは「裏面 → 表面」の 2 回に分けて描く（`27` の T4）
-    this.applyBackPass(view, mat, opacity < 1 && view.surface.visible && !this.state.cullBack);
+    this.applyBackPass(view, mat, opacity < 1 && view.surface.visible && !this.state.cullBackNow);
     // 選んでいるものはワイヤを出す（コンポーネントが見えるように）。ただし
     // **スカルプトでは出さない**（`33` の T4）。段を上げると数万本になって
     // 彫った面が見えなくなるし、そこで選ぶコンポーネントも無い
@@ -1137,7 +1165,7 @@ export class Viewport {
    * ワイヤと選択の重ね描きは変えない（裏の選択が消えると分かりにくいので）。
    */
   applyCulling(): void {
-    const side = this.state.cullBack ? FrontSide : DoubleSide;
+    const side = this.state.cullBackNow ? FrontSide : DoubleSide;
     MAT.surf.side = side;
     MAT.surf.needsUpdate = true;
     for (const view of this.views.values()) {
@@ -1147,7 +1175,7 @@ export class Viewport {
         m.needsUpdate = true;
       }
       // 裏面を描かないなら、裏面のぶんも要らない（`27` の T4）
-      if (this.state.cullBack && view.back) view.back.visible = false;
+      if (this.state.cullBackNow && view.back) view.back.visible = false;
     }
     // 次のフレームでペインごとに当て直す（裏面のぶんの出し入れもここで決まる）
     this.displayStamp++;

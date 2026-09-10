@@ -336,6 +336,37 @@ export async function runBench(app: App, quick: boolean, size?: number): Promise
       note: "",
     });
 
+    // スカルプトの既定表示（`40` の T4）: ワイヤー無し、裏面を描かない。
+    // 上の B4a（シェード + ワイヤー・両面）と比べて、表示だけでどれだけ違うか。
+    // **スカルプトに入って測る**（モデリングでは選んだものにワイヤーが付くので、
+    // 表示を smooth にしてもワイヤーが消えない）
+    const cullBefore = app.state.sculptCullBack;
+    app.setMode("sculpt");
+    app.state.sculptCullBack = false;
+    vp.applyCulling();
+    app.refresh();
+    await breathe();
+    for (let i = 0; i < 3; i++) drawAndWait();
+    const b4smooth = timeIt(10, drawAndWait);
+    await add({ key: "B4c", label: "描画 1 フレーム・シェードだけ", value: b4smooth, unit: "ms", target: 16, note: "ワイヤー無し・両面" });
+    app.state.sculptCullBack = true;
+    vp.applyCulling();
+    for (let i = 0; i < 3; i++) drawAndWait();
+    const b4cull = timeIt(10, drawAndWait);
+    await add({
+      key: "B4d",
+      label: "描画 1 フレーム・シェードだけ + 裏面を描かない",
+      value: b4cull,
+      unit: "ms",
+      target: 16,
+      note: "スカルプトの既定",
+    });
+    app.state.sculptCullBack = cullBefore;
+    app.setMode("model");
+    app.setDisplay("shadedWire");
+    app.refresh();
+    await breathe();
+
     // 実際に画面が動くときの間隔。60fps なら 16.7ms で頭打ちになる
     const gaps: number[] = [];
     await new Promise<void>((done) => {
@@ -429,6 +460,53 @@ export async function runBench(app: App, quick: boolean, size?: number): Promise
       target: 16,
       note: `触った頂点 上 ${topStroke.verts} / 下 ${below.verts}`,
     });
+
+    /* B7 — 法線（`40` の T2 / T3）。離したときと、引いている間の 1 コマ */
+    {
+      sculpted.activeLevel = 2;
+      app.viewport.rebuildObject(sculpted);
+      const view = app.viewport.viewOf(sculpted)!;
+      const target = app.viewport.meshOf(sculpted);
+      let topY = -Infinity;
+      for (let i = 1; i < target.positions.length; i += 3) {
+        if (target.positions[i] > topY) topY = target.positions[i];
+      }
+      // 1 本なぞったぶん（8 打ちほど）の頂点をまとめて直す = 離したとき
+      const touched = new Set<number>();
+      for (let k = 0; k < 8; k++) {
+        const point: [number, number, number] = [k * brushRadius * 0.25, topY, 0];
+        const fp = strokeFootprint(target, app.viewport.bvhOf(view), view.tri, point, brushRadius);
+        const moved = applyStroke(target, fp, view.tri, { kind: "standard", point, radius: brushRadius, strength: 0.5, invert: false });
+        for (const v of moved) touched.add(v);
+        stack.sculptAt(2, moved);
+        app.viewport.refreshMoved(sculpted, moved);
+      }
+      const b7a = timeIt(3, () => app.viewport.refreshNormals(sculpted, touched));
+      await add({
+        key: "B7a",
+        label: `離したとき・法線を直す（${touched.size} 頂点）`,
+        value: b7a,
+        unit: "ms",
+        target: 16,
+        note: "前は丸ごと作り直し",
+      });
+      const point: [number, number, number] = [0, topY, 0];
+      const b7b = timeIt(5, () => {
+        const fp = strokeFootprint(target, app.viewport.bvhOf(view), view.tri, point, brushRadius);
+        const moved = applyStroke(target, fp, view.tri, { kind: "standard", point, radius: brushRadius, strength: 0.5, invert: false });
+        stack.sculptAt(2, moved);
+        app.viewport.refreshMoved(sculpted, moved);
+        app.viewport.refreshNormals(sculpted, moved);
+      });
+      await add({
+        key: "B7b",
+        label: "ストロークの 1 コマ・法線込み",
+        value: b7b,
+        unit: "ms",
+        target: 16,
+        note: "B6a との差が法線の分",
+      });
+    }
 
     /* B5 — メモリ */
     const now = heapMb();

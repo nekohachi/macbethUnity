@@ -2523,7 +2523,18 @@ export class App {
    */
   setMode(mode: Mode): void {
     if (this.state.mode === mode) return;
+    const wasSculpt = this.state.mode === "sculpt";
     this.state.mode = mode;
+    // スカルプトの既定の表示はワイヤー無しのシェード（`40` の T4）。
+    // ワイヤーだけで 1 フレームが 1.85 倍になる。入る前の表示を控えて、戻すときに戻す
+    if (mode === "sculpt") {
+      this.state.displayBeforeSculpt = this.state.display;
+      if (this.state.display !== "smooth") this.setDisplay("smooth");
+    } else if (wasSculpt && this.state.displayBeforeSculpt) {
+      const back = this.state.displayBeforeSculpt;
+      this.state.displayBeforeSculpt = null;
+      if (this.state.display !== back) this.setDisplay(back);
+    }
     byId("modeLabel").textContent = MODE_LABELS[mode];
     this.closePopup();
     this.multicut.clear();
@@ -4601,7 +4612,7 @@ export class App {
       uvHeat: this.state.uvHeat,
       checker: this.state.checker,
       display: this.state.display,
-      cullBack: this.state.cullBack,
+      cullBack: this.state.cullBackNow,
       showGrid: this.state.showGrid,
       transfer: {
         ...this.state.transfer,
@@ -4868,13 +4879,20 @@ export class App {
       },
       onDisplayToggle: (key, on) => {
         if (key === "cullBack") {
-          this.state.cullBack = on;
+          // スカルプトでは別の設定（`40` の T4）。既定オンで、切りたい人だけ切る
+          if (this.state.mode === "sculpt") {
+            this.state.sculptCullBack = on;
+            this.remember("sculptCullBack", on);
+          } else {
+            this.state.cullBack = on;
+            this.remember(key, on);
+          }
           this.viewport.applyCulling();
         } else {
           this.state.showGrid = on;
           this.viewport.setGridVisible(on);
+          this.remember(key, on);
         }
-        this.remember(key, on);
         this.hud.toast(
           key === "cullBack" ? (on ? "裏面を描かない" : "両面を描く") : on ? "グリッド: オン" : "グリッド: オフ",
         );
@@ -5129,6 +5147,7 @@ export class App {
     }
     if (read("attrDock") === "bottom") this.attrDock = "bottom";
     this.state.cullBack = read("cullBack") === "true";
+    this.state.sculptCullBack = read("sculptCullBack") !== "false";
     this.state.showGrid = read("showGrid") !== "false";
     const segs = Number(read("bridgeSegments"));
     if (Number.isFinite(segs) && segs >= 1 && segs <= 16) this.state.bridgeSegments = Math.round(segs);

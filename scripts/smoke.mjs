@@ -1841,6 +1841,96 @@ check(
     `カーブ 1 で ${brushes.soft.toFixed(3)} → 4 で ${brushes.hard.toFixed(3)} / カットイン「${brushes.panelText.slice(0, 12)}」`,
 );
 
+/* 17t. 軽くする（`40`）: 離しても作り直さない、法線は部分更新で一致、スカルプトの既定表示 */
+const light = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const core = window.macbethCore;
+  const keep = [...app.state.doc.objects];
+  const keepSel = app.state.selected;
+  const camBefore = app.viewport.saveLayout();
+  app.setMode("model");
+  app.setDisplay("shadedWire");
+  app.state.doc.objects.length = 0;
+  const o = app.state.doc.addMesh(
+    core.PRIMITIVES.sphere.build({ ...core.defaultParams("sphere"), sdAxis: 24, sdHeight: 16 }),
+    "Light",
+  );
+  app.viewport.syncAll();
+  app.state.select(o);
+  const displayBefore = app.state.display;
+  const cullModel = app.state.cullBackNow;
+  app.setMode("sculpt");
+  const displayInSculpt = app.state.display;
+  const cullSculpt = app.state.cullBackNow;
+  const view = app.viewport.viewOf(o);
+  const sideInSculpt = view.surface.material.side;
+  await app.levelForTest("add");
+  await app.levelForTest("add");
+  app.viewport.frameSelected();
+  app.refresh();
+  await new Promise((r) => setTimeout(r, 120));
+
+  const pane = document.getElementById("pane3d").getBoundingClientRect();
+  const gl = document.getElementById("gl");
+  const cx = pane.left + pane.width / 2;
+  const cy = pane.top + pane.height / 2;
+  const ev = (type, x, y) =>
+    new PointerEvent(type, {
+      pointerId: 79, pointerType: "pen", bubbles: true, cancelable: true,
+      clientX: x, clientY: y, pressure: 0.9, buttons: type === "pointerup" ? 0 : 1,
+    });
+  const count0 = app.viewport.refreshPositionsCount;
+  gl.dispatchEvent(ev("pointerdown", cx - 60, cy));
+  for (let i = 1; i <= 24; i++) gl.dispatchEvent(ev("pointermove", cx - 60 + i * 5, cy));
+  gl.dispatchEvent(ev("pointerup", cx + 60, cy));
+  await new Promise((r) => setTimeout(r, 40));
+  const rebuilt = app.viewport.refreshPositionsCount - count0;
+  const moved = app.history.lastEntry()?.kind;
+
+  // 離したあとの法線が、丸ごと作り直した場合と一致する
+  const v2 = app.viewport.viewOf(o);
+  const partial = v2.surface.geometry.getAttribute("normal").array;
+  const mesh = app.viewport.meshOf(o);
+  const full = window.macbethMeshView.surfaceGeometry(mesh, v2.tri, app.state.smoothAngle).getAttribute("normal").array;
+  let maxDiff = 0;
+  let changed = 0;
+  for (let i = 0; i < full.length; i++) maxDiff = Math.max(maxDiff, Math.abs(full[i] - partial[i]));
+  // 動く前の法線（球の頂点の位置と同じ向き）から変わったコーナーがある = 陰影が付いてきた
+  const pos = v2.surface.geometry.getAttribute("position").array;
+  for (let i = 0; i < full.length; i += 3) {
+    const L = Math.hypot(pos[i], pos[i + 1], pos[i + 2]) || 1;
+    const dot = (pos[i] * partial[i] + pos[i + 1] * partial[i + 1] + pos[i + 2] * partial[i + 2]) / L;
+    if (dot < 0.999) changed++;
+  }
+
+  app.setMode("model");
+  const displayBack = app.state.display;
+  const cullBack = app.state.cullBackNow;
+  app.state.doc.objects.length = 0;
+  app.state.doc.objects.push(...keep);
+  app.viewport.syncAll();
+  if (keepSel) app.state.select(keepSel);
+  app.viewport.restoreLayout(camBefore);
+  app.refresh();
+  return { displayBefore, displayInSculpt, displayBack, cullModel, cullSculpt, cullBack, sideInSculpt, rebuilt, moved, maxDiff, changed, corners: full.length / 3 };
+});
+check(
+  "軽くする: 離しても作り直さず、法線は部分更新で一致し、スカルプトはワイヤー無し + 裏面なし",
+  light.rebuilt === 0 &&
+    light.moved === "sculpt" &&
+    light.maxDiff < 1e-4 &&
+    light.changed > 0 &&
+    light.displayBefore === "shadedWire" &&
+    light.displayInSculpt === "smooth" &&
+    light.displayBack === "shadedWire" &&
+    light.cullSculpt === true &&
+    light.cullModel === false &&
+    light.cullBack === false &&
+    light.sideInSculpt === 0,
+  `作り直し ${light.rebuilt} 回 / 履歴 ${light.moved} / 法線の差 ${light.maxDiff.toExponential(1)}（変わったコーナー ${light.changed}/${light.corners}） / ` +
+    `表示 ${light.displayBefore} → ${light.displayInSculpt} → ${light.displayBack} / 裏面 ${light.cullModel} → ${light.cullSculpt}（side ${light.sideInSculpt}） → ${light.cullBack}`,
+);
+
 /* 17r. スカルプト中のカメラとマニピュレータ（`36`） */
 const sculptCam = await page.evaluate(async () => {
   const app = window.macbeth;
