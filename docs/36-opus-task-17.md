@@ -256,6 +256,26 @@ SHF はスカルプトの一時スムースでもある（`34` の T3）が、�
 
 ---
 
+## 着手のときの手がかり（設計担当が読んだ場所。行番号は 2026-09-10 時点）
+
+| 何 | どこ |
+|---|---|
+| 指 / ペン / マウスの振り分け | `src/app/input/gestures.ts` の `pointerdown`（440〜470 行）。touch だけ `isOnMesh` を訊く枝が 457 行 |
+| `fingerCam` の旗 | 同 330 行。`false` で固定、UI 無し |
+| ツールの対象か（ハンドル込み） | `src/app/app.ts` の `isOnMesh` ハンドラ（805 行） |
+| マニピュレータの出し入れ | `app.ts` の `refreshManipulator`（2092 行）。`tool !== "select"` で `clear()` |
+| 回転の中心の候補 | `app.ts` の `pivotWorld`（2278 行）。選択の箱の中心 / オブジェクトの位置 / 手で置いたピボット |
+| タンブル・パン・ズーム | `src/app/render/viewport.ts` の `tumble`（531 行）/ `pan` / `dollyAbout`（554 行。**これが手本**）/ `frameSelected`（564 行。全体の箱の計算） |
+| 標準ビュー 6 つの角度 | `viewport.ts` の `STANDARD_VIEWS`（66 行） |
+| 「表示」の切り替え項目 | `app.ts` の `item("左利き", ...)`（5317 行あたり）。同じ作法で足す |
+| 修飾の状態 | `state.modOn("shift")`。PC のキーは `e.shiftKey` と OR（`altOn` / `shiftOn` ハンドラが 821 行） |
+
+通し確認の書き方は `34` の T3 / T4 の項目（`smoke.mjs` の 17o / 17o2）が手本。
+**長押しメニュー付きのボタンは `click()` では動かない**（ポインタで見ている）。
+片づけの決まりも同じ。
+
+---
+
 ## 決めてあること
 
 - カメラの 2 系統切り替えは作らない。Alt の意味と右ドラッグは Maya のまま
