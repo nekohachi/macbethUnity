@@ -7,6 +7,8 @@
 import { Euler, Matrix4, Plane, Quaternion, Raycaster, Vector3 } from "three";
 import {
   PRIMITIVES,
+  blurMask,
+  invertMask,
   PRIMITIVE_ORDER,
   UV_SET,
   bridgeEdges,
@@ -451,6 +453,11 @@ export class App {
     else if (what === "down") await this.goLevel((this.state.selected?.activeLevel ?? 0) - 1);
     else if (what === "dropAbove") this.dropAboveLevel();
     else this.burnDownLevel();
+  }
+
+  /** マスクの長押しメニュー（`34` の T4）。通し確認から中身を叩くため。 */
+  maskMenuForTest(): RadialMenu {
+    return this.maskMenu();
   }
 
   panelHostForTest(): PanelHost {
@@ -3901,6 +3908,19 @@ export class App {
         onTap: () => {},
       },
       { kind: "separator" },
+      { kind: "label", text: "マスク" },
+      {
+        kind: "button",
+        id: "mask",
+        icon: ICONS.mask,
+        title: "マスク（タップで CTL の入り切り · 長押しで ぼかし / 反転 / 全解除 / 裏面）",
+        // 修飾クラスタの CTL と**同じ状態**を指す。片方を押せば両方光る
+        pressed: () => this.state.modOn("ctrl"),
+        badge: () => (this.state.selected?.mask ? "M" : ""),
+        radial: () => this.maskMenu(),
+        onTap: () => this.toggleMaskPaint(),
+      },
+      { kind: "separator" },
       { kind: "label", text: "段" },
       {
         kind: "button",
@@ -3917,6 +3937,95 @@ export class App {
       { kind: "label", text: "シェード" },
       ...shared,
     ];
+  }
+
+  /* ---- マスク（`34` の T4） ------------------------------------------- */
+
+  /**
+   * マスクを描く状態の入り切り。**修飾クラスタの CTL そのもの**を触る。
+   * 別の状態にすると「ボタンは光っているのに CTL は消えている」が起きる。
+   */
+  private toggleMaskPaint(): void {
+    this.state.mods.ctrl = this.state.modOn("ctrl") ? "off" : "on";
+    this.syncModButtons();
+    this.renderToolColumn();
+    this.hud.refreshStats();
+    this.hud.toast(this.state.modOn("ctrl") ? "マスクを描きます（ALT で消す）" : "彫ります");
+  }
+
+  /**
+   * マスクの長押しメニュー（`34` の T4）。
+   *
+   * ぼかし・反転・全解除は**マスクを丸ごと入れ替える**ので、履歴は
+   * `pushMaskChange`（全頂点を前後で持つ）。段の全複製よりずっと軽い。
+   */
+  private maskMenu(): RadialMenu {
+    const o = this.state.selected;
+    const has = !!o?.mask;
+    const back = this.state.brush.backfaceMask;
+    const need = (): boolean => {
+      if (!o?.mask) {
+        this.hud.toast("マスクはありません");
+        return false;
+      }
+      return true;
+    };
+    // 入れ替える前の値を控えてから走らせる
+    const change = (label: string, run: () => void): void => {
+      if (!need() || !o) return;
+      const level = o.mask!.level;
+      const before = o.mask!.values.slice();
+      run();
+      this.history.pushMaskChange(o, level, before, label);
+      this.viewport.refreshMaskAll(o);
+      this.renderToolColumn();
+      this.refresh();
+      this.hud.toast(label);
+    };
+    return {
+      N: {
+        label: "ぼかす",
+        sub: "境目をなじませる",
+        icon: ICONS.smooth,
+        run: () =>
+          change("マスクをぼかした", () => {
+            // **マスクの段の三角形**で数える。見ている段が違うと頂点の番号が
+            // ずれて、見当違いの所がなじむ。ふつうは同じなので作り直さない
+            const view = this.viewport.viewOf(o!);
+            const level = o!.mask!.level;
+            const tris = view && o!.activeLevel === level ? view.tri : levelsOf(o!).level(level).triangulate();
+            blurMask(tris, o!.mask!.values);
+          }),
+      },
+      E: {
+        label: "反転",
+        sub: "彫る所と守る所を入れ替える",
+        icon: ICONS.sym,
+        run: () =>
+          change("マスクを反転した", () => {
+            invertMask(o!.mask!.values);
+          }),
+      },
+      S: {
+        label: "全解除",
+        sub: has ? "マスクを捨てる" : "マスクはありません",
+        icon: ICONS.eraseAll,
+        run: () =>
+          change("マスクを全解除した", () => {
+            o!.mask = null;
+          }),
+      },
+      W: {
+        label: back ? "裏面マスクを切る" : "裏面マスクを入れる",
+        sub: back ? "オン（背を向けた面は彫らない）" : "オフ（裏まで彫る）",
+        icon: ICONS.mask,
+        run: () => {
+          this.state.brush.backfaceMask = !back;
+          this.renderToolColumn();
+          this.hud.toast(this.state.brush.backfaceMask ? "裏面マスク オン" : "裏面マスク オフ");
+        },
+      },
+    };
   }
 
   /** ブラシの長押しメニュー（`33` の T4）。種類と対称。 */

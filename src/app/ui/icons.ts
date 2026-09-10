@@ -53,6 +53,8 @@ export const ICONS = {
   /** 歪みのヒートマップ（`23` の T2）。炎で「熱い＝歪んでいる」を表す。 */
   heat: "<path d=\"M12 3.2c3.4 3.4 5.6 6.1 5.6 9.3a5.6 5.6 0 0 1-11.2 0c0-1.7.6-3.1 1.8-4.7.6 1.4 1.4 2.2 2.4 2.5-.6-2.5-.4-4.7 1.4-7.1z\"/>",
   poles: "<path d=\"M4 5h16v14H4z\"/><path d=\"M12 12 4 5M12 12l8-7M12 12l-8 7M12 12l8 7M12 12h-8M12 12h8\"/><circle cx=\"12\" cy=\"12\" r=\"1.8\"/>",
+  mask: "<circle cx=\"12\" cy=\"12\" r=\"8.5\"/><path d=\"M12 3.5a8.5 8.5 0 0 0 0 17z\" fill=\"currentColor\"/>",
+  eraseAll: "<circle cx=\"12\" cy=\"12\" r=\"8.5\"/><path d=\"m8.4 8.4 7.2 7.2M15.6 8.4l-7.2 7.2\"/>",
   mUV: "<rect x=\"3.4\" y=\"3.4\" width=\"17.2\" height=\"17.2\" rx=\"1\"/><path d=\"M3.4 12h17.2M12 3.4v17.2\" stroke-dasharray=\"2.6 2.2\"/>",
   mSculpt: "<path d=\"M16.4 3.6 20.4 7.6 9.6 18.4l-5.2 1.2 1.2-5.2z\"/><path d=\"m14.4 5.6 4 4\"/>",
   mMaterial: "<circle cx=\"12\" cy=\"12\" r=\"8.6\"/><path d=\"M12 3.4a8.6 8.6 0 0 1 0 17.2z\" fill=\"currentColor\" fill-opacity=\".45\"/><path d=\"M3.4 12h17.2\"/>",

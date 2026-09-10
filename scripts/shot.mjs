@@ -1066,6 +1066,78 @@ const scenes = {
     await new Promise((done) => setTimeout(done, 700));
   },
 
+  /** `34`: マスクを描いたところ。塗った所が暗くなる。 */
+  "34-mask": async () => {
+    const app = window.macbeth;
+    const core = window.macbethCore;
+    app.state.doc.objects.length = 0;
+    const o = app.state.doc.addMesh(
+      core.PRIMITIVES.sphere.build({ ...core.defaultParams("sphere"), sdAxis: 24, sdHeight: 16 }),
+      "Masked",
+    );
+    app.viewport.syncAll();
+    app.state.select(o);
+    app.setMode("sculpt");
+    await app.levelForTest("add");
+    await app.levelForTest("add");
+    app.viewport.frameSelected();
+    // **ワイヤを消す。** レベル 2 は 1 万本あって、マスクの暗さが読めない
+    app.setDisplay("smooth");
+    app.refresh();
+    await new Promise((done) => setTimeout(done, 150));
+
+    // CTL を入れて、球の上を何度かなぞる
+    app.state.mods.ctrl = "on";
+    app.refresh();
+    const pane = document.getElementById("pane3d").getBoundingClientRect();
+    const gl = document.getElementById("gl");
+    const cx = pane.left + pane.width / 2;
+    const cy = pane.top + pane.height / 2;
+    const ev = (type, x, y) =>
+      new PointerEvent(type, {
+        pointerId: 90, pointerType: "pen", bubbles: true, cancelable: true,
+        clientX: x, clientY: y, pressure: 0.9, buttons: type === "pointerup" ? 0 : 1,
+      });
+    // 1 打ちの濃さは筆の半径に対して決まっているので、塗り切るには重ねる
+    for (let pass = 0; pass < 3; pass++) {
+      for (let row = -2; row <= 2; row++) {
+        const y = cy + row * 20;
+        gl.dispatchEvent(ev("pointerdown", cx - 70, y));
+        for (let i = 1; i <= 28; i++) gl.dispatchEvent(ev("pointermove", cx - 70 + i * 5, y));
+        gl.dispatchEvent(ev("pointerup", cx + 70, y));
+        await new Promise((done) => setTimeout(done, 25));
+      }
+    }
+    app.state.mods.ctrl = "off";
+    // マニピュレータが色を隠すので選択を外す
+    app.state.select(null);
+    app.refresh();
+    await new Promise((done) => setTimeout(done, 250));
+  },
+
+  /** `34` の T4: マスクの長押しメニュー。 */
+  "34-t4-mask-menu": async () => {
+    const app = window.macbeth;
+    const core = window.macbethCore;
+    app.state.doc.objects.length = 0;
+    const o = app.state.doc.addMesh(
+      core.PRIMITIVES.sphere.build({ ...core.defaultParams("sphere"), sdAxis: 16, sdHeight: 12 }),
+      "Head",
+    );
+    app.viewport.syncAll();
+    app.state.select(o);
+    app.setMode("sculpt");
+    await app.levelForTest("add");
+    app.viewport.frameSelected();
+    app.refresh();
+    // マスクのボタンを長押ししてメニューを開く
+    const btn = document.querySelector('#dockLeft [data-group="mask"]');
+    const r = btn.getBoundingClientRect();
+    const at = { clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, pointerId: 1, isPrimary: true };
+    btn.dispatchEvent(new PointerEvent("pointerdown", { ...at, bubbles: true }));
+    await new Promise((done) => setTimeout(done, 700));
+  },
+
   /** `35` の T2: 極（価数）の表示。三角形と n 角形の痕がどこに残るか。 */
   "35-t2-poles": async () => {
     const app = window.macbeth;

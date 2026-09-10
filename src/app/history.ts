@@ -541,7 +541,10 @@ export class History {
       } else {
         // 段が違えば作り直す。マスクは 1 つの段にしか無いので、
         // 差分の段のものとして入れ直す（`34` の T3）
-        const size = d.verts.length ? Math.max(...Array.from(d.verts)) + 1 : 0;
+        // **`Math.max(...)` を使わないこと。** 25 万四角形のマスクは頂点が
+        // 数十万あり、引数に展開するとスタックが溢れる（`30` の T1 で踏んだ）
+        let size = 0;
+        for (const v of d.verts) if (v + 1 > size) size = v + 1;
         let m = d.ref.mask;
         if (!m || m.level !== d.level) {
           m = { level: d.level, values: new Float32Array(Math.max(size, m?.values.length ?? 0)) };

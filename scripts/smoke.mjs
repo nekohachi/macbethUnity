@@ -438,7 +438,7 @@ check(
   `マテリアル: 予定表 ${inStub.stub} / ツール ${inStub.tools} → モデリング: ツール ${backToModel.tools}`,
 );
 
-/* 17b. スカルプトは 3D が出て、段のボタンが並ぶ（`32` の T3） */
+/* 17b. スカルプトは 3D が出て、筆・マスク・段のボタンが並ぶ（`32` の T3。`34` の T4 でマスクを足した） */
 await page.evaluate(() => window.macbeth.setMode("sculpt"));
 const inSculpt = await page.evaluate(() => ({
   stub: !document.getElementById("modeStub").hidden,
@@ -449,9 +449,9 @@ const inSculpt = await page.evaluate(() => ({
 }));
 await page.evaluate(() => window.macbeth.setMode("model"));
 check(
-  "スカルプトは 3D が出て、筆と段のボタンが並ぶ",
+  "スカルプトは 3D が出て、筆・マスク・段のボタンが並ぶ",
   !inSculpt.stub && !inSculpt.stage && inSculpt.label === "スカルプト" &&
-    inSculpt.groups[0] === "brush" && inSculpt.groups[1] === "level" &&
+    inSculpt.groups[0] === "brush" && inSculpt.groups[1] === "mask" && inSculpt.groups[2] === "level" &&
     inSculpt.groups.includes("display") &&
     inSculpt.groups.includes("camera") && inSculpt.groups.includes("layout"),
   `予定表 ${inSculpt.stub} / ツール ${inSculpt.groups.join(" · ")} / ゲージ「${inSculpt.gauge}」`,
@@ -1145,6 +1145,150 @@ check(
     `頂点色 ${maskPaint.colored}・いちばん暗い ${maskPaint.darkest.toFixed(2)} / ` +
     `彫って ${maskPaint.movedTotal} 頂点、うち塗り切った所 ${maskPaint.movedFrozen} 個（塗り切りは ${maskPaint.frozenCount}）/ ` +
     `SHF のあとも ${maskPaint.kindAfterShift} / 取り消しで消える ${maskPaint.maskGone}`,
+);
+
+/* 17o2. マスクのボタンと長押しメニュー（`34` の T4） */
+const maskMenu = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const core = window.macbethCore;
+  const keep = app.state.doc.objects.slice();
+  const camBefore = app.viewport.saveLayout();
+  const modeBefore = app.state.mode;
+  const selBefore = app.state.selected;
+  const modsBefore = { ...app.state.mods };
+  const backBefore = app.state.brush.backfaceMask;
+
+  app.state.doc.objects.length = 0;
+  const o = app.state.doc.addMesh(
+    core.PRIMITIVES.sphere.build({ ...core.defaultParams("sphere"), sdAxis: 16, sdHeight: 12 }),
+    "MaskMenu",
+  );
+  app.viewport.syncAll();
+  app.state.select(o);
+  app.setMode("sculpt");
+  await app.levelForTest("add");
+  app.refresh();
+
+  // ツール列にマスクのボタンが出ている
+  const hasButton = !!document.querySelector('#dockLeft [data-group="mask"]');
+  // **長押しメニュー付きのボタンは click では動かない**（ポインタで見ている）。
+  // 押してすぐ離すのがタップ
+  const tapMask = async () => {
+    const b = document.querySelector('#dockLeft [data-group="mask"]');
+    if (!b) return;
+    const r = b.getBoundingClientRect();
+    const at = {
+      pointerId: 55, pointerType: "touch", bubbles: true, cancelable: true, isPrimary: true,
+      clientX: r.left + r.width / 2, clientY: r.top + r.height / 2,
+    };
+    b.dispatchEvent(new PointerEvent("pointerdown", at));
+    await new Promise((r2) => setTimeout(r2, 40));
+    window.dispatchEvent(new PointerEvent("pointerup", at));
+    await new Promise((r2) => setTimeout(r2, 60));
+  };
+  await tapMask();
+  const afterTap = {
+    ctrl: app.state.mods.ctrl,
+    // 修飾クラスタは aria-pressed ではなく data-state で見せている
+    clusterState: document.getElementById("modCtrl")?.dataset.state,
+    btnPressed: document.querySelector('#dockLeft [data-group="mask"]')?.getAttribute("aria-pressed"),
+  };
+  await tapMask();
+  const afterTap2 = app.state.mods.ctrl;
+
+  // まだマスクが無い状態で「ぼかす」→ 何も起きず、言い訳が出る
+  const menu = app.maskMenuForTest();
+  menu.N.run();
+  const emptyToast = document.getElementById("hudHint")?.textContent ?? "";
+  const stillNone = o.mask === null;
+
+  // マスクを置いてから、ぼかし → 反転 → 全解除
+  const level = o.activeLevel;
+  const n = o.stack.level(level).vertexCount;
+  const values = new Float32Array(n);
+  for (let v = 0; v < n; v++) values[v] = v % 2; // ぎざぎざ
+  o.mask = { level, values };
+  app.viewport.refreshMaskAll(o);
+  const spread = (a) => {
+    let m = 0;
+    for (const x of a) m += x;
+    m /= a.length;
+    let s = 0;
+    for (const x of a) s += (x - m) ** 2;
+    return s / a.length;
+  };
+  const before = spread(o.mask.values);
+  app.maskMenuForTest().N.run();
+  const afterBlur = spread(o.mask.values);
+  const blurEntry = app.history.lastEntry()?.kind;
+
+  const sample = o.mask.values[3];
+  app.maskMenuForTest().E.run();
+  const inverted = Math.abs(o.mask.values[3] - (1 - sample)) < 1e-6;
+
+  app.maskMenuForTest().S.run();
+  const cleared = o.mask === null;
+  const materialPlain = app.viewport.viewOf(o)?.surface.material.vertexColors !== true;
+
+  // 取り消しで戻る（全解除 → 反転 → ぼかし）
+  app.history.undo();
+  const backAfterUndo = o.mask !== null;
+
+  // 裏面マスクの入り切り。**メニューの中身を直に叩かず、輪から選ぶ。**
+  // マスクのボタンは左端にあるので輪が画面からはみ出す。輪は端で切れても
+  // 「引いた向き」で選ぶ決まりなので（`radial.ts` の 100 行目。`33` で
+  // 「段が足せない」を踏んだ所）、**西へ引いて本当に選べるか**を見る
+  const btn3 = document.querySelector('#dockLeft [data-group="mask"]');
+  const r3 = btn3.getBoundingClientRect();
+  const start = { clientX: r3.left + r3.width / 2, clientY: r3.top + r3.height / 2 };
+  btn3.dispatchEvent(new PointerEvent("pointerdown", { ...start, pointerId: 56, pointerType: "touch", bubbles: true, cancelable: true, isPrimary: true }));
+  await new Promise((r) => setTimeout(r, 300)); // 長押しが開くのを待つ
+  const ringOpen = !!document.querySelector(".radial");
+  // 西へ大きく引く
+  window.dispatchEvent(new PointerEvent("pointermove", { ...start, clientX: start.clientX - 140, pointerId: 56, pointerType: "touch", bubbles: true }));
+  await new Promise((r) => setTimeout(r, 40));
+  window.dispatchEvent(new PointerEvent("pointerup", { ...start, clientX: start.clientX - 140, pointerId: 56, pointerType: "touch", bubbles: true }));
+  await new Promise((r) => setTimeout(r, 60));
+  const backToggled = app.state.brush.backfaceMask !== backBefore;
+
+  // 片づけ
+  app.state.brush.backfaceMask = backBefore;
+  app.state.mods.ctrl = modsBefore.ctrl;
+  app.state.mods.shift = modsBefore.shift;
+  app.state.mods.alt = modsBefore.alt;
+  app.setMode(modeBefore);
+  app.state.doc.objects.length = 0;
+  app.state.doc.objects.push(...keep);
+  app.viewport.syncAll();
+  app.viewport.restoreLayout(camBefore);
+  app.state.select(selBefore ?? keep[0] ?? null);
+  app.history.clear();
+  app.refresh();
+  return {
+    hasButton, afterTap, afterTap2, emptyToast, stillNone,
+    before, afterBlur, blurEntry, inverted, cleared, materialPlain, backAfterUndo, backToggled, ringOpen,
+  };
+});
+check(
+  "マスクのボタン: タップで CTL、長押しで ぼかし / 反転 / 全解除 / 裏面",
+  maskMenu.hasButton &&
+    maskMenu.afterTap.ctrl === "on" &&
+    maskMenu.afterTap.clusterState === "on" &&
+    maskMenu.afterTap.btnPressed === "true" &&
+    maskMenu.afterTap2 === "off" &&
+    maskMenu.stillNone &&
+    maskMenu.emptyToast.includes("マスクはありません") &&
+    maskMenu.afterBlur < maskMenu.before &&
+    maskMenu.blurEntry === "mask" &&
+    maskMenu.inverted &&
+    maskMenu.cleared &&
+    maskMenu.materialPlain &&
+    maskMenu.backAfterUndo &&
+    maskMenu.ringOpen &&
+    maskMenu.backToggled,
+  `ボタン ${maskMenu.hasButton} / タップで CTL ${maskMenu.afterTap.ctrl}（クラスタも ${maskMenu.afterTap.clusterState}）→ ${maskMenu.afterTap2} / ` +
+    `無いのにぼかす → 「${maskMenu.emptyToast}」/ ぼかしでばらつき ${maskMenu.before.toFixed(3)} → ${maskMenu.afterBlur.toFixed(3)}（履歴 ${maskMenu.blurEntry}）/ ` +
+    `反転 ${maskMenu.inverted} / 全解除 ${maskMenu.cleared}・素の材質 ${maskMenu.materialPlain} / 取り消しで戻る ${maskMenu.backAfterUndo} / 裏面 ${maskMenu.backToggled}`,
 );
 
 /* 17p. マスクが段について回り、.mbz に残る（`34` の T2） */
