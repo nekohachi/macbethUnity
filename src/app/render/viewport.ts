@@ -23,7 +23,6 @@ import {
   OrthographicCamera,
   PerspectiveCamera,
   Points,
-  Quaternion,
   Scene,
   Vector3,
   WebGLRenderTarget,
@@ -81,10 +80,54 @@ const MIN_DIST = 0.3;
 const MAX_DIST = 140;
 
 /** ピボット回転の控え（1 コマごとに作らないため）。 */
-const orbitFrom = new Vector3();
-const orbitTo = new Vector3();
-const orbitQuat = new Quaternion();
+const orbitRight = new Vector3();
+const orbitUp = new Vector3();
+const orbitFwd = new Vector3();
+const orbitOff = new Vector3();
 const contentBox = new Box3();
+
+/** 球座標から向き。`applyCameraTo` と同じ式（的からカメラへ）。 */
+function dirOf(theta: number, phi: number, out: Vector3): Vector3 {
+  return out.set(Math.sin(phi) * Math.sin(theta), Math.cos(phi), Math.sin(phi) * Math.cos(theta));
+}
+
+/**
+ * その角度でのカメラの基底（右・上・前）。
+ *
+ * **`lookAt` と同じ決まりで組むこと。** 上は毎回ワールドの上から取り直される
+ * ので、2 つの向きの「最短回転」では実際の向きの変化と食い違う
+ * （最初そう書いて、水平に回しただけで的の Y が動いた）。
+ */
+function basisOf(theta: number, phi: number, right: Vector3, up: Vector3, fwd: Vector3): void {
+  dirOf(theta, phi, fwd).multiplyScalar(-1); // 前 = カメラから的へ
+  right.set(fwd.z, 0, -fwd.x).normalize();
+  up.copy(right).cross(fwd).multiplyScalar(-1).normalize();
+}
+
+/**
+ * いちばん近い標準ビューの角度（`36` の T4。ZBrush の Shift）。
+ *
+ * 視線の向きで比べる。θ を数で比べると 2π を跨ぐ所で隣が遠くなるし、
+ * 真上・真下では θ が意味を持たない。**向きの内積がいちばん大きいもの**を選べば
+ * どちらも起きない。
+ */
+function nearestStandardView(theta: number, phi: number): { theta: number; phi: number } {
+  dirOf(theta, phi, snapDir);
+  let best = STANDARD_VIEWS.front;
+  let bestDot = -Infinity;
+  for (const v of Object.values(STANDARD_VIEWS)) {
+    dirOf(v.theta, v.phi, snapCand);
+    const dot = snapDir.dot(snapCand);
+    if (dot > bestDot) {
+      bestDot = dot;
+      best = v;
+    }
+  }
+  return { theta: best.theta, phi: best.phi };
+}
+
+const snapDir = new Vector3();
+const snapCand = new Vector3();
 
 /** 筆の輪を組むための控え（1 コマごとに作らないため）。 */
 const brushInv = new Matrix4();
@@ -559,17 +602,44 @@ export class Viewport {
    * φ の詰めで実際の回転が要求より小さくなっても、`v'` は詰めたあとの値なので
    * 食い違わない。
    */
-  tumbleAbout(pivot: Vector3, dx: number, dy: number): void {
+  tumbleAbout(pivot: Vector3 | null, dx: number, dy: number, snap?: { theta: number; phi: number }): void {
     if (this.locked) return;
     const cam = this.cam;
-    const dir = (theta: number, phi: number, out: Vector3): Vector3 =>
-      out.set(Math.sin(phi) * Math.sin(theta), Math.cos(phi), Math.sin(phi) * Math.cos(theta));
-    dir(cam.theta, cam.phi, orbitFrom);
-    cam.theta -= dx * 0.0088;
-    cam.phi = Math.max(0.05, Math.min(Math.PI - 0.05, cam.phi - dy * 0.0088));
-    dir(cam.theta, cam.phi, orbitTo);
-    orbitQuat.setFromUnitVectors(orbitFrom, orbitTo);
-    cam.target.sub(pivot).applyQuaternion(orbitQuat).add(pivot);
+
+    // 回す前のカメラの基底。的からピボットへの向きを**この基底で**書き留める
+    let ox = 0;
+    let oy = 0;
+    let oz = 0;
+    if (pivot) {
+      basisOf(cam.theta, cam.phi, orbitRight, orbitUp, orbitFwd);
+      orbitOff.copy(cam.target).sub(pivot);
+      ox = orbitOff.dot(orbitRight);
+      oy = orbitOff.dot(orbitUp);
+      oz = orbitOff.dot(orbitFwd);
+    }
+
+    if (snap) {
+      // SHF: 生の角度を別に積んで、`cam` には吸着した値を入れる（`36` の T4）
+      snap.theta -= dx * 0.0088;
+      snap.phi = Math.max(0.05, Math.min(Math.PI - 0.05, snap.phi - dy * 0.0088));
+      const near = nearestStandardView(snap.theta, snap.phi);
+      cam.theta = near.theta;
+      cam.phi = near.phi;
+    } else {
+      cam.theta -= dx * 0.0088;
+      cam.phi = Math.max(0.05, Math.min(Math.PI - 0.05, cam.phi - dy * 0.0088));
+    }
+
+    if (pivot) {
+      // 新しい基底で同じ書き方に戻す。**ピボットはカメラから見た位置が変わらない**
+      // ので、画面の上でも動かない
+      basisOf(cam.theta, cam.phi, orbitRight, orbitUp, orbitFwd);
+      cam.target
+        .copy(pivot)
+        .addScaledVector(orbitRight, ox)
+        .addScaledVector(orbitUp, oy)
+        .addScaledVector(orbitFwd, oz);
+    }
     this.applyCamera();
   }
 
@@ -605,6 +675,17 @@ export class Viewport {
    * 頂点を総なめしない（three が持っている境界箱を使う。ジオメトリを作り直す
    * まで控えが効くので、タンブルのたびに 25 万頂点を舐めずに済む）。
    */
+  /**
+   * いまの角度が標準ビューのどれかと一致しているか（`36` の T4 の通し確認）。
+   * 吸着が効いたことを、中を覗かずに見るため。
+   */
+  snappedForTest(): boolean {
+    for (const v of Object.values(STANDARD_VIEWS)) {
+      if (Math.abs(v.theta - this.cam.theta) < 1e-9 && Math.abs(v.phi - this.cam.phi) < 1e-9) return true;
+    }
+    return false;
+  }
+
   contentCenter(): Vector3 | null {
     const box = new Box3();
     let any = false;

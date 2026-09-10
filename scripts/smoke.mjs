@@ -1714,6 +1714,200 @@ check(
   `平面 [${polesView.flat}] / 球 [${polesView.ball}] / 五角錐 [${polesView.mixed}] / 戻すと素の材質 ${polesView.backToPlain}`,
 );
 
+/* 17r. スカルプト中のカメラとマニピュレータ（`36`） */
+const sculptCam = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const core = window.macbethCore;
+  const keep = app.state.doc.objects.slice();
+  const camBefore = app.viewport.saveLayout();
+  const modeBefore = app.state.mode;
+  const selBefore = app.state.selected;
+  const modsBefore = { ...app.state.mods };
+  const fingerBefore = app.state.ui.fingerCamera;
+
+  app.state.doc.objects.length = 0;
+  const o = app.state.doc.addMesh(
+    core.PRIMITIVES.sphere.build({ ...core.defaultParams("sphere"), sdAxis: 20, sdHeight: 14 }),
+    "Cam",
+  );
+  app.viewport.syncAll();
+  app.state.select(o);
+  app.setMode("sculpt");
+  await app.levelForTest("add");
+  app.viewport.frameSelected();
+  app.refresh();
+  await new Promise((r) => setTimeout(r, 120));
+
+  const pane = document.getElementById("pane3d").getBoundingClientRect();
+  const gl = document.getElementById("gl");
+  const cx = pane.left + pane.width / 2;
+  const cy = pane.top + pane.height / 2;
+  const ev = (type, x, y, kind) =>
+    new PointerEvent(type, {
+      pointerId: kind === "touch" ? 61 : 62, pointerType: kind, bubbles: true, cancelable: true,
+      clientX: x, clientY: y, pressure: kind === "pen" ? 0.9 : 0.5, buttons: type === "pointerup" ? 0 : 1,
+    });
+  const drag = async (x0, y0, dx, kind) => {
+    gl.dispatchEvent(ev("pointerdown", x0, y0, kind));
+    for (let i = 1; i <= 12; i++) gl.dispatchEvent(ev("pointermove", x0 + (i * dx) / 12, y0, kind));
+    gl.dispatchEvent(ev("pointerup", x0 + dx, y0, kind));
+    await new Promise((r) => setTimeout(r, 50));
+  };
+  const theta = () => app.viewport.cam.theta;
+  const shown = () => o.shown(app.state.shownLevel(o)).positions;
+  const movedCount = (a, b) => {
+    let n = 0;
+    for (let v = 0; v < a.length / 3; v++) {
+      if (Math.hypot(b[v * 3] - a[v * 3], b[v * 3 + 1] - a[v * 3 + 1], b[v * 3 + 2] - a[v * 3 + 2]) > 1e-6) n++;
+    }
+    return n;
+  };
+
+  /* --- T1: スカルプト中はギズモが出ない --- */
+  // `viewport.manip` の子は「マニピュレータの入れ物」1 つで固定。中身を数える
+  const gizmoParts = () => app.viewport.manip.children.reduce((n, c) => n + c.children.length, 0);
+  const gizmoInSculpt = gizmoParts();
+  app.setMode("model");
+  app.refresh();
+  const gizmoInModel = gizmoParts();
+  app.setMode("sculpt");
+  app.refresh();
+  await new Promise((r) => setTimeout(r, 60));
+
+  /* --- T2: 何も無い所をペンで引くと回る。上からは彫れる --- */
+  const outX = pane.left + 40;
+  const outY = pane.top + pane.height - 40;
+  const t0 = theta();
+  await drag(outX, outY, 60, "pen");
+  const tumbledOutside = Math.abs(theta() - t0) > 1e-4;
+
+  const before = shown().slice();
+  const t1 = theta();
+  await drag(cx - 30, cy, 60, "pen");
+  const carvedOnMesh = movedCount(before, shown()) > 5;
+  const cameraStill = Math.abs(theta() - t1) < 1e-9;
+
+  // モデリングでは何も無い所を引いてもカメラは動かない（矩形選択のまま）
+  app.setMode("model");
+  app.refresh();
+  const t2 = theta();
+  await drag(outX, outY, 60, "pen");
+  const modelNoTumble = Math.abs(theta() - t2) < 1e-9;
+  app.setMode("sculpt");
+  // **選び直す。** いまの引きはモデリングでは矩形選択なので、
+  // 何も無い所で離すと選択が外れる（外れたまま進むと、あとの指の項目が
+  // 「彫れる状態でない」で空振りする）
+  app.state.select(o);
+  app.refresh();
+
+  /* --- T3: パンで寄せてから回しても、模型がその場で回る --- */
+  app.viewport.frameSelected();
+  app.refresh();
+  const screenOf = () => {
+    const c = app.viewport.contentCenter();
+    if (!c) return null;
+    const cam = app.viewport.camera;
+    cam.updateMatrixWorld();
+    const v = c.clone().project(cam);
+    return [((v.x + 1) / 2) * pane.width, ((1 - v.y) / 2) * pane.height];
+  };
+  // 的を模型から外す（画面の端へ寄せる）
+  app.viewport.pan(180, 60);
+  app.refresh();
+  const p0 = screenOf();
+  await drag(outX, outY, 70, "pen");
+  const p1 = screenOf();
+  const drift = p0 && p1 ? Math.hypot(p1[0] - p0[0], p1[1] - p0[1]) : 999;
+  const distKept = true;
+
+  /* --- T4: SHF で軸に吸着 --- */
+  app.viewport.frameSelected();
+  app.state.mods.shift = "on";
+  app.refresh();
+  await drag(outX, outY, 40, "pen");
+  const views = core.STANDARD_VIEWS ?? null;
+  const snapped = app.viewport.snappedForTest();
+  app.state.mods.shift = "off";
+  app.refresh();
+  const t3 = theta();
+  await drag(outX, outY, 40, "pen");
+  const freeAfter = Math.abs(theta() - t3) > 1e-4;
+  const orthoAfterSnap = app.viewport.pane.camOpts.ortho;
+
+  /* --- T5: 指はカメラだけ --- */
+  app.viewport.frameSelected();
+  app.refresh();
+  const fingerCarve = async (on) => {
+    app.state.ui.fingerCamera = on;
+    app.applyFingerCameraForTest();
+    // **毎回フレームを合わせ直す。** 前のドラッグでカメラが回っているので、
+    // 同じ画面座標に模型が居るとは限らない
+    app.viewport.frameSelected();
+    app.refresh();
+    await new Promise((r) => setTimeout(r, 60));
+    const probe = app.strokeForTest({ x: cx - 30 - pane.left, y: cy - pane.top });
+    const was = shown().slice();
+    const th = theta();
+    await drag(cx - 30, cy, 60, "touch");
+    return {
+      carved: movedCount(was, shown()) > 5,
+      turned: Math.abs(theta() - th) > 1e-4,
+      onMesh: !!probe.hit,
+      canSculpt: probe.canSculpt,
+    };
+  };
+  const fingerOn = await fingerCarve(true);
+  const fingerOff = await fingerCarve(false);
+
+  // 片づけ
+  app.state.ui.fingerCamera = fingerBefore;
+  app.applyFingerCameraForTest();
+  app.state.mods.shift = modsBefore.shift;
+  app.state.mods.ctrl = modsBefore.ctrl;
+  app.state.mods.alt = modsBefore.alt;
+  app.setMode(modeBefore);
+  app.state.doc.objects.length = 0;
+  app.state.doc.objects.push(...keep);
+  app.viewport.syncAll();
+  app.viewport.restoreLayout(camBefore);
+  app.state.select(selBefore ?? keep[0] ?? null);
+  app.history.clear();
+  app.refresh();
+  return {
+    gizmoInSculpt, gizmoInModel,
+    tumbledOutside, carvedOnMesh, cameraStill, modelNoTumble,
+    drift, distKept, snapped, freeAfter, orthoAfterSnap,
+    fingerOn, fingerOff,
+  };
+});
+check(
+  "スカルプト: ギズモ無し・外を引くと回る・中心がブレない・SHF で軸に吸着・指はカメラだけ",
+  sculptCam.gizmoInSculpt === 0 &&
+    sculptCam.gizmoInModel > 0 &&
+    sculptCam.tumbledOutside &&
+    sculptCam.carvedOnMesh &&
+    sculptCam.cameraStill &&
+    sculptCam.modelNoTumble &&
+    sculptCam.drift < 12 &&
+    sculptCam.snapped &&
+    sculptCam.freeAfter &&
+    sculptCam.orthoAfterSnap === false &&
+    // 空振りでないこと（彫れる状態で、面の上を触っている）を先に見る
+    sculptCam.fingerOn.canSculpt &&
+    sculptCam.fingerOn.onMesh &&
+    sculptCam.fingerOff.canSculpt &&
+    sculptCam.fingerOff.onMesh &&
+    sculptCam.fingerOn.turned &&
+    !sculptCam.fingerOn.carved &&
+    sculptCam.fingerOff.carved,
+  `ギズモ スカルプト ${sculptCam.gizmoInSculpt} / モデリング ${sculptCam.gizmoInModel} · ` +
+    `外を引くと回る ${sculptCam.tumbledOutside}・上では彫れる ${sculptCam.carvedOnMesh}（カメラ静止 ${sculptCam.cameraStill}）・` +
+    `モデリングは回らない ${sculptCam.modelNoTumble} / ` +
+    `パン後のブレ ${sculptCam.drift.toFixed(1)}px / SHF で吸着 ${sculptCam.snapped}（投影そのまま ${!sculptCam.orthoAfterSnap}）・切ると自由 ${sculptCam.freeAfter} / ` +
+    `指カメラ オン 回る ${sculptCam.fingerOn.turned}・彫らない ${!sculptCam.fingerOn.carved}（面の上 ${sculptCam.fingerOn.onMesh}）/ ` +
+    `オフ 彫れる ${sculptCam.fingerOff.carved}（面の上 ${sculptCam.fingerOff.onMesh}・彫れる状態 ${sculptCam.fingerOff.canSculpt}）`,
+);
+
 /* 18. 縦持ちでもビューポートが縦一杯（右のドック列は空なので場所を取らない。`24` の T1） */
 await page.setViewportSize({ width: 744, height: 1133 }); // iPad mini の縦
 await page.waitForTimeout(200);
@@ -5555,7 +5749,9 @@ const viewMenu = await page.evaluate(async () => {
 });
 check(
   "表示メニュー: ヒントとポリゴンカウントを消せる、左利きで鏡映し",
-  viewMenu.labels.length === 4 &&
+  // 「指はカメラだけ」が増えて 5 つ（`36` の T5）
+  viewMenu.labels.length === 5 &&
+    viewMenu.labels.some((l) => l.includes("指はカメラだけ")) &&
     viewMenu.hintEmpty &&
     viewMenu.toastShown &&
     viewMenu.statsHidden &&

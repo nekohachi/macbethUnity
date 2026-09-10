@@ -1177,6 +1177,7 @@ export class UvMode {
       marqueeStart: () => {},
       tumble: () => {},
       tumblePivot: () => null,
+      snapStart: () => null,
       pan: (dx, dy) => this.view.pan(dx, dy),
       dolly: (factor) => this.view.zoom(factor),
       dollyAbout: (_pivot, factor) => this.view.zoom(factor),

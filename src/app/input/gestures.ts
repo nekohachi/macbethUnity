@@ -81,9 +81,17 @@ export interface GestureHandlers {
    * （`36` の T3）。**ジェスチャの始まりで 1 回だけ決めて、途中で取り直さない**
    * （毎コマ取り直すと滑る。`04` の 4.2）。
    */
-  tumble(dx: number, dy: number, pivot: Vector3 | null): void;
+  tumble(dx: number, dy: number, pivot: Vector3 | null, snap: { theta: number; phi: number } | null): void;
   /** 回す中心。指やペンを置いた点で決める（`36` の T3）。 */
   tumblePivot(p: ScreenPoint, e: PointerEvent): Vector3 | null;
+  /**
+   * SHF が立っていれば、いまの角度を返す（`36` の T4）。
+   *
+   * **これを「生の角度」の初期値にして、ドラッグ中はそこへ増分を足す。**
+   * 吸着した値をカメラから読み直すと、次の小さな動きで同じ向きに吸着し直して
+   * 隣の向きへ行けなくなる。
+   */
+  snapStart(e: PointerEvent): { theta: number; phi: number } | null;
   pan(dx: number, dy: number): void;
   dolly(factor: number): void;
   dollyAbout(pivot: Vector3, factor: number): void;
@@ -302,6 +310,11 @@ interface Gesture {
   basisLever?: Lever | null;
   zoomOnly?: boolean;
   pivot?: Vector3;
+  /**
+   * SHF で回すときの「生の角度」（`36` の T4）。
+   * ここへ増分を足し、カメラには吸着した値を入れる。
+   */
+  snap?: { theta: number; phi: number };
   moved?: boolean;
   sx?: number;
   sy?: number;
@@ -459,7 +472,11 @@ export class GestureRouter {
       if (this.h.altOn(e)) {
         this.gesture =
           e.button === 0
-            ? { mode: "tumble", pivot: this.h.tumblePivot(p, e) ?? undefined }
+            ? {
+                mode: "tumble",
+                pivot: this.h.tumblePivot(p, e) ?? undefined,
+                snap: this.h.snapStart(e) ?? undefined,
+              }
             : { mode: e.button === 1 ? "pan" : "dolly" };
         return;
       }
@@ -482,7 +499,13 @@ export class GestureRouter {
       const finger = e.pointerType === "touch";
       const onMesh = !(finger && this.fingerCam) && this.h.isOnMesh(p, e);
       if (!onMesh) {
-        this.gesture = { mode: "tumble", live: false, acc: 0, pivot: this.h.tumblePivot(p, e) ?? undefined };
+        this.gesture = {
+          mode: "tumble",
+          live: false,
+          acc: 0,
+          pivot: this.h.tumblePivot(p, e) ?? undefined,
+          snap: this.h.snapStart(e) ?? undefined,
+        };
         this.startMarkingHold(e);
         return;
       }
@@ -522,7 +545,7 @@ export class GestureRouter {
         if (g.acc < TUMBLE_DEADZONE) return;
         g.live = true;
       }
-      this.h.tumble(e.clientX - px, e.clientY - py, g.pivot ?? null);
+      this.h.tumble(e.clientX - px, e.clientY - py, g.pivot ?? null, g.snap ?? null);
       return;
     }
     if (g.mode === "pan") return this.h.pan(e.clientX - px, e.clientY - py);

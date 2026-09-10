@@ -390,6 +390,11 @@ export class App {
     this.applyHand();
   }
 
+  /** 通し確認から「指はカメラだけ」を反映する（本物の経路は「表示」）。 */
+  applyFingerCameraForTest(): void {
+    this.applyFingerCamera();
+  }
+
   /** 通し確認から分割を変える（本物の経路は「分割」ボタン）。 */
   setLayoutForTest(kind: LayoutKind): void {
     this.setLayout(kind);
@@ -735,6 +740,7 @@ export class App {
     // 前回の表示の設定を反映する（`23` の T6、`24` の T4、`29` の A-T1）
     this.applyHand();
     this.applyClusterPos();
+    this.applyFingerCamera();
     this.viewport.setGridVisible(this.state.showGrid);
     this.viewport.applyCulling();
     // 起動時の画角はプロトタイプと同じ既定値のまま。F を押せば選択に寄る
@@ -817,8 +823,14 @@ export class App {
       },
       zoomPivot: () => this.pivotWorld(),
       marqueeStart: (p) => this.startMarquee(p),
-      tumble: (dx, dy, pivot) => (pivot ? this.viewport.tumbleAbout(pivot, dx, dy) : this.viewport.tumble(dx, dy)),
+      tumble: (dx, dy, pivot, snap) =>
+        pivot || snap ? this.viewport.tumbleAbout(pivot, dx, dy, snap ?? undefined) : this.viewport.tumble(dx, dy),
       tumblePivot: (p) => this.tumblePivot(p),
+      // SHF を立てて回すと標準ビューの向きに吸着（`36` の T4）
+      snapStart: (e) =>
+        this.state.modOn("shift") || e.shiftKey
+          ? { theta: this.viewport.cam.theta, phi: this.viewport.cam.phi }
+          : null,
       pan: (dx, dy) => this.viewport.pan(dx, dy),
       dolly: (f) => this.viewport.dolly(f),
       dollyAbout: (pivot, f) => this.viewport.dollyAbout(pivot, f),
@@ -5337,6 +5349,12 @@ export class App {
       this.rememberUi();
       this.hud.defaultHint();
     });
+    item("指はカメラだけ", this.state.ui.fingerCamera, (v) => {
+      this.state.ui.fingerCamera = v;
+      this.rememberUi();
+      this.applyFingerCamera();
+      this.hud.toast(v ? "指はカメラだけ（ツールはペン）" : "指でもツールが使えます");
+    });
     item("ポリゴンカウント", this.state.ui.stats, (v) => {
       this.state.ui.stats = v;
       this.rememberUi();
@@ -5412,6 +5430,11 @@ export class App {
     };
     window.addEventListener("orientationchange", late);
     window.screen?.orientation?.addEventListener?.("change", late);
+  }
+
+  /** 「指はカメラだけ」をジェスチャ側へ流す（`36` の T5）。 */
+  private applyFingerCamera(): void {
+    this.router.fingerCam = this.state.ui.fingerCamera;
   }
 
   /** 左利きなら画面を左右鏡映しにする（`24` の T4）。中身は `shell.css`。 */
