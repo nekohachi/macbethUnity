@@ -65,6 +65,10 @@ export const ICONS = {
   eraseAll: "<circle cx=\"12\" cy=\"12\" r=\"8.5\"/><path d=\"m8.4 8.4 7.2 7.2M15.6 8.4l-7.2 7.2\"/>",
   mUV: "<rect x=\"3.4\" y=\"3.4\" width=\"17.2\" height=\"17.2\" rx=\"1\"/><path d=\"M3.4 12h17.2M12 3.4v17.2\" stroke-dasharray=\"2.6 2.2\"/>",
   mSculpt: "<path d=\"M16.4 3.6 20.4 7.6 9.6 18.4l-5.2 1.2 1.2-5.2z\"/><path d=\"m14.4 5.6 4 4\"/>",
+  bake:
+    "<rect x=\"3.4\" y=\"3.4\" width=\"17.2\" height=\"17.2\" rx=\"1\"/>" +
+    "<path d=\"M6.6 15.4c1.4-4.6 9.4-4.6 10.8 0z\" fill=\"currentColor\" fill-opacity=\".35\"/>" +
+    "<path d=\"M3.4 15.4h17.2M8.6 8.2h6.8\" stroke-dasharray=\"2.4 2\"/>",
   mMaterial: "<circle cx=\"12\" cy=\"12\" r=\"8.6\"/><path d=\"M12 3.4a8.6 8.6 0 0 1 0 17.2z\" fill=\"currentColor\" fill-opacity=\".45\"/><path d=\"M3.4 12h17.2\"/>",
   pCube: "<path d=\"m12 2.6 8.6 4.8v9.2L12 21.4l-8.6-4.8V7.4z\"/><path d=\"M12 12.2 20.6 7.4M12 12.2v9.2M12 12.2 3.4 7.4\"/>",
   pSphere: "<circle cx=\"12\" cy=\"12\" r=\"9\"/><ellipse cx=\"12\" cy=\"12\" rx=\"4\" ry=\"9\"/><path d=\"M3 12h18\"/>",

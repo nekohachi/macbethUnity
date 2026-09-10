@@ -28,6 +28,60 @@ export function topologyHash(mesh: Mesh): string {
   return h.toString(16).padStart(8, "0");
 }
 
+/** Float32Array を混ぜる。全部は舐めず、間引いて拾う（大きいデルタで速さを保つ）。 */
+function mixFloats(hash: number, values: Float32Array, samples = 4096): number {
+  const n = values.length;
+  hash = fnv1a(hash, n);
+  const step = Math.max(1, Math.floor(n / samples));
+  const scratch = new Float32Array(1);
+  const bits = new Uint32Array(scratch.buffer);
+  for (let i = 0; i < n; i += step) {
+    scratch[0] = values[i];
+    hash = fnv1a(hash, bits[0]);
+  }
+  return hash;
+}
+
+/** `bakeStamp` が見るもの。`SceneObject` がそのまま渡せる形（`44` の T2）。 */
+export interface BakeStampSource {
+  mesh: Mesh;
+  multires: Array<{ level: number; delta: Float32Array }>;
+  sculptLayers: Array<{ level: number; weight: number; visible: boolean; delta: Float32Array }>;
+}
+
+/**
+ * 焼いたときの指紋（`44` の T2、`31` の 2）。
+ *
+ * **トポロジ + レベル 0 の形 + ハイのデルタ + UV** を混ぜた 1 本の文字列。
+ * 焼いたあとにどれか 1 つでも変われば違う値になり、バッジが `古い` に変わる。
+ * デルタは間引いて拾うので、**1 テクセルぶんの彫りでは変わらないことがある**。
+ * 印は「作り直したほうがいい」の目安であって、正しさの保証ではない。
+ */
+export function bakeStamp(o: BakeStampSource): string {
+  let h = 0x811c9dc5;
+  h = fnv1a(h, o.mesh.vertexCount);
+  h = fnv1a(h, o.mesh.faceCount);
+  // コーナーも間引く。**ボタンを描くたびに呼ぶ**ので、25 万四角形（コーナー 100 万）を
+  // 丸ごと舐めるわけにはいかない
+  const corners = o.mesh.faceCorners;
+  const step = Math.max(1, Math.floor(corners.length / 4096));
+  h = fnv1a(h, corners.length);
+  for (let i = 0; i < corners.length; i += step) h = fnv1a(h, corners[i]);
+  h = mixFloats(h, o.mesh.positions);
+  for (const uv of o.mesh.uvSets.values()) h = mixFloats(h, uv);
+  for (const level of o.multires) {
+    h = fnv1a(h, level.level);
+    h = mixFloats(h, level.delta);
+  }
+  for (const layer of o.sculptLayers) {
+    h = fnv1a(h, layer.level);
+    h = fnv1a(h, Math.round(layer.weight * 1000));
+    h = fnv1a(h, layer.visible ? 1 : 0);
+    h = mixFloats(h, layer.delta);
+  }
+  return h.toString(16).padStart(8, "0");
+}
+
 export interface TopologyMatch {
   same: boolean;
   reason?: "vertexCount" | "faceCount" | "faceOrder";

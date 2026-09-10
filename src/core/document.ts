@@ -15,6 +15,7 @@ import { Mesh } from "./mesh.js";
 import { PRIMITIVES, defaultParams, type PrimitiveParams } from "./primitives.js";
 import type { Multires } from "./multires.js";
 import type { MirrorMap } from "./symmetry.js";
+import type { BakeResult } from "./bake.js";
 import { topologyHash } from "./io/hash.js";
 import { reconcile, type UvRecipe } from "./uv/recipe.js";
 
@@ -44,6 +45,18 @@ export interface MultiresLevel {
   level: number;
   /** 3 × 頂点数。接空間でのズレ。 */
   delta: Float32Array;
+}
+
+/**
+ * 焼き方（`44` の T2）。**焼いた結果そのものは持たない**（`SceneObject.bakeResult`）。
+ */
+export interface BakeRecipe {
+  /** 1 辺のテクセル数。1024 / 2048 / 4096。既定 2048。 */
+  size: number;
+  /** 島の外へ色を伸ばす幅（テクセル）。既定 4。 */
+  padding: number;
+  /** 焼いたときの指紋（`bakeStamp`）。今の指紋と違えば「古い」。まだ焼いていなければ null。 */
+  stamp: string | null;
 }
 
 /** スカルプトレイヤー。対象レベルのデルタに重みを掛けて合成する。 */
@@ -155,6 +168,16 @@ export class SceneObject {
    * `.mbz` にも履歴にも入れない。レイヤーを触ったら捨てて作り直す。
    */
   combined = new Map<number, Float32Array>();
+  /**
+   * 焼き方（`44` の T2）。**`.mbz` には入れる**（大きさと指紋だけなので軽い）。
+   * まだ一度も焼いていなければ `null`。
+   */
+  bake: BakeRecipe | null = null;
+  /**
+   * 焼いた結果の控え（`44` の T2）。**`.mbz` にも履歴にも入れない。**
+   * 2K で 20MB になるので、開き直したら焼き直す。
+   */
+  bakeResult: BakeResult | null = null;
 
   constructor(kind: string, id: string, name?: string) {
     this.id = id;

@@ -6,7 +6,14 @@
  * 変換関数は必ず 1 段ずつ（v1 → v2 → v3）書くこと。まとめて飛ばさない。
  */
 import { unzipSync, zipSync } from "fflate";
-import { Document, SceneObject, identityTransform, type MultiresLevel, type SculptLayer } from "../document.js";
+import {
+  Document,
+  SceneObject,
+  identityTransform,
+  type BakeRecipe,
+  type MultiresLevel,
+  type SculptLayer,
+} from "../document.js";
 import { deserializeRecipe, serializeRecipe, type UvRecipeJson } from "../uv/recipe.js";
 import { decodeMesh, encodeMesh } from "./binary.js";
 import { topologyHash } from "./hash.js";
@@ -45,6 +52,8 @@ interface SceneObjectJson {
   maskLevel?: number | null;
   /** UV の作り方（`15`）。無い版のファイルもあるので任意。 */
   uv?: UvRecipeJson | null;
+  /** 焼き方（`44` の T2）。大きさと指紋だけ。焼いた絵そのものは入れない。 */
+  bake?: BakeRecipe | null;
 }
 
 interface SceneJson {
@@ -112,6 +121,7 @@ export function packMbz(doc: Document, options: PackOptions = {}): Uint8Array {
         paintLayers: o.paintLayers,
         maskLevel: o.mask ? o.mask.level : null,
         uv: o.uv ? serializeRecipe(o.uv) : null,
+        bake: o.bake ? { ...o.bake } : null,
       };
     }),
     settings: doc.settings,
@@ -194,6 +204,13 @@ export function unpackMbz(bytes: Uint8Array): UnpackResult {
     o.opacity = typeof j.opacity === "number" ? Math.max(0, Math.min(1, j.opacity)) : 1;
     o.activeLevel = j.activeLevel ?? 0;
     o.exportedTopologyHash = j.exportedTopologyHash ?? null;
+    o.bake = j.bake
+      ? {
+          size: Math.max(1, Math.floor(j.bake.size ?? 2048)),
+          padding: Math.max(0, Math.floor(j.bake.padding ?? 4)),
+          stamp: j.bake.stamp ?? null,
+        }
+      : null;
 
     const meshPath = `meshes/${j.id}.bin`;
     const meshBytes = files[meshPath];

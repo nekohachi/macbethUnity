@@ -24,6 +24,7 @@ export * from "./symmetry.js";
 export * from "./reproject.js";
 export * from "./mask.js";
 export * from "./multires.js";
+export * from "./bake.js";
 export * from "./document.js";
 export * from "./io/obj.js";
 export * from "./io/gltf.js";

@@ -81,6 +81,15 @@ import {
   reprojectDetail,
   warmUpLevels,
 } from "./levels.js";
+import {
+  BAKE_SIZES,
+  bakeObject,
+  bakeState,
+  defaultRecipe,
+  exportBake,
+  type BakeMapKind,
+  type BakeState,
+} from "./bake.js";
 import { pressureOf } from "./input/gestures.js";
 import { forgetStamps, stampsFor } from "./stamps.js";
 import { STANDARD_VIEWS, Viewport, type LayoutKind, type ViewName } from "./render/viewport.js";
@@ -169,6 +178,9 @@ import {
   type RadialItem,
   type RadialMenu,
 } from "./ui/radial.js";
+
+/** 焼いた絵の状態のバッジ（`44` の T2）。 */
+const BAKE_BADGE: Record<BakeState, string> = { none: "", fresh: "済", stale: "古" };
 
 const COMP_MODES: Array<{ id: CompMode; label: string; key: string }> = [
   { id: "object", label: "オブジェクト", key: "F8" },
@@ -4070,9 +4082,107 @@ export class App {
         onTap: () => this.stepLevel(1),
       },
       { kind: "separator" },
+      { kind: "label", text: "焼く" },
+      {
+        kind: "button",
+        id: "bake",
+        icon: ICONS.bake,
+        title: "ベイク（タップで焼く · 長押しで書き出し / 大きさ）",
+        badge: () => BAKE_BADGE[bakeState(this.state.selected)],
+        pressed: () => bakeState(this.state.selected) === "fresh",
+        radial: () => this.bakeMenu(),
+        onTap: () => void this.runBake(),
+      },
+      { kind: "separator" },
       { kind: "label", text: "シェード" },
       ...shared,
     ];
+  }
+
+  /* ---- ベイク（`44` の T2） -------------------------------------------- */
+
+  private bakeMenu(): RadialMenu {
+    const o = this.state.selected;
+    if (!o) return { N: { label: "オブジェクトを選んでください", run: () => {} } };
+    const recipe = o.bake ?? defaultRecipe();
+    const menu: RadialMenu = {
+      N: {
+        label: "焼く",
+        sub: `${recipe.size} × ${recipe.size}・レベル ${o.multires.length}`,
+        icon: ICONS.bake,
+        run: () => void this.runBake(),
+      },
+    };
+    if (o.bakeResult) {
+      menu.W = {
+        label: "法線を書き出し",
+        sub: "PNG（接空間）",
+        icon: ICONS.file,
+        run: () => void this.exportBakeMap("normal"),
+      };
+      menu.E = {
+        label: "高さを書き出し",
+        sub: "PNG（グレー・中央が 0）",
+        icon: ICONS.file,
+        run: () => void this.exportBakeMap("height"),
+      };
+    }
+    const dirs = ["SW", "S", "SE"] as const;
+    BAKE_SIZES.forEach((size, i) => {
+      menu[dirs[i]] = {
+        label: `${size / 1024}K`,
+        sub: size === recipe.size ? "いま" : `${size} × ${size}`,
+        run: () => this.setBakeSize(size),
+      };
+    });
+    return menu;
+  }
+
+  /** 焼く大きさを決める。焼いた絵は大きさが変わるので捨てる。 */
+  private setBakeSize(size: number): void {
+    const o = this.state.selected;
+    if (!o) return;
+    const recipe = o.bake ?? defaultRecipe();
+    if (recipe.size === size) return;
+    o.bake = { ...recipe, size, stamp: null };
+    o.bakeResult = null;
+    this.hud.toast(`焼く大きさ ${size} × ${size}`);
+    this.renderToolColumn();
+  }
+
+  /** 焼く（`44` の T2）。 */
+  private async runBake(): Promise<void> {
+    const o = this.state.selected;
+    if (!o) return this.hud.toast("オブジェクトを選んでください");
+    if (!o.bake) o.bake = defaultRecipe();
+    const report = bakeObject(o);
+    if (!report.ok) {
+      const why =
+        report.reason === "noLevels"
+          ? "段がありません（先に段を足して彫ってください）"
+          : report.reason === "noUv"
+            ? "UV がありません（UV モードで開いてください）"
+            : "焼けませんでした";
+      return this.hud.toast(why);
+    }
+    const r = report.result!;
+    const filled = r.size * r.size;
+    this.hud.toast(
+      `焼いた: ${r.size} × ${r.size}・${Math.round((r.covered / filled) * 100)}% ・` +
+        `高さ ${r.heightRange[0].toFixed(3)} 〜 ${r.heightRange[1].toFixed(3)}・${Math.round(report.ms ?? 0)}ms`,
+    );
+    this.renderToolColumn();
+  }
+
+  private async exportBakeMap(kind: BakeMapKind): Promise<void> {
+    const o = this.state.selected;
+    if (!o?.bakeResult) return this.hud.toast("先に焼いてください");
+    try {
+      const out = await exportBake(o, kind);
+      this.hud.toast(out.ok ? `${out.name} を書き出しました` : "書き出しをやめました");
+    } catch (err) {
+      this.hud.toast(`書き出しに失敗: ${(err as Error).message}`);
+    }
   }
 
   /* ---- スカルプトレイヤー（`42` の T3） -------------------------------- */
@@ -4180,6 +4290,13 @@ export class App {
     this.applyLayerChange(o, level, `レベル ${level} のレイヤーを統合`, snapshot);
     this.reopenToolOptions("layer");
     this.hud.toast(`${here.length} 枚を統合しました`);
+  }
+
+  /** 通し確認からベイクを触る（`44` の T2）。 */
+  async bakeForTest(what: "bake" | "normal" | "height" | "size", size?: number): Promise<void> {
+    if (what === "bake") await this.runBake();
+    else if (what === "size") this.setBakeSize(size ?? 1024);
+    else await this.exportBakeMap(what);
   }
 
   /** 通し確認からレイヤーを触る（`42` の T3）。 */

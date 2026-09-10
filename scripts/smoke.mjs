@@ -8921,6 +8921,152 @@ check(
   `防ぐ ×${negScale.guarded.toFixed(4)} / 切る ×${negScale.free.toFixed(4)}`,
 );
 
+/* 44a. ベイク（`44` の T2）: 焼く → バッジ → 彫ると古い → PNG で書き出す */
+const bakeRun = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const core = window.macbethCore;
+  const keep = [...app.state.doc.objects];
+  const keepSel = app.state.selected;
+  const camBefore = app.viewport.saveLayout();
+  app.setMode("model");
+  app.state.doc.objects.length = 0;
+  const o = app.state.doc.addMesh(
+    core.PRIMITIVES.sphere.build({ ...core.defaultParams("sphere"), sdAxis: 16, sdHeight: 12 }),
+    "Bake",
+  );
+  app.viewport.syncAll();
+  app.state.select(o);
+  app.setMode("sculpt");
+  await app.levelForTest("add");
+  app.viewport.frameSelected();
+  app.state.brush.kind = "standard";
+  app.refresh();
+  app.history.clear();
+  await new Promise((r) => setTimeout(r, 120));
+
+  const badge = () => {
+    app.renderToolColumn();
+    const b = document.querySelector('[data-group="bake"] .badge');
+    return b ? b.textContent : "";
+  };
+  const spread = (r) => r.heightRange[1] - r.heightRange[0];
+  const offCenter = (r) => {
+    let n = 0;
+    for (let t = 0; t < r.coverage.length; t++) {
+      if (r.coverage[t] !== 1) continue;
+      if (Math.abs(r.normal[t * 4] - 128) > 8 || Math.abs(r.normal[t * 4 + 1] - 128) > 8) n++;
+    }
+    return n;
+  };
+
+  await app.bakeForTest("size", 1024);
+  const badgeNone = badge();
+  await app.bakeForTest("bake");
+  const badgeFresh = badge();
+  const first = o.bakeResult;
+  const size = first.size;
+  const covered = first.covered;
+  const spreadFirst = spread(first);
+  const offFirst = offCenter(first);
+  const stampFirst = o.bake.stamp;
+
+  // 彫ると「古い」
+  const pane = document.getElementById("pane3d").getBoundingClientRect();
+  const gl = document.getElementById("gl");
+  const cx = pane.left + pane.width / 2;
+  const cy = pane.top + pane.height / 2;
+  const ev = (type, x, y) =>
+    new PointerEvent(type, {
+      pointerId: 94, pointerType: "pen", bubbles: true, cancelable: true,
+      clientX: x, clientY: y, pressure: 0.9, buttons: type === "pointerup" ? 0 : 1,
+    });
+  gl.dispatchEvent(ev("pointerdown", cx - 24, cy));
+  for (let i = 1; i <= 12; i++) gl.dispatchEvent(ev("pointermove", cx - 24 + i * 4, cy));
+  gl.dispatchEvent(ev("pointerup", cx + 24, cy));
+  await new Promise((r) => setTimeout(r, 80));
+  const badgeStale = badge();
+
+  await app.bakeForTest("bake");
+  const second = o.bakeResult;
+  const badgeAgain = badge();
+  const spreadSecond = spread(second);
+  const offSecond = offCenter(second);
+  const stampSecond = o.bake.stamp;
+
+  // 書き出し。`a[download]` を掴んで、PNG の中身まで見る。
+  // **ファイル選択の窓は指の動きが要る**ので、ヘッドレスでは開かない（AbortError）。
+  // ダウンロードの道（`storage/files.ts` の `triggerDownload`）で確かめる
+  const realPicker = window.showSaveFilePicker;
+  window.showSaveFilePicker = undefined;
+  const clicked = [];
+  const realClick = HTMLAnchorElement.prototype.click;
+  HTMLAnchorElement.prototype.click = function () {
+    // **その場で読む。** blob の URL は 2 秒で捨てられる（`triggerDownload`）ので、
+    // あとでまとめて読もうとすると間に合わないことがある
+    clicked.push({ name: this.download, bytes: fetch(this.href).then((r) => r.arrayBuffer()) });
+  };
+  await app.bakeForTest("normal");
+  await app.bakeForTest("height");
+  HTMLAnchorElement.prototype.click = realClick;
+  window.showSaveFilePicker = realPicker;
+  const png = [];
+  for (const c of clicked) {
+    const bytes = new Uint8Array(await c.bytes);
+    const magic = bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47;
+    const w = (bytes[16] << 24) | (bytes[17] << 16) | (bytes[18] << 8) | bytes[19];
+    const h = (bytes[20] << 24) | (bytes[21] << 16) | (bytes[22] << 8) | bytes[23];
+    png.push({ name: c.name, magic, w, h, bytes: bytes.length });
+  }
+
+  // 焼いた絵は `.mbz` にも履歴にも入れない。焼き方だけが残る
+  const packed = core.unpackMbz(core.packMbz(app.state.doc));
+  const back = packed.document.objects[0];
+  const kept = back.bake && back.bake.size === 1024 && back.bake.stamp === stampSecond;
+  const noResult = back.bakeResult === null;
+
+  o.bakeResult = null;
+  o.bake = null;
+  app.setMode("model");
+  app.state.doc.objects.length = 0;
+  app.state.doc.objects.push(...keep);
+  app.viewport.syncAll();
+  if (keepSel) app.state.select(keepSel);
+  app.viewport.restoreLayout(camBefore);
+  app.history.clear();
+  app.refresh();
+  return {
+    size, covered, badgeNone, badgeFresh, badgeStale, badgeAgain,
+    spreadFirst, spreadSecond, offFirst, offSecond,
+    sameStamp: stampFirst === stampSecond, png, kept, noResult,
+  };
+});
+check(
+  "焼く: バッジが 済 → 古 → 済 に変わり、彫った分だけ絵が深くなる",
+  bakeRun.badgeNone === "" &&
+    bakeRun.badgeFresh === "済" &&
+    bakeRun.badgeStale === "古" &&
+    bakeRun.badgeAgain === "済" &&
+    !bakeRun.sameStamp &&
+    bakeRun.covered > 1024 * 1024 * 0.3 &&
+    bakeRun.spreadSecond > bakeRun.spreadFirst * 1.2 &&
+    bakeRun.offSecond > bakeRun.offFirst,
+  `${bakeRun.size}px・島 ${bakeRun.covered} テクセル / バッジ ` +
+    `「${bakeRun.badgeNone}」→「${bakeRun.badgeFresh}」→「${bakeRun.badgeStale}」→「${bakeRun.badgeAgain}」/ ` +
+    `高さの幅 ${bakeRun.spreadFirst.toFixed(4)} → ${bakeRun.spreadSecond.toFixed(4)} · ` +
+    `傾いたテクセル ${bakeRun.offFirst} → ${bakeRun.offSecond}`,
+);
+check(
+  "焼いた絵を PNG で書き出す（法線と高さ）。焼き方は .mbz に残り、絵は残らない",
+  bakeRun.png.length === 2 &&
+    bakeRun.png.every((p) => p.magic && p.w === 1024 && p.h === 1024 && p.bytes > 1000) &&
+    bakeRun.png[0].name.endsWith("_normal_1024.png") &&
+    bakeRun.png[1].name.endsWith("_height_1024.png") &&
+    bakeRun.kept &&
+    bakeRun.noResult,
+  bakeRun.png.map((p) => `${p.name} ${p.w}×${p.h}・${(p.bytes / 1024).toFixed(0)}KB`).join(" / ") +
+    ` / .mbz に焼き方 ${bakeRun.kept}・絵は入らない ${bakeRun.noResult}`,
+);
+
 /* 43. 例外が出ていない */
 check("例外なし", errors.length === 0, errors.join(" / "));
 

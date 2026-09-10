@@ -32,6 +32,7 @@ import type { App } from "./app.js";
 import { el } from "./ui/dom.js";
 import { buildFromGeometry, loadWasm, subdivGeometry, type WasmModule } from "./wasm/index.js";
 import { fitBrushRadius, levelsOf } from "./levels.js";
+import { bakeObject } from "./bake.js";
 
 /** 1 行分の結果。 */
 interface Row {
@@ -540,6 +541,29 @@ export async function runBench(app: App, quick: boolean, size?: number): Promise
         target: 3000,
         note: `変位 ${fit.before.toFixed(3)} → ${fit.after.toFixed(3)} · 残り ${fit.residual.toFixed(4)}`,
       });
+    }
+
+    /* B10 — 2K の法線 + 高さを焼く（`44` の T3）。押したときだけ走る 1 回きりの操作 */
+    {
+      sculpted.activeLevel = 2;
+      sculpted.bake = { size: 2048, padding: 4, stamp: null };
+      const t = performance.now();
+      const report = bakeObject(sculpted);
+      const b10 = performance.now() - t;
+      const r = report.result;
+      await add({
+        key: "B10",
+        label: `2K の法線 + 高さを焼く（${faces(multi.level(2).faceCount)}）`,
+        value: b10,
+        unit: "ms",
+        target: 5000,
+        note: r
+          ? `島が ${Math.round((r.covered / (r.size * r.size)) * 100)}% ・高さ ${r.heightRange[0].toFixed(3)} 〜 ${r.heightRange[1].toFixed(3)}`
+          : `焼けなかった（${report.reason}）`,
+      });
+      // 20MB を超える控えなので、メモリの数字を汚さないように捨てる
+      sculpted.bakeResult = null;
+      sculpted.bake = null;
     }
 
     /* B5 — メモリ */
