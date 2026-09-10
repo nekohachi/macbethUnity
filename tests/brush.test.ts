@@ -90,7 +90,6 @@ describe("ブラシの筆圧", () => {
     pressureSizePow: 1,
     pressureStrengthPow: 2,
     pressureStrength: true,
-    symmetryX: true,
     backfaceMask: true,
   };
 
@@ -136,7 +135,6 @@ describe("筆圧のカーブ", () => {
     pressureSizePow: 1,
     pressureStrengthPow: 2,
     pressureStrength: true,
-    symmetryX: false,
     backfaceMask: true,
   };
 

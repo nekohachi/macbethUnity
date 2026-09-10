@@ -449,10 +449,13 @@ const inSculpt = await page.evaluate(() => ({
 }));
 await page.evaluate(() => window.macbeth.setMode("model"));
 check(
-  "スカルプトは 3D が出て、筆・マスク・レイヤー・段のボタンが並ぶ",
+  // `45` の T1 で「対称」が筆の次に入った
+  "スカルプトは 3D が出て、筆・対称・マスク・レイヤー・段のボタンが並ぶ",
   !inSculpt.stub && !inSculpt.stage && inSculpt.label === "スカルプト" &&
-    inSculpt.groups[0] === "brush" && inSculpt.groups[1] === "mask" &&
-    inSculpt.groups[2] === "layer" && inSculpt.groups[3] === "level" &&
+    inSculpt.groups[0] === "brush" && inSculpt.groups[1] === "sym" &&
+    inSculpt.groups[2] === "mask" &&
+    inSculpt.groups[3] === "layer" && inSculpt.groups[4] === "level" &&
+    inSculpt.groups.includes("bake") &&
     inSculpt.groups.includes("display") &&
     inSculpt.groups.includes("camera") && inSculpt.groups.includes("layout"),
   `予定表 ${inSculpt.stub} / ツール ${inSculpt.groups.join(" · ")} / ゲージ「${inSculpt.gauge}」`,
@@ -739,6 +742,9 @@ const strokeCheck = await page.evaluate(async () => {
   await app.levelForTest("add");
   await app.levelForTest("add");
   app.viewport.frameSelected();
+  // 対称は `45` の T1 で**既定オフ**になった。ここは対称そのものを見るので入れる
+  const symBefore17j = app.state.symX;
+  app.state.symX = true;
   app.refresh();
   await new Promise((r) => setTimeout(r, 120));
 
@@ -818,6 +824,7 @@ const strokeCheck = await page.evaluate(async () => {
   for (let i = 0; i < shownAfter.length; i++) redoOff = Math.max(redoOff, Math.abs(redone[i] - shownAfter[i]));
 
   // 片づけ
+  app.state.symX = symBefore17j;
   app.setMode("model");
   app.state.doc.objects.length = 0;
   app.state.doc.objects.push(...keep);
@@ -1424,8 +1431,8 @@ const maskRest = await page.evaluate(async () => {
   // **対称は切って測る**（`41` の T1）。球の真ん中を掴んで横へ引くと、対称の
   // 2 つの筆が X で打ち消し合って 1 ミリも動かない（それが正しい）。ここで見たいのは
   // 裏面マスクなので、対称は外す
-  const symBeforeBack = app.state.brush.symmetryX;
-  app.state.brush.symmetryX = false;
+  const symBeforeBack = app.state.symX;
+  app.state.symX = false;
   const backTest = async (on) => {
     app.state.brush.backfaceMask = on;
     app.state.brush.kind = "move";
@@ -1454,7 +1461,7 @@ const maskRest = await page.evaluate(async () => {
   const backOn = await backTest(true);
   const backOff = await backTest(false);
   app.state.brush.radius = radiusBefore;
-  app.state.brush.symmetryX = symBeforeBack;
+  app.state.symX = symBeforeBack;
 
   /* --- 9 の後半: トポロジを変えたときの言葉 --- */
   o.mask = { level: o.activeLevel, values: new Float32Array(o.stack.level(o.activeLevel).vertexCount).fill(1) };
@@ -1846,8 +1853,9 @@ const brushes = await page.evaluate(async () => {
 check(
   "ブラシ 11 種: 8 方位 + 一覧、全部彫れてマスクが効き、筆圧のカーブが出る",
   brushes.dirs.filter(Boolean).length === 8 &&
-    brushes.listLabels.length === 4 &&
-    brushes.listLabels.some((l) => l.includes("対称")) &&
+    // `45` の T1 で対称はツール列へ移したので、一覧は残りのブラシ 3 つ
+    brushes.listLabels.length === 3 &&
+    !brushes.listLabels.some((l) => l.includes("対称")) &&
     brushes.allCarved &&
     // マスク 1 なら、どの種類でも 1 ミリも動かない
     brushes.maskedMoved === 0 &&
@@ -1958,7 +1966,7 @@ const zb = await page.evaluate(async () => {
   const camBefore = app.viewport.saveLayout();
   const kindBefore = app.state.brush.kind;
   const radiusBefore = app.state.brush.radius;
-  const symBefore = app.state.brush.symmetryX;
+  const symBefore = app.state.symX;
   app.setMode("model");
   app.state.doc.objects.length = 0;
   const o = app.state.doc.addMesh(
@@ -1971,7 +1979,7 @@ const zb = await page.evaluate(async () => {
   await app.levelForTest("add");
   app.viewport.setView("front");
   app.viewport.frameSelected();
-  app.state.brush.symmetryX = false;
+  app.state.symX = false;
   app.refresh();
   // **ここで履歴を空にする。** 下の drag は「取り消せる限り取り消す」ので、
   // 段を足した履歴が残っていると段まで消えて、2 本目から彫れなくなる
@@ -2090,7 +2098,7 @@ const zb = await page.evaluate(async () => {
 
   app.state.brush.kind = kindBefore;
   app.state.brush.radius = radiusBefore;
-  app.state.brush.symmetryX = symBefore;
+  app.state.symX = symBefore;
   app.state.mods.alt = "off";
   app.setMode("model");
   app.state.doc.objects.length = 0;
@@ -8009,7 +8017,7 @@ const symmetry = await page.evaluate(async () => {
   const keep = [...app.state.doc.objects];
   const keepSel = app.state.selected;
   const camBefore = app.viewport.saveLayout();
-  const symBefore = app.state.brush.symmetryX;
+  const symBefore = app.state.symX;
   app.setMode("model");
   app.state.doc.objects.length = 0;
   const o = app.state.doc.addMesh(
@@ -8023,7 +8031,7 @@ const symmetry = await page.evaluate(async () => {
   app.viewport.setView("top");
   app.viewport.frameSelected();
   app.state.brush.kind = "standard";
-  app.state.brush.symmetryX = true;
+  app.state.symX = true;
   app.refresh();
   app.history.clear();
   await new Promise((r) => setTimeout(r, 120));
@@ -8076,13 +8084,13 @@ const symmetry = await page.evaluate(async () => {
   gl.dispatchEvent(ev("pointermove", cx + 20, cy, 0));
   await new Promise((r) => setTimeout(r, 40));
   const ringsOn = app.viewport.brushCursorForTest();
-  app.state.brush.symmetryX = false;
+  app.state.symX = false;
   app.refresh();
   gl.dispatchEvent(ev("pointermove", cx + 22, cy, 0));
   await new Promise((r) => setTimeout(r, 40));
   const ringsOff = app.viewport.brushCursorForTest();
 
-  app.state.brush.symmetryX = symBefore;
+  app.state.symX = symBefore;
   app.setMode("model");
   app.state.doc.objects.length = 0;
   app.state.doc.objects.push(...keep);
@@ -8606,17 +8614,18 @@ check(
 
 /* 44. ツール列のグループ（`21` の 4 章） */
 
-/* 44-1. ボタンは 7 つ、右のオプションパネルは無い */
+/* 44-1. ボタンは 9 つ、右のオプションパネルは無い */
 const column = await page.evaluate(() => ({
   buttons: [...document.querySelectorAll("#dockLeft .ibtn")].map((b) => b.dataset.group),
   options: !!document.querySelector('.panel[data-panel="options"]'),
 }));
 check(
-  // `25` の T6 で「分割」が増えて 8 つ
-  "ツール列は 8 つのグループ、オプションパネルは無い",
-  column.buttons.length === 8 &&
+  // `25` の T6 で「分割」が増えて 8 つ、`45` の T1 で「対称」が増えて 9 つ
+  "ツール列は 9 つのグループ、オプションパネルは無い",
+  column.buttons.length === 9 &&
     !column.options &&
     column.buttons.includes("xform") &&
+    column.buttons.includes("sym") &&
     column.buttons.includes("layout"),
   `${column.buttons.join(" / ")}`,
 );
@@ -9065,6 +9074,269 @@ check(
     bakeRun.noResult,
   bakeRun.png.map((p) => `${p.name} ${p.w}×${p.h}・${(p.bytes / 1024).toFixed(0)}KB`).join(" / ") +
     ` / .mbz に焼き方 ${bakeRun.kept}・絵は入らない ${bakeRun.noResult}`,
+);
+
+/* 45a. 対称のボタン（`45` の T1）: 入り切り → 反対側が動く → 中心線は留まる */
+const symButton = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const core = window.macbethCore;
+  const keep = [...app.state.doc.objects];
+  const keepSel = app.state.selected;
+  const symBefore = app.state.symX;
+  const camBefore = app.viewport.saveLayout();
+  app.setMode("model");
+  app.state.doc.objects.length = 0;
+  // 中心線に頂点が乗るように、幅の分割を偶数にする
+  const o = app.state.doc.addMesh(
+    core.PRIMITIVES.plane.build({ ...core.defaultParams("plane"), width: 2, height: 2, sdW: 4, sdH: 4 }),
+    "Sym45",
+  );
+  app.viewport.syncAll();
+  app.state.select(o);
+  app.setCompMode("vertex");
+  app.viewport.frameSelected();
+  app.refresh();
+  app.history.clear();
+
+  const badge = () => {
+    app.renderToolColumn();
+    const b = document.querySelector('#dockLeft .ibtn[data-group="sym"] .badge');
+    return b ? b.textContent : "";
+  };
+  const at = (x, z) => {
+    for (let v = 0; v < o.mesh.vertexCount; v++) {
+      const p = o.mesh.getPosition(v);
+      if (Math.abs(p[0] - x) < 1e-6 && Math.abs(p[2] - z) < 1e-6) return v;
+    }
+    return -1;
+  };
+
+  app.setManipSpace("world");
+  app.state.symX = false;
+  const badgeOff = badge();
+  app.symmetryForTest("toggle");
+  const badgeOn = badge();
+  const stored = localStorage.getItem("macbeth.symX");
+
+  // +X の頂点を 1 つ選んで Y に持ち上げる（ハンドルは Y の矢印）
+  const right = at(1, 0);
+  const left = at(-1, 0);
+  app.state.comp.clear();
+  app.state.comp.add(right);
+  app.refresh();
+  app.dragAxisForTest(1, 0.5);
+  const rightY = o.mesh.getPosition(right)[1];
+  const leftY = o.mesh.getPosition(left)[1];
+  const leftX = o.mesh.getPosition(left)[0];
+
+  // 中心線の頂点を X に引いても x は 0 のまま。Y には動く
+  const middle = at(0, 0);
+  app.state.comp.clear();
+  app.state.comp.add(middle);
+  app.refresh();
+  app.dragAxisForTest(0, 0.7);
+  const midXAfterX = o.mesh.getPosition(middle)[0];
+  app.dragAxisForTest(1, 0.2);
+  const midX = o.mesh.getPosition(middle)[0];
+  const midY = o.mesh.getPosition(middle)[1];
+
+  // 対称を切って片側だけ崩し、「対称に整える」でそろえる
+  app.state.symX = false;
+  app.state.comp.clear();
+  app.state.comp.add(right);
+  app.refresh();
+  app.dragAxisForTest(1, 0.4);
+  const brokenGap = Math.abs(o.mesh.getPosition(right)[1] - o.mesh.getPosition(left)[1]);
+  app.symmetryForTest("symmetrize+");
+  let worst = 0;
+  for (let v = 0; v < o.mesh.vertexCount; v++) {
+    const m = window.macbethLevels.mirrorMapOf(o, 0, o.mesh)?.mirror[v] ?? -1;
+    if (m < 0) continue;
+    const a = o.mesh.getPosition(v);
+    const b = o.mesh.getPosition(m);
+    worst = Math.max(worst, Math.abs(a[0] + b[0]), Math.abs(a[1] - b[1]), Math.abs(a[2] - b[2]));
+  }
+  const entry = app.history.lastEntry()?.label ?? "";
+  app.doUndo();
+  const undoneGap = Math.abs(o.mesh.getPosition(right)[1] - o.mesh.getPosition(left)[1]);
+
+  app.state.symX = symBefore;
+  app.state.comp.clear();
+  app.setCompMode("object");
+  app.setMode("model");
+  app.state.doc.objects.length = 0;
+  app.state.doc.objects.push(...keep);
+  app.viewport.syncAll();
+  if (keepSel) app.state.select(keepSel);
+  app.viewport.restoreLayout(camBefore);
+  app.history.clear();
+  app.refresh();
+  return {
+    badgeOff, badgeOn, stored,
+    rightY, leftY, leftX, midXAfterX, midX, midY,
+    brokenGap, worst, entry, undoneGap,
+  };
+});
+check(
+  "対称: ボタンで入り切りし、反対側が付いてきて、中心線は X に動かない",
+  symButton.badgeOff === "" &&
+    symButton.badgeOn === "X" &&
+    symButton.stored === "true" &&
+    Math.abs(symButton.rightY - 0.5) < 1e-6 &&
+    Math.abs(symButton.leftY - 0.5) < 1e-6 &&
+    Math.abs(symButton.leftX + 1) < 1e-6 &&
+    Math.abs(symButton.midXAfterX) < 1e-9 &&
+    Math.abs(symButton.midX) < 1e-9 &&
+    Math.abs(symButton.midY - 0.2) < 1e-6,
+  `バッジ 「${symButton.badgeOff}」→「${symButton.badgeOn}」（保存 ${symButton.stored}）/ ` +
+    `右 ${symButton.rightY.toFixed(3)} · 左 ${symButton.leftY.toFixed(3)}（x ${symButton.leftX.toFixed(3)}）/ ` +
+    `中心線 x ${symButton.midX.toExponential(1)} · y ${symButton.midY.toFixed(3)}`,
+);
+check(
+  "対称に整える: 崩した片側がそろい、取り消しで戻る",
+  symButton.brokenGap > 0.3 &&
+    symButton.worst < 1e-6 &&
+    symButton.entry.includes("対称に整える") &&
+    symButton.undoneGap > 0.3,
+  `崩した差 ${symButton.brokenGap.toFixed(3)} → そろえた後の最大ずれ ${symButton.worst.toExponential(1)} / ` +
+    `履歴「${symButton.entry}」· 取り消して ${symButton.undoneGap.toFixed(3)}`,
+);
+
+/* 45b. マニピュレータの軸の向き（`45` の T2） */
+const manipSpace = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const core = window.macbethCore;
+  const keep = [...app.state.doc.objects];
+  const keepSel = app.state.selected;
+  const spaceBefore = app.state.manipSpace;
+  const camBefore = app.viewport.saveLayout();
+  app.setMode("model");
+  app.state.doc.objects.length = 0;
+  const o = app.state.doc.addMesh(core.PRIMITIVES.cube.build(core.defaultParams("cube")), "Sp45");
+  app.viewport.syncAll();
+  app.state.select(o);
+  app.setCompMode("object");
+  // Y に 45°
+  const half = Math.PI / 8; // 45° の半分
+  o.transform.rotation = [0, Math.sin(half), 0, Math.cos(half)];
+  app.viewport.syncAll();
+  app.viewport.frameSelected();
+  app.refresh();
+  app.history.clear();
+
+  const badge = () => {
+    app.renderToolColumn();
+    const b = document.querySelector('#dockLeft .ibtn[data-group="xform"] .badge');
+    return b ? b.textContent : "";
+  };
+  const axisOf = (a) => {
+    const v = app.manipFrameForTest().axes[a];
+    return [v.x, v.y, v.z];
+  };
+
+  app.setManipSpace("world");
+  const badgeWorld = badge();
+  const worldX = axisOf(0);
+  app.setManipSpace("object");
+  const badgeObject = badge();
+  const objectX = axisOf(0);
+  const storedSpace = localStorage.getItem("macbeth.manipSpace");
+
+  // オブジェクトの枠で赤の矢印（軸 0）を引くと、ワールドでは斜めに動く
+  const before = [...o.transform.position];
+  app.dragAxisForTest(0, 0.5);
+  const moved = [
+    o.transform.position[0] - before[0],
+    o.transform.position[1] - before[1],
+    o.transform.position[2] - before[2],
+  ];
+  app.doUndo();
+
+  // 面を選んで法線の枠。上面（+Y）を選ぶと 3 本目が +Y
+  app.setCompMode("face");
+  app.state.comp.clear();
+  let top = -1;
+  for (let f = 0; f < o.mesh.faceCount; f++) {
+    const n = o.mesh.faceNormal(f);
+    if (n[1] > 0.9) top = f;
+  }
+  app.state.comp.add(top);
+  app.setManipSpace("normal");
+  app.refresh();
+  const badgeNormal = badge();
+  const normalN = axisOf(2);
+  const labels = app.manipFrameForTest().labels;
+  // 法線の枠で青（軸 2）を引くと、上面が +Y に上がる
+  const corner = o.mesh.faceCorners[o.mesh.faceOffsets[top]];
+  const before2 = o.mesh.getPosition(corner);
+  app.dragAxisForTest(2, 0.4);
+  const after = o.mesh.getPosition(corner);
+  const lift = [after[0] - before2[0], after[1] - before2[1], after[2] - before2[2]];
+  app.doUndo();
+
+  app.setManipSpace(spaceBefore);
+  app.state.comp.clear();
+  app.setCompMode("object");
+  app.state.doc.objects.length = 0;
+  app.state.doc.objects.push(...keep);
+  app.viewport.syncAll();
+  if (keepSel) app.state.select(keepSel);
+  app.viewport.restoreLayout(camBefore);
+  app.history.clear();
+  app.refresh();
+  return {
+    badgeWorld, badgeObject, badgeNormal, storedSpace, labels,
+    worldX, objectX, moved, normalN, lift,
+  };
+});
+check(
+  "軸の向き: オブジェクトなら回転に付いてきて、引く向きもそれに沿う",
+  manipSpace.badgeWorld === "" &&
+    manipSpace.badgeObject === "O" &&
+    manipSpace.storedSpace === "object" &&
+    Math.abs(manipSpace.worldX[0] - 1) < 1e-6 &&
+    Math.abs(manipSpace.objectX[0] - Math.SQRT1_2) < 1e-3 &&
+    Math.abs(manipSpace.objectX[2] + Math.SQRT1_2) < 1e-3 &&
+    Math.abs(manipSpace.moved[0]) > 1e-3 &&
+    Math.abs(Math.abs(manipSpace.moved[0]) - Math.abs(manipSpace.moved[2])) < 1e-3,
+  `バッジ 「${manipSpace.badgeWorld}」→「${manipSpace.badgeObject}」/ ` +
+    `ワールドの赤 (${manipSpace.worldX.map((v) => v.toFixed(2)).join(", ")}) → ` +
+    `オブジェクトの赤 (${manipSpace.objectX.map((v) => v.toFixed(2)).join(", ")}) / ` +
+    `動いた (${manipSpace.moved.map((v) => v.toFixed(3)).join(", ")})`,
+);
+check(
+  "軸の向き: 法線なら 3 本目が面の法線で、青を引くと面が持ち上がる",
+  manipSpace.badgeNormal === "N" &&
+    manipSpace.labels.join("") === "UVN" &&
+    Math.abs(manipSpace.normalN[1] - 1) < 1e-6 &&
+    manipSpace.lift[1] > 0.1 &&
+    Math.abs(manipSpace.lift[0]) < 1e-6 &&
+    Math.abs(manipSpace.lift[2]) < 1e-6,
+  `バッジ ${manipSpace.badgeNormal} · 軸名 ${manipSpace.labels.join(" / ")} / ` +
+    `3 本目 (${manipSpace.normalN.map((v) => v.toFixed(2)).join(", ")}) / ` +
+    `動いた (${manipSpace.lift.map((v) => v.toFixed(3)).join(", ")})`,
+);
+
+/* 45c. マージの置き場（`45` の T3）: 変形の輪へ、編集の輪からは消えた */
+await page.evaluate(() => window.macbeth.setCompMode("vertex"));
+const mergeMoved = await page.evaluate(() => ({
+  xform: window.macbeth.radialForTest("xform"),
+  xformList: window.macbeth.radialListForTest("xform"),
+  edit: window.macbeth.radialForTest("edit"),
+}));
+const mergeObject = await page.evaluate(() => {
+  window.macbeth.setCompMode("object");
+  return { xformList: window.macbeth.radialListForTest("xform") };
+});
+check(
+  "マージは変形の輪へ集まり、編集の輪からは消えた",
+  mergeMoved.xform.SW === "ターゲットウェルド" &&
+    mergeMoved.xformList.join(" / ") === "距離でマージ / 中心にマージ" &&
+    !mergeMoved.edit.SW &&
+    !Object.values(mergeMoved.edit).includes("ターゲットウェルド") &&
+    mergeObject.xformList.length === 0,
+  `変形 SW「${mergeMoved.xform.SW}」· 一覧 ${mergeMoved.xformList.join(" / ") || "なし"} / ` +
+    `編集 ${Object.values(mergeMoved.edit).join(" / ")} / オブジェクトでは一覧 ${mergeObject.xformList.length} 件`,
 );
 
 /* 43. 例外が出ていない */

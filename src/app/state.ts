@@ -12,8 +12,17 @@ export type Mode = "model" | "uv" | "sculpt" | "material";
 export type CompMode = "object" | "vertex" | "edge" | "face";
 export type Display = "wire" | "shaded" | "shadedWire" | "smooth" | "checker" | "heat" | "poles";
 export type Manip = "all" | "move" | "rotate" | "scale";
+/** マニピュレータの軸の向き（`45` の T2）。Maya の「軸の向き」と同じ 4 つ。 */
+export type ManipSpace = "object" | "local" | "world" | "normal";
 /** 「編集」グループの中身（`21` の 2.3）。ツールとコマンドが混ざっている。 */
-export type EditKind = "multicut" | "bevel" | "bridge" | "extrude" | "connect" | "weld";
+/**
+ * 「編集」グループの中身。
+ *
+ * **ターゲットウェルドはここから外した**（`45` の T3）。溶接は頂点を 1 つ掴んで
+ * 別の頂点の上で離せば常に効く＝マニピュレータのドラッグなので、
+ * マージの仲間として「変形」の輪に移した。
+ */
+export type EditKind = "multicut" | "bevel" | "bridge" | "extrude" | "connect";
 /**
  * スナップの行き先。Maya の X（グリッド）/ V（頂点）/ C（カーブ = ここではエッジ）。
  * サーフェスは Maya の Make Live にあたるもので、キーは無い（docs/17 の 7.3）。
@@ -153,8 +162,6 @@ export interface BrushState {
    */
   pressureSizePow: number;
   pressureStrengthPow: number;
-  /** ローカル X で鏡映（`33` の T4）。 */
-  symmetryX: boolean;
   /**
    * 裏面マスク（`34`）。**既定でオン。**
    *
@@ -306,6 +313,16 @@ export class AppState {
    */
   manipSize = 1;
   /**
+   * マニピュレータの軸の向き（`45` の T2）。Maya の「軸の向き」。
+   *
+   * `object` オブジェクトの回転 / `local` 親の空間（**親がまだ無いので今は
+   * `object` と同じ**）/ `world` ワールドの XYZ（既定）/ `normal` 選んだ
+   * コンポーネントの平均法線。**移動・回転・スケールで共通の 1 つ**
+   * （Maya は道具ごとに持つが、タブレットで 3 回選ばせるのは重い）。
+   * `localStorage` に残す。
+   */
+  manipSpace: ManipSpace = "world";
+  /**
    * ピボットを動かしている最中（Maya の D）。オンの間はメッシュではなく
    * ピボットだけが動く。
    */
@@ -317,7 +334,16 @@ export class AppState {
   pivotOverride: { x: number; y: number; z: number } | null = null;
 
   mods: Mods = { shift: "off", ctrl: "off", alt: "off" };
-  /** 対称編集（ローカル X）。 */
+  /**
+   * X 対称（`45` の T1）。**アプリに 1 つ**。
+   *
+   * モデリングの頂点編集（`tools/transform.ts`）とスカルプトの筆（`stroke.ts`）が
+   * 同じこれを見る。前は筆だけが別に `brush.symmetryX` を持っていて、
+   * モデリングで入れてもスカルプトでは切れている（逆も）が起きていた。
+   *
+   * **既定はオフ**、`localStorage` に残す。知らずに反対側が動くほうが事故なので。
+   * 相手は `41` の対応表（`levels.ts` の `mirrorMapOf`）。
+   */
   symX = false;
   /** true = 指は常にカメラ。false（既定）= メッシュの上ならツール、外ならタンブル。 */
   fingerCam = false;
@@ -345,7 +371,6 @@ export class AppState {
     pressureSizePow: 1,
     pressureStrengthPow: 2,
     pressureStrength: true,
-    symmetryX: true,
   };
   /**
    * いま記録しているスカルプトレイヤーの id（`42` の T3）。null なら素のデルタへ。

@@ -346,3 +346,36 @@ export function mirrorMapOf(o: SceneObject, level: number, mesh: Mesh): MirrorMa
   o.mirrorMaps.set(level, built);
   return built.paired ? built : null;
 }
+
+/**
+ * モデリングの対称編集で「相手へ写す組」と「中心線に留める頂点」を出す（`45` の T1）。
+ *
+ * 前は `tools/softSelect.ts` の `mirrorPairs` が**ドラッグのたびに今の座標から**
+ * 文字列のキーで引き直していた。一度でも左右非対称に動かすと相手が見つからなくなり、
+ * 中心線の頂点は何もしなかった。ここは `41` の対応表（トポロジの話なので彫っても
+ * 変わらない）をレベル 0 で使う。
+ *
+ * - `pairs`: 動かす頂点 → 相手。**相手も動く側なら組にしない**（各自が動く）
+ * - `pinX`: 中心線の頂点（`mirror[v] === v`）。x を 0 に留める
+ */
+export function mirrorTargets(
+  o: SceneObject,
+  moving: Iterable<number>,
+): { pairs: Array<[number, number]>; pinX: number[] } {
+  const map = mirrorMapOf(o, 0, o.mesh);
+  const pairs: Array<[number, number]> = [];
+  const pinX: number[] = [];
+  if (!map) return { pairs, pinX };
+  const movingSet = moving instanceof Set ? (moving as Set<number>) : new Set(moving);
+  for (const v of movingSet) {
+    const m = map.mirror[v];
+    if (m < 0) continue;
+    if (m === v) {
+      pinX.push(v);
+      continue;
+    }
+    if (movingSet.has(m)) continue;
+    pairs.push([v, m]);
+  }
+  return { pairs, pinX };
+}

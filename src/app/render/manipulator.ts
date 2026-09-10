@@ -25,6 +25,7 @@ import {
   type Camera,
 } from "three";
 import type { Manip } from "../state.js";
+import type { Frame } from "../tools/frame.js";
 import { AXIS_COLORS } from "./materials.js";
 import { disposeObject3D } from "./meshView.js";
 import type { ScreenPoint } from "./picking.js";
@@ -149,8 +150,12 @@ export class Manipulator {
     this.signature = "";
   }
 
-  /** 中心が null なら消す。中身が変わっていなければ何もしない。 */
-  rebuild(center: Vector3 | null, manip: Manip, extraSignature: string): void {
+  /**
+   * 中心が null なら消す。中身が変わっていなければ何もしない。
+   *
+   * `frame` は軸の向き（`45` の T2）。渡さなければワールド。
+   */
+  rebuild(center: Vector3 | null, manip: Manip, extraSignature: string, frame?: Frame): void {
     if (!center) {
       if (this.signature) this.clear();
       return;
@@ -158,10 +163,13 @@ export class Manipulator {
     const s = this.scaleAt(center);
     // ピボット編集中は移動だけを出す。動かす先はピボットであってメッシュではない
     const pivotEdit = this.host.pivotEdit();
+    const axesOf = frame ? frame.axes : AXES;
     const sig = [
       manip,
       this.hot,
       extraSignature,
+      // 枠が変われば描き直す（回したオブジェクトを選び直したときなど）
+      axesOf.map((v) => `${v.x.toFixed(3)},${v.y.toFixed(3)},${v.z.toFixed(3)}`).join(";"),
       pivotEdit ? "pivot" : "",
       center.x.toFixed(3),
       center.y.toFixed(3),
@@ -177,7 +185,7 @@ export class Manipulator {
     const isHot = (id: number) => this.hot === id;
 
     for (let a = 0; a < 3; a++) {
-      const axis = AXES[a];
+      const axis = axesOf[a];
       if (L.move || L.scale) {
         const end = axis
           .clone()
@@ -249,7 +257,7 @@ export class Manipulator {
    * tolerance は判定の広さの倍率。指はペンより当たりが粗いので、
    * 呼ぶ側が TOUCH_TOLERANCE を渡して広げる。
    */
-  pick(p: ScreenPoint, center: Vector3 | null, manip: Manip, tolerance = 1): number {
+  pick(p: ScreenPoint, center: Vector3 | null, manip: Manip, tolerance = 1, frame?: Frame): number {
     if (!center) return -1;
     // ピボット編集中は移動しか出していないので、拾えるのも移動だけ
     const pivotEdit = this.host.pivotEdit();
@@ -261,6 +269,7 @@ export class Manipulator {
     }
 
     const L = layoutFor(kind);
+    const axesOf = frame ? frame.axes : AXES;
     let best = -1;
     let bestD = Infinity;
     const consider = (id: number, d: number, threshold: number) => {
@@ -271,7 +280,7 @@ export class Manipulator {
     };
 
     for (let a = 0; a < 3; a++) {
-      const axis = AXES[a];
+      const axis = axesOf[a];
       if (L.scale) {
         const cs = this.host.toScreen(axis.clone().multiplyScalar(L.cube * s).add(center));
         consider(20 + a, Math.hypot(cs.x - p.x, cs.y - p.y), 16 * tolerance);
@@ -287,7 +296,7 @@ export class Manipulator {
 
     if (L.rotate) {
       for (let a = 0; a < 3; a++) {
-        consider(10 + a, this.ringDistance(p, center, AXES[a], L.ring * s), 12 * tolerance);
+        consider(10 + a, this.ringDistance(p, center, axesOf[a], L.ring * s), 12 * tolerance);
       }
       if (kind === "rotate") {
         const viewAxis = new Vector3().subVectors(this.host.camera().position, center).normalize();

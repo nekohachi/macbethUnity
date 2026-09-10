@@ -210,7 +210,7 @@ export class StrokeDriver {
       invert: role === "sculpt" && alt,
       grab: null,
       layer: role === "sculpt" ? this.recordingLayer(o) : null,
-      mirror: this.state.brush.symmetryX ? mirrorMapOf(o, o.activeLevel, this.viewport.meshOf(o)) : null,
+      mirror: this.state.symX ? mirrorMapOf(o, o.activeLevel, this.viewport.meshOf(o)) : null,
       primarySign: at[0] < 0 ? -1 : 1,
       viewDir: role === "sculpt" && this.state.brush.backfaceMask ? this.viewDirOf(o) : null,
       last: at,
@@ -253,7 +253,7 @@ export class StrokeDriver {
     const fp = strokeFootprint(mesh, bvh, view.tri, at, radius);
     const g = grabWeights(mesh, fp, view.tri, base);
     let mirror: Grab["mirror"] = null;
-    if (this.state.brush.symmetryX) {
+    if (this.state.symX) {
       const mp: [number, number, number] = [-at[0], at[1], at[2]];
       const mfp = strokeFootprint(mesh, bvh, view.tri, mp, radius);
       // 中心線は避けない（`41` の T1）。左右は `flush` の写しで厳密に合わせる
@@ -486,7 +486,7 @@ export class StrokeDriver {
     if (live.role === "mask") {
       const input: MaskInput = { point, radius, strength, erase: live.erase };
       let any = this.paint(live, input);
-      if (b.symmetryX) {
+      if (this.state.symX) {
         // **中心線を避けない**（`41` の T1）。2 つの筆はどちらも中心線に届くので、
         // そこだけ 1 回にすると濃さが半分になって筋が出る
         any = this.paint(live, { ...input, point: [-point[0], point[1], point[2]] }) || any;
@@ -506,7 +506,7 @@ export class StrokeDriver {
       viewDir: live.viewDir ?? undefined,
     };
     let any = this.hit(live, input);
-    if (b.symmetryX) {
+    if (this.state.symX) {
       // ローカル X = 0 で鏡映。**中心線を避けない**（`41` の T1）。
       // 中心線の隣の頂点は 2 つの筆の両方から減衰ぶんを受けるのに、中心線だけ
       // 1 回にすると、そこだけ半分になって溝（継ぎ目）になっていた。

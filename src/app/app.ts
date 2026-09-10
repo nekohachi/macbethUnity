@@ -4,7 +4,7 @@
  * プロトタイプ（prototype/modeling-ui-prototype.html）からの移植途中。
  * 移植が済んだ順に、ここへ機能が増えていく。docs/10 の土台フェーズ。
  */
-import { Euler, Matrix4, Plane, Quaternion, Raycaster, Vector3 } from "three";
+import { Euler, Matrix3, Matrix4, Plane, Quaternion, Ray, Raycaster, Vector3 } from "three";
 import {
   PRIMITIVES,
   blurMask,
@@ -79,6 +79,8 @@ import {
   radiusFor,
   refreshCombined,
   reprojectDetail,
+  mirrorMapOf,
+  mirrorTargets,
   warmUpLevels,
 } from "./levels.js";
 import {
@@ -94,7 +96,7 @@ import { pressureOf } from "./input/gestures.js";
 import { forgetStamps, stampsFor } from "./stamps.js";
 import { STANDARD_VIEWS, Viewport, type LayoutKind, type ViewName } from "./render/viewport.js";
 import {
-  AXES,
+  HANDLE_FREE_MOVE,
   HANDLE_GESTURE,
   HANDLE_TWEAK,
   Manipulator,
@@ -111,6 +113,7 @@ import {
   type Display,
   type EditKind,
   type Manip,
+  type ManipSpace,
   type Mode,
   type SnapKind,
   type UvCutKind,
@@ -122,7 +125,8 @@ import { BevelTool } from "./tools/bevel.js";
 import { MultiCut } from "./tools/multicut.js";
 import { Preselect } from "./tools/preselect.js";
 import { Selector } from "./tools/select.js";
-import { mirrorPairs, softWeights } from "./tools/softSelect.js";
+import { normalFrame, objectFrame, worldFrame, type Frame } from "./tools/frame.js";
+import { softWeights } from "./tools/softSelect.js";
 import {
   applyGestureTransform,
   tiltAbout,
@@ -131,7 +135,7 @@ import {
   type DragState,
   type DragTarget,
 } from "./tools/transform.js";
-import { applyTransform } from "./render/meshView.js";
+import { applyTransform, type ObjectView } from "./render/meshView.js";
 import { Docking, type Zone } from "./ui/docking.js";
 import { Layout } from "./ui/layout.js";
 import { byId, el } from "./ui/dom.js";
@@ -275,6 +279,16 @@ type ToolEntry =
     };
 
 /** 「変形」グループのアイコン。今のマニピュレータで切り替わる。 */
+/** 軸の向きの名前（`45` の T2）。オプションと HUD で使う。 */
+const MANIP_SPACE_LABEL: Record<ManipSpace, string> = {
+  object: "オブジェクト",
+  local: "ローカル",
+  world: "ワールド",
+  normal: "法線",
+};
+/** ボタンの隅に出す 1 文字。ワールド（既定）は出さない。 */
+const MANIP_SPACE_BADGE: Record<ManipSpace, string> = { object: "O", local: "L", world: "", normal: "N" };
+
 const MANIP_ICONS: Record<Manip, string> = {
   all: ICONS.xform,
   move: ICONS.move,
@@ -289,7 +303,6 @@ const EDIT_ICONS: Record<EditKind, string> = {
   bridge: ICONS.vEdge,
   extrude: ICONS.extrude,
   connect: ICONS.vMulti,
-  weld: ICONS.vVert,
 };
 
 const EDIT_LABELS: Record<EditKind, string> = {
@@ -298,7 +311,6 @@ const EDIT_LABELS: Record<EditKind, string> = {
   bridge: "ブリッジ",
   extrude: "押し出し",
   connect: "接続",
-  weld: "ターゲットウェルド",
 };
 
 /** スナップの行き先ごとのアイコン。 */
@@ -476,7 +488,7 @@ export class App {
     }
     const { radius } = brushAt(this.state.brush, 1);
     // 対称なら反対側にも輪を出す（`41` の T1b）
-    this.viewport.showBrushCursor(o, at, radius, this.state.brush.symmetryX);
+    this.viewport.showBrushCursor(o, at, radius, this.state.symX);
   }
 
   /**
@@ -517,6 +529,96 @@ export class App {
     else if (what === "fit") this.fitLowLevel();
     else if (what === "reproject") this.reprojectLevel();
     else this.burnDownLevel();
+  }
+
+  /* ---- 通し確認の入口（`45`） ------------------------------------------ */
+
+  /** 対称のボタンと長押しの中身（`45` の T1）。 */
+  symmetryForTest(what: "toggle" | "symmetrize+" | "symmetrize-"): void {
+    if (what === "toggle") this.toggleSymmetry();
+    else this.doSymmetrize(what === "symmetrize+" ? 1 : -1);
+  }
+
+  /** いまの軸の向き（`45` の T2）。 */
+  manipFrameForTest(): Frame {
+    return this.manipFrame();
+  }
+
+  /** ツール列の長押しメニューの中身（方位 → 名前）。 */
+  radialForTest(group: string): Record<string, string> {
+    const menu =
+      group === "xform" ? this.manipulatorMenu() : group === "edit" ? this.editGroupMenu() : this.symmetryMenu();
+    const out: Record<string, string> = {};
+    for (const [dir, item] of Object.entries(menu)) if (item) out[dir] = item.label;
+    return out;
+  }
+
+  /** 長押しメニューの下の一覧（`38` の T3 と同じ形）。 */
+  radialListForTest(group: string): string[] {
+    const list = group === "xform" ? this.manipulatorItems() : this.brushItems();
+    return list.map((i) => i.label);
+  }
+
+  /**
+   * 選択を掴んで動かす（`45` の通し確認）。マニピュレータの中心ハンドルと
+   * 同じ道（`captureTarget` → `updateDrag`）を通るので、対称も UV も同じに効く。
+   */
+  dragForTest(delta: [number, number, number]): boolean {
+    return this.dragHandleForTest(HANDLE_FREE_MOVE, new Vector3(...delta));
+  }
+
+  /** 軸のハンドルを掴んで、その軸に沿って動かす（`45` の T2）。 */
+  dragAxisForTest(axis: 0 | 1 | 2, distance: number): boolean {
+    const frame = this.manipFrame();
+    return this.dragHandleForTest(axis, frame.axes[axis].clone().multiplyScalar(distance));
+  }
+
+  /**
+   * ハンドルを 1 回引く。画面を経由せず、控えを取って差分を当てて履歴に積む。
+   *
+   * ドラッグの実体（`beginDrag` / `updateDrag`）はそのまま通す。ここが担うのは
+   * 「押した」「離した」のかわりだけ。
+   *
+   * **レイはカメラから引く。** 実際のドラッグと同じ形にしないと、軸の最接近点
+   * （`rayAxisT`）も自由移動の平面も、置いた向きしだいで潰れる。
+   * 自由移動はカメラに正対する平面へ落ちるので、`delta` はその平面の成分だけ効く。
+   */
+  private dragHandleForTest(handle: number, delta: Vector3): boolean {
+    const o = this.state.selected;
+    const pivot = this.pivotWorld();
+    if (!o || !pivot) return false;
+    const target = this.captureTarget();
+    if (!target) return false;
+    this.beginDragHistory(o, target);
+    const label = handleKind(handle) === "move" ? "移動" : handleKind(handle) === "rotate" ? "回転" : "スケール";
+    const start = this.manipulator.toScreen(pivot);
+    const camera = this.cameraPosition();
+    const rayTo = (at: Vector3) => new Ray(camera.clone(), at.clone().sub(camera).normalize());
+    const drag = beginDrag({
+      handle,
+      pivot,
+      target,
+      point: start,
+      pivotScreen: start,
+      ray: rayTo(pivot),
+      cameraPosition: camera,
+      label,
+      frame: this.manipFrame(),
+    });
+    const to = pivot.clone().add(delta);
+    updateDrag(drag, o, this.manipulator.toScreen(to), rayTo(to), camera, {
+      rotateStep: this.state.rotateStep,
+      preventNegativeScale: this.state.preventNegativeScale,
+    });
+    if (target.kind === "object") {
+      const view = this.viewport.viewOf(o);
+      if (view) applyTransform(view.group, o.transform);
+    }
+    this.viewport.refreshPositions(o);
+    this.viewport.rebuildOverlay();
+    this.commitDragHistory(label);
+    this.refresh();
+    return true;
   }
 
   /** 筆圧の効き（`38` の T4）。通し確認から式を確かめるため。 */
@@ -613,6 +715,8 @@ export class App {
     plane: Plane;
     planeStart: Vector3 | null;
     t0: number;
+    /** 軸の向き（`45` の T2）。押した時点で固定する。 */
+    frame: Frame;
   } | null = null;
   /** ドラッグ開始前のスナップショット。動いたときだけ履歴に積む。 */
   private dragSnapshot: ReturnType<History["snapshot"]> | null = null;
@@ -892,7 +996,7 @@ export class App {
         // `clear()` してあるので当たらないはずだが、そこに頼らず明示的に飛ばす
         // （あとで `clear` の順番が変わっても壊れないように）
         const gizmo = this.state.mode !== "sculpt" && this.state.selected;
-        if (gizmo && this.manipulator.pick(p, this.pivotWorld(), this.state.manip, tol) >= 0) {
+        if (gizmo && this.manipulator.pick(p, this.pivotWorld(), this.state.manip, tol, this.manipFrame()) >= 0) {
           return true;
         }
         return this.hitSelectedComponent(p, tol) || !!this.picker.pickSurface(p);
@@ -1275,6 +1379,7 @@ export class App {
   private movedVerts(target: DragTarget | null): number[] {
     if (!target || target.kind !== "component") return this.selector.selectedVertices();
     const out = new Set<number>(target.verts);
+    for (const v of target.pinX) out.add(v);
     for (const [a, b] of target.mirror) {
       out.add(a);
       out.add(b);
@@ -1312,13 +1417,16 @@ export class App {
       weights.push(w);
       world.push(new Vector3(p[0], p[1], p[2]).applyMatrix4(view.group.matrixWorld));
     }
+    // 対称編集の相手（`45` の T1）。相手は `41` の対応表から引く
+    const sym = this.state.symX ? mirrorTargets(o, verts) : { pairs: [], pinX: [] };
     return {
       kind: "component",
       verts,
       weights,
       world,
       inverse: new Matrix4().copy(view.group.matrixWorld).invert(),
-      mirror: this.state.symX ? mirrorPairs(o.mesh, verts) : [],
+      mirror: sym.pairs,
+      pinX: sym.pinX,
     };
   }
 
@@ -1372,7 +1480,7 @@ export class App {
     const o = this.state.selected;
     const pivot = this.pivotWorld();
     const tol = this.tolerance(e);
-    let handle = o ? this.manipulator.pick(p, pivot, this.state.manip, tol) : -1;
+    let handle = o ? this.manipulator.pick(p, pivot, this.state.manip, tol, this.manipFrame()) : -1;
     // ハンドルを外しても、選択中のコンポーネントの上ならつかんだ扱いにする
     if (handle < 0 && o && this.state.compMode !== "object" && this.hitSelectedComponent(p, tol)) {
       handle = HANDLE_TWEAK;
@@ -1473,6 +1581,7 @@ export class App {
       ray: this.ray(p),
       cameraPosition: this.cameraPosition(),
       label,
+      frame: this.manipFrame(),
     });
     // UV を保つのは移動だけ（回転とスケールでは UV は変わらない）
     if (this.drag.kind === "move") this.beginPreserve(o, this.movedVerts(target));
@@ -1533,7 +1642,7 @@ export class App {
       }
     }
 
-    const mirror = this.state.symX ? mirrorPairs(o.mesh, verts) : [];
+    const mirror = this.state.symX ? mirrorTargets(o, verts).pairs : [];
     this.slideDrag = {
       base: Float32Array.from(o.mesh.positions),
       rails,
@@ -1631,6 +1740,8 @@ export class App {
    */
   private beginPivotDrag(handle: number, p: ScreenPoint, pivot: Vector3): void {
     const axis = handle < 3 ? handle : -1;
+    // ピボットも枠に沿って動かす（`45` の T2）
+    const frame = this.manipFrame();
     const plane = new Plane().setFromNormalAndCoplanarPoint(
       new Vector3().subVectors(this.cameraPosition(), pivot).normalize(),
       pivot,
@@ -1645,7 +1756,8 @@ export class App {
       origin: pivot.clone(),
       plane,
       planeStart,
-      t0: axis >= 0 ? rayAxisT(this.ray(p), pivot, AXES[axis]) : 0,
+      frame,
+      t0: axis >= 0 ? rayAxisT(this.ray(p), pivot, frame.axes[axis]) : 0,
     };
     this.manipulator.hot = handle;
     this.refreshManipulator();
@@ -1657,8 +1769,9 @@ export class App {
     const ray = this.ray(p);
     let next: Vector3;
     if (d.axis >= 0) {
-      const t = rayAxisT(ray, d.origin, AXES[d.axis]);
-      next = d.origin.clone().addScaledVector(AXES[d.axis], t - d.t0);
+      const axis = d.frame.axes[d.axis];
+      const t = rayAxisT(ray, d.origin, axis);
+      next = d.origin.clone().addScaledVector(axis, t - d.t0);
     } else {
       const hit = new Vector3();
       if (!ray.intersectPlane(d.plane, hit) || !d.planeStart) return;
@@ -1672,7 +1785,7 @@ export class App {
           d.axis >= 0
             ? d.origin
                 .clone()
-                .addScaledVector(AXES[d.axis], snapped.clone().sub(d.origin).dot(AXES[d.axis]))
+                .addScaledVector(d.frame.axes[d.axis], snapped.clone().sub(d.origin).dot(d.frame.axes[d.axis]))
             : snapped.clone();
       }
       this.showSnapTarget();
@@ -1729,10 +1842,10 @@ export class App {
       SE: { label: "ピボットを戻す", sub: "Center", icon: ICONS.vObj, run: () => this.resetPivot() },
       S: { label: "回転", sub: "Rotate  E", icon: ICONS.rotate, run: () => this.setManip("rotate") },
       SW: {
-        label: "距離でマージ",
-        sub: "Merge",
+        label: "ターゲットウェルド",
+        sub: "Target Weld",
         icon: ICONS.vVert,
-        run: () => this.doMergeByDistance(),
+        run: () => this.hintTargetWeld(),
       },
       W: { label: "スケール", sub: "Scale  R", icon: ICONS.scale, run: () => this.setManip("scale") },
       NW: {
@@ -1750,6 +1863,152 @@ export class App {
         },
       },
     };
+  }
+
+  /**
+   * 変形の輪の下の一覧（`45` の T3）。**マージはここに集めた。**
+   *
+   * 頂点モードでないときは出さない（オブジェクトを「中心にマージ」しても
+   * 意味が無い）。
+   */
+  private manipulatorItems(): RadialItem[] {
+    if (this.state.compMode !== "vertex") return [];
+    return [
+      {
+        label: "距離でマージ",
+        sub: `Merge  ${this.state.vertexOpts.mergeDist.toFixed(3)} 以内`,
+        icon: ICONS.vVert,
+        run: () => this.doMergeByDistance(),
+      },
+      {
+        label: "中心にマージ",
+        sub: "To Center",
+        icon: ICONS.vObj,
+        run: () => this.doMergeVertices(),
+      },
+    ];
+  }
+
+  /**
+   * ターゲットウェルドの言い添え（`45` の T3）。
+   *
+   * 溶接は道具ではない。頂点を 1 つ掴んで別の頂点の上で離せば、いつでも効く。
+   * ここでは**やり方を言うだけ**（前は「編集」の中の 1 つの顔をしていた）。
+   */
+  private hintTargetWeld(): void {
+    this.setTool("select");
+    if (this.state.compMode !== "vertex") this.setCompMode("vertex");
+    this.hud.toast("頂点を掴んで、別の頂点の近くで離すと溶接します");
+  }
+
+  /* ---- X 対称（`45` の T1） ------------------------------------------- */
+
+  /**
+   * 「対称」のボタン。**モデリングとスカルプトの両方に同じものを出す**。
+   *
+   * 対称はアプリに 1 つ（`state.symX`）なので、どちらで入れても両方に効く。
+   */
+  private symmetryButton(): ToolEntry {
+    return {
+      kind: "button",
+      id: "sym",
+      icon: ICONS.sym,
+      title: "X 対称（タップで入り / 切り · 長押しで 整える / ミラー）",
+      pressed: () => this.state.symX,
+      badge: () => (this.state.symX ? "X" : ""),
+      radial: () => this.symmetryMenu(),
+      options: () => [mirrorSection(this.optionsState(), this.panelHost())],
+      onTap: () => this.toggleSymmetry(),
+    };
+  }
+
+  /**
+   * 対称の入り切り。**対になる頂点が無ければ、入れても効かないことを言う。**
+   * 黙って入れると「入れたのに反対側が動かない」で悩ませる。
+   */
+  private toggleSymmetry(): void {
+    this.state.symX = !this.state.symX;
+    this.remember("symX", this.state.symX);
+    this.renderToolColumn();
+    this.hud.refreshStats();
+    this.refresh();
+    if (!this.state.symX) return void this.hud.toast("X 対称 オフ");
+    const o = this.state.selected;
+    const map = o ? mirrorMapOf(o, 0, o.mesh) : null;
+    this.hud.toast(
+      o && !map
+        ? "X 対称 オン（このメッシュには対になる頂点がありません。「ミラー」で半分から作れます）"
+        : "X 対称 オン",
+    );
+  }
+
+  private symmetryMenu(): RadialMenu {
+    const menu: RadialMenu = {
+      N: {
+        label: this.state.symX ? "対称を切る" : "対称を入れる",
+        sub: "ローカル X",
+        icon: ICONS.sym,
+        run: () => this.toggleSymmetry(),
+      },
+      E: { label: "対称に整える", sub: "+X → −X", icon: ICONS.sym, run: () => this.doSymmetrize(1) },
+      W: { label: "対称に整える", sub: "−X → +X", icon: ICONS.sym, run: () => this.doSymmetrize(-1) },
+    };
+    // ミラーは半分から作る操作なので、オブジェクトを選んでいるときだけ
+    if (this.state.compMode === "object") {
+      menu.S = { label: "ミラー", sub: `Mirror ${"XYZ"[this.state.mirrorAxis]}`, icon: ICONS.sym, run: () => this.doMirror() };
+    }
+    return menu;
+  }
+
+  /**
+   * 片側をもう片側へ写して、左右をそろえる（`45` の T1）。
+   *
+   * **左右非対称に触ったあとでも効く。** 相手は `41` の対応表で、対応そのものは
+   * トポロジの話なので彫っても変わらない（座標から引き直すと相手を見失う）。
+   */
+  private doSymmetrize(sign: 1 | -1): void {
+    const o = this.state.selected;
+    if (!o) return void this.hud.toast("オブジェクトを選択してください");
+    const map = mirrorMapOf(o, 0, o.mesh);
+    if (!map) return void this.hud.toast("対になる頂点がありません。「ミラー」で半分から作れます");
+
+    const { mirror, side } = map;
+    const sources: number[] = [];
+    const targets: number[] = [];
+    const center: number[] = [];
+    for (let v = 0; v < mirror.length; v++) {
+      const m = mirror[v];
+      if (m < 0) continue;
+      if (m === v) {
+        if (o.mesh.positions[v * 3] !== 0) center.push(v);
+        continue;
+      }
+      if (side[v] !== sign) continue;
+      sources.push(v);
+      targets.push(m);
+    }
+    if (!targets.length && !center.length) return void this.hud.toast("すでに対称です");
+
+    this.history.abortPending();
+    this.history.beginPositions(o, [...targets, ...center]);
+    const p = o.mesh.positions;
+    for (let i = 0; i < targets.length; i++) {
+      const v = sources[i];
+      const m = targets[i];
+      p[m * 3] = -p[v * 3];
+      p[m * 3 + 1] = p[v * 3 + 1];
+      p[m * 3 + 2] = p[v * 3 + 2];
+    }
+    // 中心線の頂点は x を 0 に落とす（浮いたままだとそこだけ左右が割れる）
+    for (const v of center) p[v * 3] = 0;
+    this.history.commitPending("対称に整える");
+    o.parametric = false;
+    this.viewport.refreshPositions(o);
+    this.viewport.rebuildOverlay();
+    this.refresh();
+    this.hud.toast(
+      `対称に整えた — ${targets.length} 頂点を写した` + (center.length ? ` · 中心線 ${center.length} 頂点` : ""),
+    );
   }
 
   /** Shift ドラッグの押し出し。面とエッジに対応。頂点はそのまま移動する。 */
@@ -1842,6 +2101,10 @@ export class App {
     });
     if (snapping) this.showSnapTarget();
     else this.updateWeldTarget(p, e, o);
+    if (!snapping && drag.axis >= 0) {
+      // 軸の名前は枠から取る（法線の枠なら U / V / N。`45` の T2）
+      byId("hudHint").innerHTML = `${drag.label} <kbd>${drag.frame.labels[drag.axis]}</kbd>`;
+    }
     this.applyPreserve();
     if (drag.target.kind === "object") {
       const view = this.viewport.viewOf(o);
@@ -2184,6 +2447,120 @@ export class App {
   }
 
   /** マニピュレータを今の選択に合わせる。 */
+  /* ---- マニピュレータの軸の向き（`45` の T2） -------------------------- */
+
+  /**
+   * いまの枠。**`refreshManipulator` で作り直して控える。**
+   *
+   * ホバーの当たり判定（`pick`）が指を動かすたびに呼ぶので、そこで
+   * 作り直すわけにはいかない（法線の枠はメッシュを舐める）。選択・ピボット・
+   * モードが変わると `refreshManipulator` が来るので、そこで足りる。
+   */
+  private manipFrameCache: Frame = worldFrame();
+
+  private manipFrame(): Frame {
+    return this.manipFrameCache;
+  }
+
+  /** 枠を作る。`manipSpace` と選択から決まる。 */
+  private computeManipFrame(): Frame {
+    // 引いている最中は押した時点の枠のまま（`45` の T2）。
+    // 法線の枠は選択のまわりの面を舐めるので、毎コマ作り直すわけにいかない
+    if (this.drag || this.pivotDrag) return this.manipFrameCache;
+    const space = this.state.manipSpace;
+    const o = this.state.selected;
+    if (!o || space === "world") return worldFrame();
+    const view = this.viewport.viewOf(o);
+    if (!view) return worldFrame();
+    view.group.updateMatrixWorld();
+    // `local` は親の空間。**親がまだ無いのでオブジェクトと同じ**（`19` の 4）
+    const base = objectFrame(view.group.matrixWorld);
+    if (space !== "normal" || this.state.compMode === "object" || !this.state.comp.size) return base;
+    const found = this.selectionNormal(o, view);
+    if (!found) return base;
+    const nm = new Matrix3().getNormalMatrix(view.group.matrixWorld);
+    const n = found.n.applyMatrix3(nm);
+    const hintU = found.hintU ? found.hintU.transformDirection(view.group.matrixWorld) : null;
+    return normalFrame(n, hintU, base);
+  }
+
+  /**
+   * 選んだコンポーネントの平均法線（ローカル）と、U に使いたい向き。
+   *
+   * 面は面積の重み（Newell の生のベクトルは長さが面積の 2 倍）。
+   * エッジと頂点は、その頂点の頂点法線の和 ＝ **接している面を、選ばれた
+   * コーナーの数だけ足す**。
+   */
+  private selectionNormal(o: SceneObject, view: ObjectView): { n: Vector3; hintU: Vector3 | null } | null {
+    const mesh = o.mesh;
+    const n = new Vector3();
+    let hintU: Vector3 | null = null;
+    const newell = (f: number, times: number): void => {
+      const s = mesh.faceOffsets[f];
+      const count = mesh.faceOffsets[f + 1] - s;
+      for (let i = 0; i < count; i++) {
+        const a = mesh.faceCorners[s + i];
+        const b = mesh.faceCorners[s + ((i + 1) % count)];
+        const ax = mesh.positions[a * 3],
+          ay = mesh.positions[a * 3 + 1],
+          az = mesh.positions[a * 3 + 2];
+        const bx = mesh.positions[b * 3],
+          by = mesh.positions[b * 3 + 1],
+          bz = mesh.positions[b * 3 + 2];
+        n.x += (ay - by) * (az + bz) * times;
+        n.y += (az - bz) * (ax + bx) * times;
+        n.z += (ax - bx) * (ay + by) * times;
+      }
+    };
+
+    if (this.state.compMode === "face") {
+      for (const f of this.state.comp) if (f < mesh.faceCount) newell(f, 1);
+    } else {
+      const wanted = new Set<number>();
+      if (this.state.compMode === "vertex") {
+        for (const v of this.state.comp) wanted.add(v);
+        const list = [...wanted];
+        if (list.length === 2) hintU = this.localDirection(mesh, list[0], list[1]);
+      } else {
+        const edges = [...this.state.comp].map((i) => view.edges[i]).filter(Boolean);
+        for (const [a, b] of edges) {
+          wanted.add(a);
+          wanted.add(b);
+        }
+        // エッジが 1 本だけなら、その向きを U に使う（Maya と同じ）
+        if (edges.length === 1) hintU = this.localDirection(mesh, edges[0][0], edges[0][1]);
+      }
+      if (!wanted.size) return null;
+      for (let f = 0; f < mesh.faceCount; f++) {
+        let times = 0;
+        for (let i = mesh.faceOffsets[f]; i < mesh.faceOffsets[f + 1]; i++) {
+          if (wanted.has(mesh.faceCorners[i])) times++;
+        }
+        if (times) newell(f, times);
+      }
+    }
+    return n.lengthSq() < 1e-18 ? null : { n, hintU };
+  }
+
+  private localDirection(mesh: SceneObject["mesh"], a: number, b: number): Vector3 | null {
+    const d = new Vector3(
+      mesh.positions[b * 3] - mesh.positions[a * 3],
+      mesh.positions[b * 3 + 1] - mesh.positions[a * 3 + 1],
+      mesh.positions[b * 3 + 2] - mesh.positions[a * 3 + 2],
+    );
+    return d.lengthSq() < 1e-18 ? null : d;
+  }
+
+  setManipSpace(space: ManipSpace): void {
+    this.state.manipSpace = space;
+    this.remember("manipSpace", space);
+    this.refreshManipulator();
+    this.renderToolColumn();
+    this.reopenToolOptions("xform");
+    this.refresh();
+    this.hud.toast(`軸の向き: ${MANIP_SPACE_LABEL[space]}`);
+  }
+
   private refreshManipulator(): void {
     // **スカルプト中は出さない**（`36` の T1）。邪魔なだけでなく、
     // ハンドルは「ツールの対象」に数えられているので、指が乗るとタンブルにも
@@ -2199,7 +2576,8 @@ export class App {
       this.state.comp.size,
       this.state.tool,
     ].join(",");
-    this.manipulator.rebuild(this.pivotWorld(), this.state.manip, signature);
+    this.manipFrameCache = this.computeManipFrame();
+    this.manipulator.rebuild(this.pivotWorld(), this.state.manip, signature, this.manipFrameCache);
   }
 
   setTool(tool: string): void {
@@ -3949,9 +4327,11 @@ export class App {
         kind: "button",
         id: "xform",
         icon: () => (this.state.pivotEdit ? ICONS.pivot : MANIP_ICONS[this.state.manip]),
-        title: "変形（長押しで ユニバーサル / 移動 / 回転 / スケール / ピボット）",
+        title: "変形（長押しで ユニバーサル / 移動 / 回転 / スケール / マージ / ピボット）",
         pressed: () => this.state.pivotEdit,
+        badge: () => MANIP_SPACE_BADGE[this.state.manipSpace],
         radial: () => this.manipulatorMenu(),
+        radialList: () => this.manipulatorItems(),
         options: () => this.xformOptions(),
         onTap: () => this.setTool("select"),
       },
@@ -3959,12 +4339,13 @@ export class App {
         kind: "button",
         id: "edit",
         icon: () => EDIT_ICONS[this.state.lastEdit],
-        title: "編集（長押しで マルチカット / ベベル / ブリッジ / 押し出し / 接続 / ウェルド）",
+        title: "編集（長押しで マルチカット / ベベル / ブリッジ / 押し出し / 接続）",
         pressed: () => this.state.tool === "multicut" || this.state.tool === "bevel",
         radial: () => this.editGroupMenu(),
         options: () => this.editOptions(),
         onTap: () => this.activateEdit(this.state.lastEdit),
       },
+      this.symmetryButton(),
       {
         kind: "button",
         id: "snap",
@@ -4034,14 +4415,15 @@ export class App {
         kind: "button",
         id: "brush",
         icon: () => BRUSH_ICONS[this.state.brush.kind],
-        title: "ブラシ（長押しで 11 種類 · 対称）",
-        pressed: () => this.state.brush.symmetryX,
-        badge: () => (this.state.brush.symmetryX ? "X" : ""),
+        title: "ブラシ（長押しで 11 種類）",
         radial: () => this.brushMenu(),
         radialList: () => this.brushItems(),
         options: () => [brushSection(this.optionsState(), this.panelHost())],
         onTap: () => {},
       },
+      { kind: "separator" },
+      { kind: "label", text: "対称" },
+      this.symmetryButton(),
       { kind: "separator" },
       { kind: "label", text: "マスク" },
       {
@@ -4414,24 +4796,12 @@ export class App {
     };
   }
 
-  /** 一覧に落としたぶん（`38` の T3）。残りのブラシと対称。 */
+  /**
+   * 一覧に落としたぶん（`38` の T3）。8 方位に入りきらないブラシ。
+   * 対称は**ツール列の「対称」**へ移した（`45` の T1。置き場は 1 つ）。
+   */
   private brushItems(): RadialItem[] {
-    const sym = this.state.brush.symmetryX;
-    return [
-      this.brushItem("claybuildup"),
-      this.brushItem("trim"),
-      this.brushItem("polish"),
-      {
-        label: sym ? "対称を切る" : "対称を入れる",
-        sub: "ローカル X",
-        icon: ICONS.sym,
-        run: () => {
-          this.state.brush.symmetryX = !sym;
-          this.renderToolColumn();
-          this.hud.toast(this.state.brush.symmetryX ? "X 対称 オン" : "X 対称 オフ");
-        },
-      },
-    ];
+    return [this.brushItem("claybuildup"), this.brushItem("trim"), this.brushItem("polish")];
   }
 
   /** ブラシ 1 つぶんの項目。 */
@@ -4723,7 +5093,6 @@ export class App {
       S: item("bridge", "Bridge"),
       W: item("extrude", "Extrude"),
       NW: item("connect", "Connect"),
-      SW: item("weld", "Target Weld"),
     };
   }
 
@@ -4760,7 +5129,6 @@ export class App {
     if (kind === "bridge") this.doBridge();
     else if (kind === "extrude") this.doExtrudeForMode();
     else if (kind === "connect") this.doConnectForMode();
-    else this.hud.toast("頂点を掴んで、別の頂点の近くで離すと溶接します");
     this.renderToolColumn();
   }
 
@@ -4787,7 +5155,6 @@ export class App {
     const out = [selectSection(state, host)];
     if (this.state.compMode !== "object") out.push(softSelectSection(state, host));
     if (this.state.compMode === "vertex") out.push(vertexSection(state, host));
-    if (this.state.compMode === "object") out.push(mirrorSection(state, host));
     return out;
   }
 
@@ -4950,6 +5317,7 @@ export class App {
       compMode: this.state.compMode,
       manipSize: this.state.manipSize,
       manip: this.state.manip,
+      manipSpace: this.state.manipSpace,
       pivotEdit: this.state.pivotEdit,
       rotateStep: this.state.rotateStep,
       preventNegativeScale: this.state.preventNegativeScale,
@@ -5187,6 +5555,7 @@ export class App {
         for (const o of this.state.doc.objects) this.viewport.rebuildObject(o);
       },
       onManipSizeChange: (value) => this.setManipSize(value),
+      onManipSpaceChange: (space) => this.setManipSpace(space),
       onUvMethodChange: (method) => {
         this.uv?.setMethod(method);
         this.refresh();
@@ -5477,6 +5846,12 @@ export class App {
     this.state.cameraBased = read("cameraBased") === "true";
     this.state.preventNegativeScale = read("preventNegativeScale") !== "false";
     this.state.preserveUvs = read("preserveUvs") !== "false";
+    // 対称は**既定オフ**（知らずに反対側が動くほうが事故。`45` の T1）
+    this.state.symX = read("symX") === "true";
+    const space = read("manipSpace");
+    if (space === "object" || space === "local" || space === "world" || space === "normal") {
+      this.state.manipSpace = space;
+    }
     const step = Number(read("rotateStep"));
     if (Number.isFinite(step) && step >= 0) this.state.rotateStep = step;
     try {
@@ -5713,9 +6088,7 @@ export class App {
       }
       // 対称編集は S。X は Maya に合わせてグリッドスナップに譲った
       if (e.key === "s" || e.key === "S") {
-        this.state.symX = !this.state.symX;
-        this.refresh();
-        this.hud.toast(`対称編集 X: ${this.state.symX ? "オン" : "オフ"}`);
+        this.toggleSymmetry();
         return;
       }
       if ((e.ctrlKey || e.metaKey) && (e.key === "z" || e.key === "Z")) {

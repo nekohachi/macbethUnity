@@ -49,27 +49,3 @@ export function softWeights(
   }
   return { weights, skipped: false };
 }
-
-/**
- * ローカル X の鏡映位置にある頂点の組を探す（対称編集）。
- * 相手自身も動く側なら、その頂点は自分のデルタに任せて組から外す。
- */
-export function mirrorPairs(mesh: Mesh, moving: Iterable<number>): Array<[number, number]> {
-  const movingSet = new Set(moving);
-  const p = mesh.positions;
-  const key = (x: number, y: number, z: number) => {
-    // -0.000 と 0.000 を同じものとして扱う
-    const fx = x.toFixed(3) === "-0.000" ? "0.000" : x.toFixed(3);
-    return `${fx},${y.toFixed(3)},${z.toFixed(3)}`;
-  };
-  const index = new Map<string, number>();
-  for (let i = 0; i < mesh.vertexCount; i++) {
-    index.set(key(p[i * 3], p[i * 3 + 1], p[i * 3 + 2]), i);
-  }
-  const pairs: Array<[number, number]> = [];
-  for (const v of movingSet) {
-    const partner = index.get(key(-p[v * 3], p[v * 3 + 1], p[v * 3 + 2]));
-    if (partner !== undefined && partner !== v && !movingSet.has(partner)) pairs.push([v, partner]);
-  }
-  return pairs;
-}

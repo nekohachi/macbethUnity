@@ -9,6 +9,7 @@ import type { SceneObject } from "../../core/index.js";
 import { el } from "./dom.js";
 import { ICONS, iconSvg } from "./icons.js";
 import { openRadial, type RadialMenu } from "./radial.js";
+import type { ManipSpace } from "../state.js";
 
 export interface PanelHost {
   /** スライダーを動かしている最中（履歴には積まない）。 */
@@ -43,6 +44,8 @@ export interface PanelHost {
   onBrushPowChange(key: "pressureSizePow" | "pressureStrengthPow", value: number): void;
   onSmoothAngleChange(value: number): void;
   onManipSizeChange(value: number): void;
+  /** マニピュレータの軸の向き（`45` の T2）。 */
+  onManipSpaceChange(space: ManipSpace): void;
   onUvMethodChange(method: "lscm" | "projection" | "none"): void;
   onUvSnapChange(key: "kind" | "step", value: string | number): void;
   onUvAutoChange(key: "angle" | "useHardEdges" | "useCreases" | "usePolygroups" | "symmetric", value: number | boolean): void;
@@ -265,6 +268,8 @@ export interface OptionsState {
   manipSize: number;
   /** 今のマニピュレータ（`21` の 2.2）。 */
   manip: "all" | "move" | "rotate" | "scale";
+  /** マニピュレータの軸の向き（`45` の T2）。 */
+  manipSpace: ManipSpace;
   pivotEdit: boolean;
   rotateStep: number;
   preventNegativeScale: boolean;
@@ -405,6 +410,37 @@ export function manipulatorSection(state: OptionsState, host: PanelHost): HTMLEl
     format: (v) => `×${v.toFixed(2)}`,
     onInput: (v) => host.onManipSizeChange(v),
   });
+
+  // 軸の向き（`45` の T2）。Maya の並びのまま。移動・回転・スケールで共通
+  {
+    const row = el("div", "row");
+    row.appendChild(el("label", undefined, "種類"));
+    const group = el("div", "segmented");
+    for (const [space, text] of [
+      ["object", "オブジェクト"],
+      ["local", "ローカル"],
+      ["world", "ワールド"],
+      ["normal", "法線"],
+    ] as const) {
+      const b = el("button", "seg") as HTMLButtonElement;
+      b.textContent = text;
+      b.dataset.space = space;
+      b.setAttribute("aria-pressed", String(state.manipSpace === space));
+      b.addEventListener("click", () => host.onManipSpaceChange(space));
+      group.appendChild(b);
+    }
+    row.appendChild(group);
+    s.appendChild(row);
+    s.appendChild(
+      el(
+        "div",
+        "hint",
+        "軸の向きです。ローカルは親の空間ですが、いまは親が無いのでオブジェクトと同じです。\n" +
+          "法線は面・エッジ・頂点を選んだときの向き（青が法線）です。",
+      ),
+    );
+  }
+
   checkbox(s, "ピボットを移動（D）", state.pivotEdit, () => host.onPivotEditToggle());
 
   if (state.manip === "rotate" || state.manip === "all") {
@@ -731,7 +767,13 @@ export function mirrorSection(state: OptionsState, host: PanelHost): HTMLElement
   row.appendChild(group);
   s.appendChild(row);
   s.appendChild(
-    el("div", "hint", "編集メニュー（オブジェクト）の「ミラー」で使う軸です。\n境目の頂点は「マージ距離」で溶接します。"),
+    el(
+      "div",
+      "hint",
+      "対称の長押しの「ミラー」で使う軸です（半分から丸ごと作る）。\n" +
+        "境目の頂点は「マージ距離」で溶接します。\n" +
+        "ボタンの入り切りで効く対称編集は X だけです。",
+    ),
   );
   return s;
 }

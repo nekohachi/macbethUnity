@@ -9,7 +9,8 @@
  */
 import { Matrix4, Plane, Quaternion, Ray, Vector3 } from "three";
 import { cloneTransform, type SceneObject, type Transform } from "../../core/index.js";
-import { AXES, handleKind, rayAxisT, type HandleKind } from "../render/manipulator.js";
+import { handleKind, rayAxisT, type HandleKind } from "../render/manipulator.js";
+import { worldFrame, type Frame } from "./frame.js";
 import type { ScreenPoint } from "../render/picking.js";
 
 /** ドラッグ開始時に控えるもの。 */
@@ -28,6 +29,13 @@ interface ComponentTarget {
   inverse: Matrix4;
   /** 対称編集の相手（動かす頂点 → 鏡映で追従する頂点）。 */
   mirror: Array<[number, number]>;
+  /**
+   * 中心線に留める頂点（`45` の T1）。x を 0 のままにする。
+   *
+   * 留めないと中心線の頂点だけが相手なしに動いて、左右が割れる。
+   * 対応表（`41`）の `mirror[v] === v` がこれ。
+   */
+  pinX: number[];
 }
 
 export type DragTarget = ObjectTarget | ComponentTarget;
@@ -52,6 +60,11 @@ export interface DragState {
   plane: Plane;
   /** 自由移動の開始点（平面上）。 */
   planeStart: Vector3 | null;
+  /**
+   * 軸の向き（`45` の T2）。**押した時点で固定する。**
+   * 動かしている最中に法線が変わっても矢印が回らないように（Maya と同じ）。
+   */
+  frame: Frame;
 }
 
 export function beginDrag(options: {
@@ -63,8 +76,11 @@ export function beginDrag(options: {
   ray: Ray;
   cameraPosition: Vector3;
   label: string;
+  /** 軸の向き（`45` の T2）。渡さなければワールド。 */
+  frame?: Frame;
 }): DragState {
   const { handle, pivot, ray } = options;
+  const frame = options.frame ?? worldFrame();
   const kind = handleKind(handle) ?? "move";
   // 30（直接ドラッグ）と中心ハンドルは軸なし
   const axis = handle !== 30 && handle % 10 < 3 ? handle % 10 : -1;
@@ -86,10 +102,11 @@ export function beginDrag(options: {
     target: options.target,
     start: options.point,
     pivotScreen: options.pivotScreen,
-    t0: axis >= 0 ? rayAxisT(ray, pivot, AXES[axis]) : 0,
+    t0: axis >= 0 ? rayAxisT(ray, pivot, frame.axes[axis]) : 0,
     a0: Math.atan2(options.point.y - options.pivotScreen.y, options.point.x - options.pivotScreen.x),
     plane,
     planeStart,
+    frame,
   };
 }
 
@@ -127,7 +144,7 @@ export function updateDrag(
       if (!drag.planeStart || !ray.intersectPlane(drag.plane, hit)) return;
       delta = new Vector3().subVectors(hit, drag.planeStart);
     } else {
-      const axis = AXES[drag.axis];
+      const axis = drag.frame.axes[drag.axis];
       delta = axis.clone().multiplyScalar(rayAxisT(ray, drag.pivot, axis) - drag.t0);
     }
     if (snap) {
@@ -135,7 +152,8 @@ export function updateDrag(
       if (landed) {
         const wanted = landed.sub(drag.pivot);
         // 軸ドラッグなら、その軸の成分だけを取る（軸から外れない）
-        delta = drag.axis < 0 ? wanted : AXES[drag.axis].clone().multiplyScalar(wanted.dot(AXES[drag.axis]));
+        const axis = drag.axis < 0 ? null : drag.frame.axes[drag.axis];
+        delta = axis ? axis.clone().multiplyScalar(wanted.dot(axis)) : wanted;
       }
     }
     apply(drag, object, (w, weight) => w.clone().addScaledVector(delta, weight), { position: delta });
@@ -153,7 +171,7 @@ export function updateDrag(
     const axis =
       drag.axis < 0
         ? new Vector3().subVectors(cameraPosition, drag.pivot).normalize()
-        : AXES[drag.axis].clone();
+        : drag.frame.axes[drag.axis].clone();
     // 軸が奥を向いているときは、画面での回し方向と一致するよう符号を返す
     if (drag.axis >= 0 && axis.dot(new Vector3().subVectors(cameraPosition, drag.pivot)) < 0) angle = -angle;
     apply(
@@ -174,21 +192,22 @@ export function updateDrag(
   if (drag.axis < 0) {
     factor = new Vector3(1, 1, 1).multiplyScalar(Math.max(floor, 1 + (point.x - drag.start.x) * 0.008));
   } else {
-    const t = rayAxisT(ray, drag.pivot, AXES[drag.axis]);
+    const t = rayAxisT(ray, drag.pivot, drag.frame.axes[drag.axis]);
     const k = Math.max(floor, 1 + ((t - drag.t0) / Math.max(1e-4, Math.abs(drag.t0))) * 0.6);
     factor = new Vector3(1, 1, 1);
     factor.setComponent(drag.axis, k);
   }
+  // **枠の軸に沿って伸ばす**（`45` の T2）。成分ごとに掛けるのは、枠が
+  // ワールドのときにしか合っていなかった
+  const axis = drag.axis < 0 ? null : drag.frame.axes[drag.axis];
+  const k = drag.axis < 0 ? 0 : factor.getComponent(drag.axis) - 1;
   apply(
     drag,
     object,
     (w, weight) => {
       const r = w.clone().sub(drag.pivot);
-      r.set(
-        r.x * (1 + (factor.x - 1) * weight),
-        r.y * (1 + (factor.y - 1) * weight),
-        r.z * (1 + (factor.z - 1) * weight),
-      );
+      if (axis) r.addScaledVector(axis, r.dot(axis) * k * weight);
+      else r.multiplyScalar(1 + (factor.x - 1) * weight);
       return r.add(drag.pivot);
     },
     { scale: factor },
@@ -278,11 +297,7 @@ export function applyGestureTransform(
     const w = moved.applyMatrix4(target.inverse);
     object.mesh.setPosition(target.verts[i], w.x, w.y, w.z);
   }
-  // 対称編集: 相手側をローカル X で鏡映した位置に置く
-  for (const [from, to] of target.mirror) {
-    const p = object.mesh.getPosition(from);
-    object.mesh.setPosition(to, -p[0], p[1], p[2]);
-  }
+  mirrorBack(object, target);
 }
 
 /**
@@ -331,9 +346,20 @@ function apply(
     const w = moveWorld(target.world[i], target.weights[i]).applyMatrix4(target.inverse);
     object.mesh.setPosition(target.verts[i], w.x, w.y, w.z);
   }
-  // 対称編集: 相手側をローカル X で鏡映した位置に置く
+  mirrorBack(object, target);
+}
+
+/**
+ * 対称編集の後始末（`45` の T1）。相手側をローカル X で鏡映した位置に置き、
+ * 中心線の頂点は x を 0 に留める。
+ */
+function mirrorBack(object: SceneObject, target: ComponentTarget): void {
   for (const [from, to] of target.mirror) {
     const p = object.mesh.getPosition(from);
     object.mesh.setPosition(to, -p[0], p[1], p[2]);
+  }
+  for (const v of target.pinX) {
+    const p = object.mesh.getPosition(v);
+    object.mesh.setPosition(v, 0, p[1], p[2]);
   }
 }
