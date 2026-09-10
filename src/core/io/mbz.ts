@@ -38,6 +38,11 @@ interface SceneObjectJson {
   multires: Array<{ level: number; count: number }>;
   sculptLayers: Array<Omit<SculptLayer, "delta"> & { count: number }>;
   paintLayers: SceneObject["paintLayers"];
+  /**
+   * マスクを持っている段（`34` の T2）。無ければ `null` か省略。
+   * 中身は `mask/<id>.bin`（f32）。
+   */
+  maskLevel?: number | null;
   /** UV の作り方（`15`）。無い版のファイルもあるので任意。 */
   uv?: UvRecipeJson | null;
 }
@@ -81,6 +86,8 @@ export function packMbz(doc: Document, options: PackOptions = {}): Uint8Array {
       for (const layer of o.sculptLayers) {
         files[`layers/${o.id}/${layer.id}.bin`] = f32ToBytes(layer.delta);
       }
+      // マスク（`34` の T2）。無ければファイルも作らない
+      if (o.mask) files[`mask/${o.id}.bin`] = f32ToBytes(o.mask.values);
       return {
         id: o.id,
         name: o.name,
@@ -103,6 +110,7 @@ export function packMbz(doc: Document, options: PackOptions = {}): Uint8Array {
           count: l.delta.length,
         })),
         paintLayers: o.paintLayers,
+        maskLevel: o.mask ? o.mask.level : null,
         uv: o.uv ? serializeRecipe(o.uv) : null,
       };
     }),
@@ -214,6 +222,16 @@ export function unpackMbz(bytes: Uint8Array): UnpackResult {
       .filter((x): x is SculptLayer => x !== null);
 
     o.paintLayers = j.paintLayers ?? [];
+
+    // マスク（`34` の T2）。段とファイルの両方がそろっているときだけ載せる。
+    // **古いファイルには無い**ので、無いことは異常ではない
+    const maskPath = `mask/${j.id}.bin`;
+    const maskBytes = files[maskPath];
+    if (typeof j.maskLevel === "number" && j.maskLevel > 0 && maskBytes) {
+      consumed.add(maskPath);
+      o.mask = { level: j.maskLevel, values: bytesToF32(maskBytes) };
+    }
+
     o.uv = deserializeRecipe(j.uv);
     doc.objects.push(o);
   }

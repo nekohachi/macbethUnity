@@ -61,7 +61,7 @@ import {
 } from "./input/gestures.js";
 import { Picker, type ScreenPoint } from "./render/picking.js";
 import { StrokeDriver, strokeHint } from "./stroke.js";
-import { asMb, canAddLevel, estimateBytes, facesAt, fitBrushRadius, levelCount, levelsOf, warmUpLevels } from "./levels.js";
+import { asMb, canAddLevel, estimateBytes, facesAt, fitBrushRadius, levelCount, levelsOf, moveMaskTo, warmUpLevels } from "./levels.js";
 import { pressureOf } from "./input/gestures.js";
 import { forgetStamps, stampsFor } from "./stamps.js";
 import { STANDARD_VIEWS, Viewport, type LayoutKind, type ViewName } from "./render/viewport.js";
@@ -1862,6 +1862,7 @@ export class App {
     this.viewport.rebuildOverlay();
     this.refresh();
     let note = "ターゲットウェルド";
+    if (dropped.droppedMask) note += " · マスクを破棄";
     if (dropped.droppedLevels || dropped.droppedLayers) {
       note += ` · 上位レベル ${dropped.droppedLevels} とレイヤー ${dropped.droppedLayers} を破棄`;
     }
@@ -2019,6 +2020,7 @@ export class App {
     this.viewport.rebuildOverlay();
     this.refresh();
     let note = `ベベル — 幅 ${this.state.bevel.width.toFixed(3)} · ${this.state.bevel.segments} 分割`;
+    if (dropped.droppedMask) note += " · マスクを破棄";
     if (dropped.droppedLevels || dropped.droppedLayers) {
       note += ` · 上位レベル ${dropped.droppedLevels} とレイヤー ${dropped.droppedLayers} を破棄`;
     }
@@ -3130,6 +3132,7 @@ export class App {
     this.viewport.rebuildOverlay();
     this.refresh();
     let note = message(o);
+    if (dropped.droppedMask) note += " · マスクを破棄";
     if (dropped.droppedLevels || dropped.droppedLayers) {
       note += ` · 上位レベル ${dropped.droppedLevels} とレイヤー ${dropped.droppedLayers} を破棄`;
     }
@@ -4009,6 +4012,8 @@ export class App {
     await warmUpLevels();
     o.activeLevel = Math.max(0, Math.min(level, levelCount(o)));
     if (o.activeLevel > 0) levelsOf(o);
+    // マスクは 1 つの段にしか無いので、彫る段と一緒に動かす（`34` の T2）
+    moveMaskTo(o, o.activeLevel);
     this.viewport.rebuildObject(o);
     this.viewport.rebuildOverlay();
     // バッジ（今の段）はツール列にあるので、描き直さないと古いままになる
@@ -4036,6 +4041,8 @@ export class App {
     o.activeLevel = o.multires.length;
     // デルタはまだ無い。空の Float32Array は「ディテール無し」の印として持たない
     o.multires[o.multires.length - 1].delta = new Float32Array(stack.level(o.activeLevel).vertexCount * 3);
+    // 足すと新しい段へ上がるので、マスクも連れていく（`34` の T2）
+    moveMaskTo(o, o.activeLevel);
     this.history.commit(`レベル ${o.activeLevel} を足した`, snapshot);
     this.viewport.rebuildObject(o);
     this.renderToolColumn();
@@ -4054,6 +4061,9 @@ export class App {
       return;
     }
     const snapshot = this.history.snapshot();
+    // **生きたスタックを捨てる前に**下ろす（下ろすのに各段のメッシュが要る）
+    moveMaskTo(o, keep);
+    if (o.mask && o.mask.level > keep) o.mask = null;
     o.multires = o.multires.filter((m) => m.level <= keep);
     o.invalidateLevels();
     o.activeLevel = keep;
@@ -4079,6 +4089,9 @@ export class App {
     o.parametric = false;
     o.multires = o.multires.filter((m) => m.level > at).map((m) => ({ level: m.level - at, delta: m.delta }));
     o.sculptLayers = o.sculptLayers.filter((l) => l.level > at).map((l) => ({ ...l, level: l.level - at }));
+    // 焼き込んでも段ごとの頂点は変わらないので、番号を振り直すだけでよい。
+    // 新しいレベル 0 以下になるものは捨てる（レベル 0 では彫らない）
+    o.mask = o.mask && o.mask.level > at ? { level: o.mask.level - at, values: o.mask.values } : null;
     o.invalidateLevels();
     o.activeLevel = 0;
     if (o.uv) reconcile(o.uv, o.mesh);

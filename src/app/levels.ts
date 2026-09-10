@@ -9,7 +9,16 @@
  * 細分割は wasm があればそれを使う（`30` の T3）。無ければ JS の
  * `catmullClark` に落ちる。どちらで組んだかは `usingWasm()` で分かる。
  */
-import { Multires, catmullClark, estimateLevelBytes, type Mesh, type SceneObject } from "../core/index.js";
+import {
+  Multires,
+  catmullClark,
+  estimateLevelBytes,
+  maskDown,
+  maskIsEmpty,
+  maskUp,
+  type Mesh,
+  type SceneObject,
+} from "../core/index.js";
 import { buildFromGeometry, loadWasm, subdivGeometry, type WasmModule } from "./wasm/index.js";
 
 /** 読み込みが済んだ wasm。まだなら null。 */
@@ -70,6 +79,38 @@ export function levelsOf(o: SceneObject): Multires {
     stack.deltas[i] = level ? level.delta : null;
   }
   return stack;
+}
+
+/**
+ * マスクを目当ての段へ移す（`34` の T2）。
+ *
+ * マスクは**1 つの段にだけ**持つので、彫る段を変えたら一緒に移す。
+ * 1 段ずつ `maskUp` / `maskDown` を通す（`SubdivPlan` は作らない）。
+ *
+ * **レベル 0 へは移さない。** レベル 0 では彫らない（`canSculpt` が段 1 以上を
+ * 求める）ので移す意味がないし、下ろして戻すと細部が消える。見ているだけの
+ * 行き来でマスクを削らないため、そのまま置いておく。
+ *
+ * 下ろしてから戻すと細部は消える（`34` の 1 章で受け入れた分）。ぼかしで直る。
+ */
+export function moveMaskTo(o: SceneObject, level: number): void {
+  const m = o.mask;
+  if (!m) return;
+  const want = Math.max(0, Math.min(level, levelCount(o)));
+  if (want === 0 || want === m.level) return;
+  const stack = levelsOf(o);
+  let values = m.values;
+  let at = m.level;
+  while (at < want) {
+    values = maskUp(stack.level(at), values);
+    at++;
+  }
+  while (at > want) {
+    values = maskDown(values, stack.level(at - 1).vertexCount);
+    at--;
+  }
+  // 全部 0 になったら持たない（`34` の 1 章）
+  o.mask = maskIsEmpty(values) ? null : { level: want, values };
 }
 
 /** 段の数（レベル 0 を含まない）。 */

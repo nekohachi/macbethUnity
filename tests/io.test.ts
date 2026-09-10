@@ -164,6 +164,42 @@ describe(".mbz", () => {
     expect(back.objects[0].sculptLayers[0]).toMatchObject({ name: "しわ", level: 1, weight: 0.7, visible: true });
   });
 
+  it("マスクが段ごと往復する（`34` の T2）", () => {
+    const doc = new Document();
+    const o = doc.addObject("cube");
+    o.multires = [
+      { level: 1, delta: new Float32Array(24) },
+      { level: 2, delta: new Float32Array(96) },
+    ];
+    o.mask = { level: 2, values: new Float32Array([0, 0.25, 0.5, 1]) };
+
+    const { document: back } = unpackMbz(packMbz(doc));
+    expect(back.objects[0].mask?.level).toBe(2);
+    expect(Array.from(back.objects[0].mask!.values)).toEqual([0, 0.25, 0.5, 1]);
+  });
+
+  it("マスクが無ければファイルも作らない（古いファイルも読める）", () => {
+    const doc = new Document();
+    doc.addObject("cube");
+    const bytes = packMbz(doc);
+    const files = unzipSync(bytes);
+    expect(Object.keys(files).some((k) => k.startsWith("mask/"))).toBe(false);
+    // 読み戻しても null のまま
+    expect(unpackMbz(bytes).document.objects[0].mask).toBe(null);
+  });
+
+  it("トポロジを変えるとマスクを捨て、そう言う", () => {
+    const doc = new Document();
+    const o = doc.addObject("cube");
+    o.multires = [{ level: 1, delta: new Float32Array(24) }];
+    o.mask = { level: 1, values: new Float32Array([1, 1, 1]) };
+    const dropped = o.markTopologyChanged();
+    expect(dropped.droppedMask).toBe(true);
+    expect(o.mask).toBe(null);
+    // 元々無ければ「捨てた」とは言わない
+    expect(doc.addObject("cube").markTopologyChanged().droppedMask).toBe(false);
+  });
+
   it("追加ファイル（テクスチャなど）が保たれる", () => {
     const doc = new Document();
     doc.addObject("cube");

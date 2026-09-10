@@ -114,6 +114,16 @@ export class SceneObject {
    */
   uvHeat: Float32Array | null = null;
   /**
+   * マスク（`34`）。無ければ `null`。**1 つの段にだけ持つ。**
+   *
+   * `values` は頂点ごとの 0〜1（0 = 彫れる、1 = 彫れない）。長さはその段の
+   * 頂点数。段を変えたら `maskUp` / `maskDown` で移す（app の `goLevel`）。
+   *
+   * **0 で埋めた配列を持たない。** マスクを使わない人に、掛け算も色も
+   * メモリも払わせないため。全部 0 になったら `null` へ落とす。
+   */
+  mask: { level: number; values: Float32Array } | null = null;
+  /**
    * 生きたマルチ解像度スタック（`32` の T2）。**`.mbz` にも履歴にも入れない。**
    * 真は `multires`（デルタ）で、これはそこから作り直せる控え。
    * トポロジが変わったときと履歴を戻したときは `invalidateLevels()` で捨てる。
@@ -160,21 +170,26 @@ export class SceneObject {
     droppedLayers: number;
     droppedSeams: number;
     droppedIslands: number;
+    /** マスクを捨てたか（`34` の T2）。 */
+    droppedMask: boolean;
     /** UV の土台を今の map1 で取り直したか（`17` の 1.2）。 */
     rebased: boolean;
   } {
     const droppedLevels = this.multires.length;
     const droppedLayers = this.sculptLayers.length;
+    // マスクは頂点ごとに持っているので、頂点の数が変われば対応が取れない
+    const droppedMask = this.mask !== null;
     this.parametric = false;
     this.multires = [];
     this.sculptLayers = [];
+    this.mask = null;
     this.activeLevel = 0;
     this.invalidateLevels();
     // UV は全部捨てずに、対応が取れなくなった分だけ落とす（`15` の 2.4）
     const uv = this.uv
       ? reconcile(this.uv, this.mesh)
       : { droppedSeams: 0, droppedIslands: 0, rebased: false };
-    return { droppedLevels, droppedLayers, ...uv };
+    return { droppedLevels, droppedLayers, droppedMask, ...uv };
   }
 
   topologyHash(): string {

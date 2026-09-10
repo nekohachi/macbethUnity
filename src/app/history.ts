@@ -28,6 +28,11 @@ interface ObjectSnapshot {
   multires: SceneObject["multires"];
   sculptLayers: SceneObject["sculptLayers"];
   paintLayers: SceneObject["paintLayers"];
+  /**
+   * マスク（`34` の T2）。**中身まで複製する。**
+   * `paintMask` は `values` をその場で書き換えるので、参照を控えても意味がない。
+   */
+  mask: SceneObject["mask"];
 }
 
 interface Snapshot {
@@ -171,6 +176,7 @@ export class History {
         multires: o.multires.slice(),
         sculptLayers: o.sculptLayers.slice(),
         paintLayers: o.paintLayers.slice(),
+        mask: o.mask ? { level: o.mask.level, values: o.mask.values.slice() } : null,
       })),
       selectedId: this.state.selected?.id ?? null,
       compMode: this.state.compMode,
@@ -472,6 +478,8 @@ export class History {
       o.multires = s.multires.slice();
       o.sculptLayers = s.sculptLayers.slice();
       o.paintLayers = s.paintLayers.slice();
+      // 何度戻しても効くように、控えのほうも複製してから渡す
+      o.mask = s.mask ? { level: s.mask.level, values: s.mask.values.slice() } : null;
       // 生きたスタックはデルタから作り直せる控えなので、戻したら捨てる（`32` の T2）
       o.invalidateLevels();
       return o;

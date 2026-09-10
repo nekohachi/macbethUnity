@@ -1007,6 +1007,87 @@ check(
   cursorRound.map((r) => `${r.name} 縦横比 ${r.ratio.toFixed(3)}${r.note ? ` ${r.note}` : ` · ${r.px.toFixed(0)}px`}`).join(" / "),
 );
 
+/* 17p. マスクが段について回り、.mbz に残る（`34` の T2） */
+//
+// マスクは 1 つの段にしか無いので、彫る段を変えたら一緒に移す。
+// **見ているだけの行き来（レベル 0 へ寄る）では削らない。**
+const maskLevels = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const core = window.macbethCore;
+  const keep = app.state.doc.objects.slice();
+  const camBefore = app.viewport.saveLayout();
+  const modeBefore = app.state.mode;
+  const selBefore = app.state.selected;
+
+  app.state.doc.objects.length = 0;
+  const o = app.state.doc.addMesh(
+    core.PRIMITIVES.sphere.build({ ...core.defaultParams("sphere"), sdAxis: 10, sdHeight: 8 }),
+    "Masked",
+  );
+  app.viewport.syncAll();
+  app.state.select(o);
+  app.setMode("sculpt");
+  await app.levelForTest("add");
+  await app.levelForTest("add");
+
+  // レベル 2 にマスクを置く（UI は T3。ここは中身だけ見る）
+  const vertsAt = (n) => o.stack.level(n).vertexCount;
+  o.mask = { level: 2, values: new Float32Array(vertsAt(2)).fill(0.4) };
+
+  // 1 つ下げる → 段も長さも付いてくる
+  await app.levelForTest("down");
+  const down = { level: o.mask?.level, len: o.mask?.values.length, want: vertsAt(1) };
+  // 上げ直す
+  await app.levelForTest("up");
+  const up = { level: o.mask?.level, len: o.mask?.values.length, want: vertsAt(2) };
+
+  // レベル 0 へ寄っても消えない。**段 1 まで下りたあと、0 へ行く分は動かさない**
+  // （0 では彫らないので、下ろして戻すと細部が消えるだけ損）
+  await app.levelForTest("down");
+  const beforeZero = { active: o.activeLevel, level: o.mask?.level, len: o.mask?.values.length };
+  await app.levelForTest("down");
+  const atZero = { active: o.activeLevel, level: o.mask?.level, len: o.mask?.values.length };
+
+  // .mbz に残る（いまある段のまま）
+  const back = core.unpackMbz(core.packMbz(app.state.doc)).document.objects[0];
+  const saved = { level: back.mask?.level, len: back.mask?.values.length, first: back.mask?.values[0] };
+
+  // トポロジを変えると捨てる
+  app.setMode("model");
+  const dropped = o.markTopologyChanged().droppedMask;
+
+  // 片づけ
+  app.setMode(modeBefore);
+  app.state.doc.objects.length = 0;
+  app.state.doc.objects.push(...keep);
+  app.viewport.syncAll();
+  app.viewport.restoreLayout(camBefore);
+  app.state.select(selBefore ?? keep[0] ?? null);
+  app.history.clear();
+  app.refresh();
+  return { down, up, beforeZero, atZero, saved, dropped, afterDrop: o.mask };
+});
+check(
+  "マスクが段について回り、.mbz に残る",
+  maskLevels.down.level === 1 &&
+    maskLevels.down.len === maskLevels.down.want &&
+    maskLevels.up.level === 2 &&
+    maskLevels.up.len === maskLevels.up.want &&
+    // レベル 0 へ行っても、マスクは 1 つ手前の段のまま動かない
+    maskLevels.atZero.active === 0 &&
+    maskLevels.atZero.level === maskLevels.beforeZero.level &&
+    maskLevels.atZero.len === maskLevels.beforeZero.len &&
+    maskLevels.saved.level === maskLevels.atZero.level &&
+    maskLevels.saved.len === maskLevels.atZero.len &&
+    Math.abs(maskLevels.saved.first - 0.4) < 1e-6 &&
+    maskLevels.dropped === true &&
+    maskLevels.afterDrop === null,
+  `下げて 段${maskLevels.down.level}・${maskLevels.down.len} 頂点 / 上げて 段${maskLevels.up.level}・${maskLevels.up.len} / ` +
+    `レベル 0 へ寄っても 段${maskLevels.atZero.level}・${maskLevels.atZero.len} のまま / ` +
+    `.mbz 段${maskLevels.saved.level}・${maskLevels.saved.len}・値 ${maskLevels.saved.first.toFixed(2)} / ` +
+    `トポロジ変更で破棄 ${maskLevels.dropped}`,
+);
+
 /* 17m. スムースが「隣でないもの」を数えていない（`35` の T1） */
 //
 // 四角を頂点 0 からの扇で三角形にしているので、対角線が三角形の辺として出る。
