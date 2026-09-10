@@ -347,6 +347,11 @@ export class AppState {
     pressureStrength: true,
     symmetryX: true,
   };
+  /**
+   * いま記録しているスカルプトレイヤーの id（`42` の T3）。null なら素のデルタへ。
+   * 段が違うレイヤーが選ばれていたら、`stroke.ts` が素のデルタへ落とす。
+   */
+  activeLayer: string | null = null;
   toolOpts = { extrudeDist: 0.35 };
   /** 頂点まわり。mergeDist は距離マージのしきい値、extrudeWidth は尖らせるときの根元の太さ。 */
   vertexOpts = { mergeDist: 0.05, extrudeWidth: 0.25 };

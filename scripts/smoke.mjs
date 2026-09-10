@@ -449,9 +449,10 @@ const inSculpt = await page.evaluate(() => ({
 }));
 await page.evaluate(() => window.macbeth.setMode("model"));
 check(
-  "スカルプトは 3D が出て、筆・マスク・段のボタンが並ぶ",
+  "スカルプトは 3D が出て、筆・マスク・レイヤー・段のボタンが並ぶ",
   !inSculpt.stub && !inSculpt.stage && inSculpt.label === "スカルプト" &&
-    inSculpt.groups[0] === "brush" && inSculpt.groups[1] === "mask" && inSculpt.groups[2] === "level" &&
+    inSculpt.groups[0] === "brush" && inSculpt.groups[1] === "mask" &&
+    inSculpt.groups[2] === "layer" && inSculpt.groups[3] === "level" &&
     inSculpt.groups.includes("display") &&
     inSculpt.groups.includes("camera") && inSculpt.groups.includes("layout"),
   `予定表 ${inSculpt.stub} / ツール ${inSculpt.groups.join(" · ")} / ゲージ「${inSculpt.gauge}」`,
@@ -8211,6 +8212,272 @@ check(
   "筆の輪: 左端で押しても全部見えて、上へ引けば北が選ばれる",
   ring.minX >= 0 && ring.maxX <= ring.width && ring.picked === "standard",
   `輪の左端 ${ring.minX.toFixed(0)}px · 右端 ${ring.maxX.toFixed(0)}/${ring.width}px / 選ばれた筆 ${ring.picked}`,
+);
+
+/* ---- `42` の 3 項目（ローをハイに・再投影・レイヤー）。いちばん後ろに置く ---- */
+
+/* 42a. ローをハイに合わせる（`42` の T1） */
+const fitLow = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const core = window.macbethCore;
+  const keep = [...app.state.doc.objects];
+  const keepSel = app.state.selected;
+  const camBefore = app.viewport.saveLayout();
+  app.setMode("model");
+  app.state.doc.objects.length = 0;
+  const o = app.state.doc.addMesh(
+    core.PRIMITIVES.sphere.build({ ...core.defaultParams("sphere"), sdAxis: 12, sdHeight: 8 }),
+    "Fit",
+  );
+  app.viewport.syncAll();
+  app.state.select(o);
+  app.setMode("sculpt");
+  await app.levelForTest("add");
+  await app.levelForTest("add");
+
+  // いちばん上の段を、片側だけ大きく引き出す（レベル 0 が付いてこないとデルタが太る形）
+  const stack = window.macbethLevels.levelsOf(o);
+  const top = stack.level(2);
+  for (let v = 0; v < top.vertexCount; v++) {
+    const x = top.positions[v * 3];
+    if (x <= 0.2) continue;
+    top.positions[v * 3] += 0.6 * Math.min(1, (x - 0.2) / 0.8);
+  }
+  const all = new Uint32Array(top.vertexCount);
+  for (let v = 0; v < top.vertexCount; v++) all[v] = v;
+  stack.sculptAt(2, all);
+  window.macbethLevels.syncDeltas(o);
+  const before = { shape: stack.level(2).positions.slice(), base: o.mesh.positions.slice() };
+  const maxDelta = (obj) => {
+    let worst = 0;
+    for (const m of obj.multires) for (let i = 0; i < m.delta.length; i += 3) {
+      worst = Math.max(worst, Math.hypot(m.delta[i], m.delta[i + 1], m.delta[i + 2]));
+    }
+    return worst;
+  };
+  const deltaBefore = maxDelta(o);
+
+  await app.levelForTest("fit");
+
+  const after = window.macbethLevels.levelsOf(o).level(2).positions;
+  let worstShape = 0;
+  for (let i = 0; i < before.shape.length; i++) worstShape = Math.max(worstShape, Math.abs(after[i] - before.shape[i]));
+  let baseMoved = 0;
+  for (let i = 0; i < before.base.length; i++) if (Math.abs(o.mesh.positions[i] - before.base[i]) > 1e-4) baseMoved++;
+  const deltaAfter = maxDelta(o);
+  const entry = app.history.lastEntry()?.label ?? "";
+  // 取り消すと元へ
+  app.history.undo();
+  const undone = window.macbethLevels.levelsOf(o).level(2).positions;
+  let worstUndo = 0;
+  for (let i = 0; i < before.shape.length; i++) worstUndo = Math.max(worstUndo, Math.abs(undone[i] - before.shape[i]));
+
+  app.setMode("model");
+  app.state.doc.objects.length = 0;
+  app.state.doc.objects.push(...keep);
+  app.viewport.syncAll();
+  if (keepSel) app.state.select(keepSel);
+  app.viewport.restoreLayout(camBefore);
+  app.history.clear();
+  app.refresh();
+  return { worstShape, baseMoved, deltaBefore, deltaAfter, entry, worstUndo, verts: before.base.length / 3 };
+});
+check(
+  "ローをハイに合わせる: 形は動かさず、デルタが小さくなる",
+  fitLow.worstShape < 1e-4 &&
+    fitLow.baseMoved > fitLow.verts * 0.2 &&
+    fitLow.deltaAfter < fitLow.deltaBefore * 0.5 &&
+    fitLow.entry.includes("ローをハイ") &&
+    fitLow.worstUndo < 1e-4,
+  `ハイのずれ ${fitLow.worstShape.toExponential(1)} / レベル 0 が動いた ${fitLow.baseMoved}/${fitLow.verts} 頂点 / ` +
+    `変位 ${fitLow.deltaBefore.toFixed(3)} → ${fitLow.deltaAfter.toFixed(3)} / 履歴「${fitLow.entry}」・取り消して戻る ${fitLow.worstUndo.toExponential(1)}`,
+);
+
+/* 42b. 再投影（`42` の T2） */
+const reproject = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const core = window.macbethCore;
+  const keep = [...app.state.doc.objects];
+  const keepSel = app.state.selected;
+  const camBefore = app.viewport.saveLayout();
+  app.setMode("model");
+  app.state.doc.objects.length = 0;
+  const o = app.state.doc.addMesh(
+    core.PRIMITIVES.sphere.build({ ...core.defaultParams("sphere"), sdAxis: 12, sdHeight: 8 }),
+    "Proj",
+  );
+  app.viewport.syncAll();
+  app.state.select(o);
+  app.setMode("sculpt");
+  await app.levelForTest("add");
+
+  // 段 1 を膨らませる
+  const stack = window.macbethLevels.levelsOf(o);
+  const top = stack.level(1);
+  for (let v = 0; v < top.vertexCount; v++) {
+    if (top.positions[v * 3] <= 0) continue;
+    top.positions[v * 3] *= 1.4;
+  }
+  const all = new Uint32Array(top.vertexCount);
+  for (let v = 0; v < top.vertexCount; v++) all[v] = v;
+  stack.sculptAt(1, all);
+  window.macbethLevels.syncDeltas(o);
+  app.viewport.rebuildObject(o);
+
+  // トポロジを変える（段は捨てられ、控えが取られる）
+  app.setMode("model");
+  app.setCompMode("face");
+  app.state.comp.clear();
+  app.state.comp.add(0);
+  app.runEditForTest("extrude");
+  const cached = !!o.detailCache;
+  const cachedLevel = o.detailCache?.level ?? 0;
+  app.setCompMode("object");
+  app.state.comp.clear();
+
+  // 割り直して、控えとの距離を測る
+  app.setMode("sculpt");
+  await app.levelForTest("add");
+  const gap = () => {
+    const src = o.detailCache.mesh;
+    const tris = src.triangulate();
+    const bvh = core.buildBvh(src.positions, { tri: tris.tri });
+    const edge = core.averageEdge(src.positions, { tri: tris.tri });
+    const now = window.macbethLevels.levelsOf(o).level(1);
+    const probe = now.clone();
+    core.projectOnto(probe, src.positions, { tri: tris.tri }, bvh, edge * 2, edge * 64);
+    let sum = 0;
+    for (let v = 0; v < now.vertexCount; v++) {
+      sum += Math.hypot(
+        now.positions[v * 3] - probe.positions[v * 3],
+        now.positions[v * 3 + 1] - probe.positions[v * 3 + 1],
+        now.positions[v * 3 + 2] - probe.positions[v * 3 + 2],
+      );
+    }
+    return sum / now.vertexCount;
+  };
+  const before = gap();
+  await app.levelForTest("reproject");
+  const after = gap();
+  const entry = app.history.lastEntry()?.label ?? "";
+
+  app.setMode("model");
+  app.state.doc.objects.length = 0;
+  app.state.doc.objects.push(...keep);
+  app.viewport.syncAll();
+  if (keepSel) app.state.select(keepSel);
+  app.viewport.restoreLayout(camBefore);
+  app.history.clear();
+  app.refresh();
+  return { cached, cachedLevel, before, after, entry };
+});
+check(
+  "再投影: 捨てる前のハイを控えて、割り直した面へ戻せる",
+  reproject.cached &&
+    reproject.cachedLevel === 1 &&
+    reproject.before > 0 &&
+    reproject.after < reproject.before * 0.1 &&
+    reproject.entry.includes("再投影"),
+  `控え レベル ${reproject.cachedLevel} / 控えとの距離 ${reproject.before.toFixed(4)} → ${reproject.after.toFixed(4)} / 履歴「${reproject.entry}」`,
+);
+
+/* 42c. スカルプトレイヤー（`42` の T3） */
+const sculptLayers = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const core = window.macbethCore;
+  const keep = [...app.state.doc.objects];
+  const keepSel = app.state.selected;
+  const camBefore = app.viewport.saveLayout();
+  app.setMode("model");
+  app.state.doc.objects.length = 0;
+  const o = app.state.doc.addMesh(
+    core.PRIMITIVES.sphere.build({ ...core.defaultParams("sphere"), sdAxis: 24, sdHeight: 16 }),
+    "Lay",
+  );
+  app.viewport.syncAll();
+  app.state.select(o);
+  app.setMode("sculpt");
+  await app.levelForTest("add");
+  app.viewport.frameSelected();
+  app.state.brush.kind = "standard";
+  app.refresh();
+  app.history.clear();
+  await new Promise((r) => setTimeout(r, 120));
+
+  const rest = window.macbethLevels.levelsOf(o).level(1).positions.slice();
+  app.layerForTest("add");
+  const layerId = app.state.activeLayer;
+
+  // レイヤーへ彫る
+  const pane = document.getElementById("pane3d").getBoundingClientRect();
+  const gl = document.getElementById("gl");
+  const cx = pane.left + pane.width / 2;
+  const cy = pane.top + pane.height / 2;
+  const ev = (type, x, y) =>
+    new PointerEvent(type, {
+      pointerId: 91, pointerType: "pen", bubbles: true, cancelable: true,
+      clientX: x, clientY: y, pressure: 0.9, buttons: type === "pointerup" ? 0 : 1,
+    });
+  gl.dispatchEvent(ev("pointerdown", cx - 30, cy));
+  for (let i = 1; i <= 12; i++) gl.dispatchEvent(ev("pointermove", cx - 30 + i * 5, cy));
+  gl.dispatchEvent(ev("pointerup", cx + 30, cy));
+  await new Promise((r) => setTimeout(r, 60));
+
+  const layer = o.sculptLayers.find((l) => l.id === layerId);
+  const biggest = (a) => {
+    let worst = 0;
+    for (let i = 0; i < a.length; i += 3) worst = Math.max(worst, Math.hypot(a[i], a[i + 1], a[i + 2]));
+    return worst;
+  };
+  const inLayer = biggest(layer.delta);
+  const inBase = biggest(o.multires[0].delta);
+  const shapeOn = window.macbethLevels.levelsOf(o).level(1).positions.slice();
+
+  // 重み 0 で素の形に戻る
+  layer.weight = 0;
+  window.macbethLevels.applyLayers(o, 1);
+  const shapeOff = window.macbethLevels.levelsOf(o).level(1).positions.slice();
+  let offGap = 0;
+  for (let i = 0; i < rest.length; i++) offGap = Math.max(offGap, Math.abs(shapeOff[i] - rest[i]));
+
+  // 重み 0.5 でちょうど半分
+  layer.weight = 0.5;
+  window.macbethLevels.applyLayers(o, 1);
+  const half = window.macbethLevels.levelsOf(o).level(1).positions;
+  let halfErr = 0;
+  for (let i = 0; i < rest.length; i++) halfErr = Math.max(halfErr, Math.abs(half[i] - (rest[i] + (shapeOn[i] - rest[i]) * 0.5)));
+
+  // 重み 1 に戻して統合。形は変わらない
+  layer.weight = 1;
+  window.macbethLevels.applyLayers(o, 1);
+  app.layerForTest("merge");
+  const merged = window.macbethLevels.levelsOf(o).level(1).positions;
+  let mergeGap = 0;
+  for (let i = 0; i < rest.length; i++) mergeGap = Math.max(mergeGap, Math.abs(merged[i] - shapeOn[i]));
+  const layersLeft = o.sculptLayers.length;
+
+  app.state.activeLayer = null;
+  app.setMode("model");
+  app.state.doc.objects.length = 0;
+  app.state.doc.objects.push(...keep);
+  app.viewport.syncAll();
+  if (keepSel) app.state.select(keepSel);
+  app.viewport.restoreLayout(camBefore);
+  app.history.clear();
+  app.refresh();
+  return { inLayer, inBase, offGap, halfErr, mergeGap, layersLeft };
+});
+check(
+  "スカルプトレイヤー: 彫った分がレイヤーに入り、重みで効き、統合しても形が変わらない",
+  sculptLayers.inLayer > 1e-3 &&
+    sculptLayers.inBase < 1e-9 &&
+    sculptLayers.offGap < 1e-5 &&
+    sculptLayers.halfErr < 1e-5 &&
+    sculptLayers.mergeGap < 1e-5 &&
+    sculptLayers.layersLeft === 0,
+  `レイヤーの変位 ${sculptLayers.inLayer.toFixed(4)}・素のデルタ ${sculptLayers.inBase.toExponential(1)} / ` +
+    `重み 0 で素の形へ ${sculptLayers.offGap.toExponential(1)} · 0.5 でちょうど半分 ${sculptLayers.halfErr.toExponential(1)} / ` +
+    `統合してもずれない ${sculptLayers.mergeGap.toExponential(1)}（残り ${sculptLayers.layersLeft} 枚）`,
 );
 
 /* 43z-28. ベンチ画面が出て数字が入る（`30` の T1） */

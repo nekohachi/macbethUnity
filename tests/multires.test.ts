@@ -531,3 +531,92 @@ describe("V7. 細分割の差し込み口", () => {
     expect(stack.level(2).positions[0]).toBeCloseTo(top.positions[0], 5);
   });
 });
+
+describe("ローをハイに合わせる（`42` の T1）", () => {
+  /** レベル 2 まで組んで、上の段を大きく彫った控えを返す。 */
+  function sculpted(): { stack: Multires; target: Mesh } {
+    const base = PRIMITIVES.sphere.build({ ...defaultParams("sphere"), sdAxis: 12, sdHeight: 8 });
+    const stack = new Multires(base);
+    stack.divide();
+    stack.divide();
+    const top = stack.level(2);
+    const edited = top.clone();
+    // 片側を大きく引き出す（レベル 0 が付いてこないと、デルタが太る形）
+    for (let v = 0; v < edited.vertexCount; v++) {
+      const x = edited.positions[v * 3];
+      if (x <= 0.2) continue;
+      const w = Math.min(1, (x - 0.2) / 0.8);
+      edited.positions[v * 3] += 0.6 * w;
+    }
+    stack.sculpt(2, edited);
+    return { stack, target: stack.level(2).clone() };
+  }
+
+  it("ハイの形は動かさず、デルタだけ小さくなる", () => {
+    const { stack, target } = sculpted();
+    const baseBefore = stack.base.positions.slice();
+    const out = stack.fitBaseToDetail();
+
+    // 1. いちばん上の段は 1 ミリも動いていない
+    const after = stack.level(2);
+    for (let i = 0; i < target.positions.length; i++) {
+      expect(after.positions[i]).toBeCloseTo(target.positions[i], 5);
+    }
+    // 2. デルタは小さくなった
+    expect(out.after).toBeLessThan(out.before * 0.5);
+    // 3. レベル 0 は動いた
+    let moved = 0;
+    for (let v = 0; v < stack.base.vertexCount; v++) {
+      if (Math.abs(stack.base.positions[v * 3] - baseBefore[v * 3]) > 1e-4) moved++;
+    }
+    expect(moved).toBeGreaterThan(0);
+  });
+
+  it("残差が小さい（細分割したレベル 0 が段 1 に近づく）", () => {
+    const { stack } = sculpted();
+    const out = stack.fitBaseToDetail();
+    // 模型の大きさ（引き出したぶんを含めて 2.6 ほど）に対して 1% 以下
+    expect(out.residual).toBeLessThan(0.026);
+    // 細分割したレベル 0 が、実際に段 1 に近い
+    const sub = catmullClark(stack.base);
+    const t = stack.level(1);
+    let worst = 0;
+    for (let v = 0; v < stack.base.vertexCount; v++) {
+      worst = Math.max(
+        worst,
+        Math.hypot(
+          t.positions[v * 3] - sub.positions[v * 3],
+          t.positions[v * 3 + 1] - sub.positions[v * 3 + 1],
+          t.positions[v * 3 + 2] - sub.positions[v * 3 + 2],
+        ),
+      );
+    }
+    expect(worst).toBeLessThan(0.05);
+  });
+
+  it("2 回目はほとんど動かない（収束している）", () => {
+    const { stack } = sculpted();
+    const start = stack.base.positions.slice();
+    const first = stack.fitBaseToDetail();
+    const once = stack.base.positions.slice();
+    const second = stack.fitBaseToDetail();
+    const travel = (a: Float32Array | number[], b: Float32Array | number[]) => {
+      let worst = 0;
+      for (let i = 0; i < a.length; i++) worst = Math.max(worst, Math.abs(a[i] - b[i]));
+      return worst;
+    };
+    // 1 回目で動いた量に比べて、2 回目はずっと小さい（1/5 以下）
+    expect(travel(stack.base.positions, once)).toBeLessThan(travel(once, start) * 0.2);
+    // デルタは 1 回目で下がったところに留まる（2 回目で元へ戻ったりしない）
+    expect(second.after).toBeLessThan(first.before * 0.5);
+  });
+
+  it("段が無ければ何も起きない", () => {
+    const base = PRIMITIVES.cube.build(defaultParams("cube"));
+    const stack = new Multires(base);
+    const before = base.positions.slice();
+    const out = stack.fitBaseToDetail();
+    expect(out).toEqual({ residual: 0, before: 0, after: 0 });
+    expect(Array.from(base.positions)).toEqual(Array.from(before));
+  });
+});

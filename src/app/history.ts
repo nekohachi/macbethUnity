@@ -73,6 +73,11 @@ interface SculptDiff {
   ref: SceneObject;
   /** 彫った段。1 以上。 */
   level: number;
+  /**
+   * 書き込んだ先のレイヤー（`42` の T3）。**素のデルタへ書いたなら undefined。**
+   * 戻すときに同じ所へ書かないと、合成が食い違う。
+   */
+  layer?: string;
   verts: Uint32Array;
   /** 3 × verts.length。接空間のデルタ。 */
   before: Float32Array;
@@ -129,6 +134,8 @@ type Pending =
       kind: "sculpt";
       ref: SceneObject;
       level: number;
+      /** 書き込んだ先のレイヤー（`42` の T3）。素のデルタなら undefined。 */
+      layer?: string;
       /** ストローク中に触った頂点。コマごとに足していく。 */
       touched: Map<number, [number, number, number]>;
       sel: SelectionSnap;
@@ -288,8 +295,8 @@ export class History {
    * **その頂点を初めて触ったときのデルタ**なので、同じ頂点を何度なぞっても
    * 「ストロークの前」の値が残る。
    */
-  beginSculpt(o: SceneObject, level: number): void {
-    this.pending = { kind: "sculpt", ref: o, level, touched: new Map(), sel: this.selectionSnap() };
+  beginSculpt(o: SceneObject, level: number, layer?: string): void {
+    this.pending = { kind: "sculpt", ref: o, level, layer, touched: new Map(), sel: this.selectionSnap() };
   }
 
   /**
@@ -412,7 +419,7 @@ export class History {
       return true;
     }
     if (p.kind === "sculpt") {
-      const delta = deltaOf(p.ref, p.level);
+      const delta = deltaOf(p.ref, p.level, p.layer);
       if (!delta || !p.touched.size) return false;
       const verts = new Uint32Array(p.touched.size);
       const before = new Float32Array(p.touched.size * 3);
@@ -429,7 +436,12 @@ export class History {
         i++;
       }
       if (!moved) return false;
-      this.push2({ kind: "sculpt", label, diff: { ref: p.ref, level: p.level, verts, before, after }, sel: p.sel });
+      this.push2({
+        kind: "sculpt",
+        label,
+        diff: { ref: p.ref, level: p.level, layer: p.layer, verts, before, after },
+        sel: p.sel,
+      });
       return true;
     }
     const after = new Float32Array(p.verts.length * 3);
@@ -491,9 +503,9 @@ export class History {
   }
 
   /** 直前に積んだ段の種類と大きさ（通し確認から見るため）。 */
-  lastEntry(): { kind: Entry["kind"]; bytes: number } | null {
+  lastEntry(): { kind: Entry["kind"]; bytes: number; label: string } | null {
     const e = this.undoStack.at(-1);
-    return e ? { kind: e.kind, bytes: entryBytes(e) } : null;
+    return e ? { kind: e.kind, bytes: entryBytes(e), label: e.label } : null;
   }
 
   /** 履歴に残さない操作のあとで、直前のスナップショットを捨てる。 */
@@ -564,7 +576,7 @@ export class History {
       this.onMaskUndo?.(d.ref, d.level);
     } else if (e.kind === "sculpt") {
       const d = e.diff;
-      const delta = deltaOf(d.ref, d.level);
+      const delta = deltaOf(d.ref, d.level, d.layer);
       if (delta) {
         const from = d[which];
         for (let i = 0; i < d.verts.length; i++) {
@@ -674,7 +686,8 @@ function sameTransform(a: Transform, b: Transform): boolean {
 
 /** その段が抱えている大きさ（おおよそのバイト数）。通し確認で見る。 */
 /** そのオブジェクトのレベル L のデルタ。無ければ null。 */
-function deltaOf(o: SceneObject, level: number): Float32Array | null {
+function deltaOf(o: SceneObject, level: number, layer?: string): Float32Array | null {
+  if (layer) return o.sculptLayers.find((l) => l.id === layer)?.delta ?? null;
   return o.multires.find((m) => m.level === level)?.delta ?? null;
 }
 

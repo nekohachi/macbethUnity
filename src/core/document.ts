@@ -138,6 +138,23 @@ export class SceneObject {
    * 対応そのものはトポロジの話なので、彫っても変わらない。
    */
   mirrorMaps = new Map<number, MirrorMap>();
+  /**
+   * 捨てる前のハイ（`42` の T2）。トポロジを変えると上位レベルは対応を失うので、
+   * **捨てる直前のいちばん上のメッシュ**をここへ控える。段を割り直したあと
+   * 「ハイを戻す（再投影）」で焼き戻す。
+   *
+   * **`.mbz` にも履歴にも入れない**（作業中の都合。開き直せば無い）。
+   * 控えは 1 つだけ。トポロジを 2 回変えたら 2 回目で上書きする。
+   */
+  detailCache: { mesh: Mesh; level: number } | null = null;
+  /**
+   * 段ごとの**効いているデルタ**の控え（`42` の T3）。
+   * `base + Σ(見えているレイヤー × 重み)`。**レイヤーが 1 枚も無い段は持たない**
+   * （そのときは `multires` のデルタをそのまま使う。今までと同じ道）。
+   *
+   * `.mbz` にも履歴にも入れない。レイヤーを触ったら捨てて作り直す。
+   */
+  combined = new Map<number, Float32Array>();
 
   constructor(kind: string, id: string, name?: string) {
     this.id = id;
@@ -183,13 +200,23 @@ export class SceneObject {
     droppedMask: boolean;
     /** UV の土台を今の map1 で取り直したか（`17` の 1.2）。 */
     rebased: boolean;
+    /** 捨てる前のハイを控えたか（`42` の T2）。 */
+    cachedDetail: boolean;
   } {
+    // **捨てる前にハイを控える**（`42` の T2）。生きたスタックがあるときだけ
+    // （画面に出ていれば必ずある。無ければ控えずに進む）
+    let cachedDetail = false;
+    if (this.stack && this.multires.length) {
+      this.detailCache = { mesh: this.stack.level(this.multires.length).clone(), level: this.multires.length };
+      cachedDetail = true;
+    }
     const droppedLevels = this.multires.length;
     const droppedLayers = this.sculptLayers.length;
     // マスクは頂点ごとに持っているので、頂点の数が変われば対応が取れない
     const droppedMask = this.mask !== null;
     // 対応表は頂点の番号で持っているので、頂点の数が変われば引き直す（`41` の T1）
     this.mirrorMaps.clear();
+    this.combined.clear();
     this.parametric = false;
     this.multires = [];
     this.sculptLayers = [];
@@ -200,7 +227,7 @@ export class SceneObject {
     const uv = this.uv
       ? reconcile(this.uv, this.mesh)
       : { droppedSeams: 0, droppedIslands: 0, rebased: false };
-    return { droppedLevels, droppedLayers, droppedMask, ...uv };
+    return { droppedLevels, droppedLayers, droppedMask, cachedDetail, ...uv };
   }
 
   topologyHash(): string {

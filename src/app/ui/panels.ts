@@ -30,6 +30,16 @@ export interface PanelHost {
   onCutChange(key: "snapStep" | "edgeFlow", value: number | boolean): void;
   /** 筆圧の効き方（`38` の T4）。 */
   onBrushChange(key: "pressureSize" | "pressureStrength", value: boolean): void;
+  /* スカルプトレイヤー（`42` の T3） */
+  onLayerAdd(): void;
+  /** 記録先を選ぶ。`null` なら素のデルタ（レイヤーを使わない）。 */
+  onLayerRecord(id: string | null): void;
+  onLayerVisible(id: string, on: boolean): void;
+  /** `commit` が偽ならスライダーを動かしている最中（履歴に積まない）。 */
+  onLayerWeight(id: string, value: number, commit: boolean): void;
+  onLayerDelete(id: string): void;
+  /** 見えているレイヤーを素のデルタへ足し込んで 1 枚にする。 */
+  onLayerMerge(): void;
   onBrushPowChange(key: "pressureSizePow" | "pressureStrengthPow", value: number): void;
   onSmoothAngleChange(value: number): void;
   onManipSizeChange(value: number): void;
@@ -223,6 +233,14 @@ export interface OptionsState {
   /** 今のペインが「選択したものだけ」になっているか（`27` の T3）。 */
   isolate: boolean;
   cut: { snapStep: number; edgeFlow: boolean };
+  /** その段のスカルプトレイヤー（`42` の T3）。 */
+  layers: Array<{ id: string; name: string; weight: number; visible: boolean }>;
+  /** 記録しているレイヤー（`null` なら素のデルタ）。 */
+  activeLayer: string | null;
+  /** レイヤーを使える状態か（スカルプトで段が 1 つ以上）。 */
+  canLayer: boolean;
+  /** いま見ている段。見出しに出す。 */
+  activeLevel: number;
   /** ブラシの筆圧まわり（`38` の T4）。 */
   brush: {
     pressureSize: boolean;
@@ -482,6 +500,78 @@ export function brushSection(state: OptionsState, host: PanelHost): HTMLElement 
       "効き = 筆圧 ^ カーブ。1 なら軽く触れただけで効き、\n大きいほど押し込まないと効きません。",
     ),
   );
+  return s;
+}
+
+/**
+ * スカルプトレイヤー（`42` の T3）。
+ *
+ * その段の効いている形は `素のデルタ + Σ(見えているレイヤー × 重み)`。
+ * 「記録中」の 1 枚に彫った分が入る。素のデルタ（`—`）を選べば今までどおり。
+ */
+export function layerSection(state: OptionsState, host: PanelHost): HTMLElement {
+  const s = section("スカルプトレイヤー", "LAYERS");
+  if (!state.canLayer) {
+    s.appendChild(el("div", "hint", "段を足すと使えます（段のボタンを長押し）。"));
+    return s;
+  }
+  s.appendChild(el("div", "hint", `レベル ${state.activeLevel} のレイヤー`));
+
+  /** 記録先の 1 行。押すとそこへ彫るようになる。 */
+  const recordRow = (id: string | null, label: string) => {
+    const b = el("button", "chk");
+    b.dataset.layer = id ?? "base";
+    b.setAttribute("aria-pressed", String(state.activeLayer === id));
+    b.appendChild(el("i"));
+    b.appendChild(el("span", undefined, label));
+    b.addEventListener("click", () => host.onLayerRecord(id));
+    return b;
+  };
+
+  const baseRow = el("div", "lyr");
+  baseRow.appendChild(recordRow(null, "素のデルタ（レイヤーを使わない）"));
+  s.appendChild(baseRow);
+
+  for (const l of state.layers) {
+    const row = el("div", "lyr");
+    row.dataset.id = l.id;
+    const head = el("div", "lyr-h");
+    const eye = el("button", "chk eye");
+    eye.setAttribute("aria-pressed", String(l.visible));
+    eye.appendChild(el("i"));
+    eye.appendChild(el("span", undefined, l.name));
+    eye.addEventListener("click", () => host.onLayerVisible(l.id, !l.visible));
+    head.appendChild(eye);
+    const del = el("button", "act", "削除");
+    del.addEventListener("click", () => host.onLayerDelete(l.id));
+    head.appendChild(del);
+    row.appendChild(head);
+    row.appendChild(recordRow(l.id, "ここへ記録"));
+    paramRow(row, {
+      label: "重み",
+      value: l.weight,
+      min: 0,
+      max: 2,
+      step: 0.05,
+      key: `layer:${l.id}`,
+      format: (v) => v.toFixed(2),
+      onInput: (v) => host.onLayerWeight(l.id, v, false),
+      onCommit: () => host.onLayerWeight(l.id, l.weight, true),
+    });
+    s.appendChild(row);
+  }
+
+  const foot = el("div", "lyr-foot");
+  const add = el("button", "act", "レイヤーを足す");
+  add.addEventListener("click", () => host.onLayerAdd());
+  foot.appendChild(add);
+  if (state.layers.length) {
+    const merge = el("button", "act", "統合");
+    merge.addEventListener("click", () => host.onLayerMerge());
+    foot.appendChild(merge);
+  }
+  s.appendChild(foot);
+  s.appendChild(el("div", "hint", "効いている形 = 素のデルタ + Σ(見えているレイヤー × 重み)。\n重み 0 のレイヤーには記録しません。"));
   return s;
 }
 

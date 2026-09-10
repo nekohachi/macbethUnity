@@ -3,6 +3,7 @@ import "./styles/shell.css";
 import { App } from "./app.js";
 import * as core from "../core/index.js";
 import * as meshView from "./render/meshView.js";
+import * as levels from "./levels.js";
 
 // iOS / Android の長押しメニューとテキスト選択を止める。canvas 側は
 // GestureRouter が touchstart を抑止しているので、ここは画面全体の分。
@@ -46,4 +47,4 @@ if (params.get("bench")) {
 // デバッグ用。コンソールから状態を覗けるようにしておく。
 // core も出しておく（通し確認から書き出しを直に叩くため）
 // meshView は通し確認で「法線の部分更新が作り直しと一致する」を見るのに使う（`40` の T6）
-Object.assign(window, { macbeth: app, macbethCore: core, macbethMeshView: meshView });
+Object.assign(window, { macbeth: app, macbethCore: core, macbethMeshView: meshView, macbethLevels: levels });

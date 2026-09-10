@@ -525,6 +525,23 @@ export async function runBench(app: App, quick: boolean, size?: number): Promise
       });
     }
 
+    /* B9 — ローをハイに合わせる（`42` の T1）。1 回きりの操作 */
+    {
+      sculpted.activeLevel = 2;
+      const stack2 = levelsOf(sculpted);
+      const t = performance.now();
+      const fit = stack2.fitBaseToDetail();
+      const b9 = performance.now() - t;
+      await add({
+        key: "B9",
+        label: `ローをハイに合わせる（${faces(multi.level(2).faceCount)}）`,
+        value: b9,
+        unit: "ms",
+        target: 3000,
+        note: `変位 ${fit.before.toFixed(3)} → ${fit.after.toFixed(3)} · 残り ${fit.residual.toFixed(4)}`,
+      });
+    }
+
     /* B5 — メモリ */
     const now = heapMb();
     peak = Math.max(peak, now);

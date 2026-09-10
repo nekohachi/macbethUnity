@@ -52,6 +52,7 @@ import {
   writeObj,
   type Mesh,
   type SceneObject,
+  type SculptLayer,
 } from "../core/index.js";
 import {
   GestureRouter,
@@ -63,7 +64,23 @@ import {
 } from "./input/gestures.js";
 import { Picker, type ScreenPoint } from "./render/picking.js";
 import { StrokeDriver, strokeHint } from "./stroke.js";
-import { asMb, canAddLevel, estimateBytes, facesAt, levelCount, levelsOf, moveMaskTo, radiusFor, warmUpLevels } from "./levels.js";
+import {
+  asMb,
+  canAddLevel,
+  estimateBytes,
+  facesAt,
+  applyLayers,
+  baseDelta,
+  fitLowToHigh,
+  layerById,
+  levelCount,
+  levelsOf,
+  moveMaskTo,
+  radiusFor,
+  refreshCombined,
+  reprojectDetail,
+  warmUpLevels,
+} from "./levels.js";
 import { pressureOf } from "./input/gestures.js";
 import { forgetStamps, stampsFor } from "./stamps.js";
 import { STANDARD_VIEWS, Viewport, type LayoutKind, type ViewName } from "./render/viewport.js";
@@ -114,6 +131,7 @@ import { Hud } from "./ui/hud.js";
 import {
   bevelSection,
   brushSection,
+  layerSection,
   bridgeSection,
   cameraSection,
   connectSection,
@@ -479,11 +497,13 @@ export class App {
     return o ? stampsFor(this.history, o) : null;
   }
 
-  async levelForTest(what: "add" | "up" | "down" | "dropAbove" | "burn"): Promise<void> {
+  async levelForTest(what: "add" | "up" | "down" | "dropAbove" | "burn" | "fit" | "reproject"): Promise<void> {
     if (what === "add") await this.addLevel();
     else if (what === "up") await this.goLevel((this.state.selected?.activeLevel ?? 0) + 1);
     else if (what === "down") await this.goLevel((this.state.selected?.activeLevel ?? 0) - 1);
     else if (what === "dropAbove") this.dropAboveLevel();
+    else if (what === "fit") this.fitLowLevel();
+    else if (what === "reproject") this.reprojectLevel();
     else this.burnDownLevel();
   }
 
@@ -649,6 +669,8 @@ export class App {
     // ストロークを戻した / やり直したとき。デルタは書き戻されているので、
     // その頂点の形を作り直す（段は生きたまま）
     this.history.onSculptUndo = (o, level, verts) => {
+      // レイヤーがあれば、書き戻したのは素のデルタかレイヤー。合成を取り直してから形へ（`42` の T3）
+      refreshCombined(o, level, verts);
       levelsOf(o).rebuildDetail(level, verts);
       this.viewport.refreshPositions(o);
     };
@@ -4017,6 +4039,19 @@ export class App {
         onTap: () => this.toggleMaskPaint(),
       },
       { kind: "separator" },
+      { kind: "label", text: "レイヤー" },
+      {
+        kind: "button",
+        id: "layer",
+        icon: ICONS.layers,
+        title: "スカルプトレイヤー（タップで一覧 · 重みと表示）",
+        badge: () => (this.layersHere().length ? String(this.layersHere().length) : ""),
+        pressed: () => !!this.state.activeLayer,
+        radial: () => ({ N: { label: "レイヤーを足す", icon: ICONS.dup, run: () => this.addSculptLayer() } }),
+        options: () => [layerSection(this.optionsState(), this.panelHost())],
+        onTap: () => {},
+      },
+      { kind: "separator" },
       { kind: "label", text: "段" },
       {
         kind: "button",
@@ -4033,6 +4068,120 @@ export class App {
       { kind: "label", text: "シェード" },
       ...shared,
     ];
+  }
+
+  /* ---- スカルプトレイヤー（`42` の T3） -------------------------------- */
+
+  /** いま見ている段のレイヤー。 */
+  private layersHere(): SculptLayer[] {
+    const o = this.state.selected;
+    if (!o) return [];
+    return o.sculptLayers.filter((l) => l.level === o.activeLevel);
+  }
+
+  /** その段の形を作り直して見せる（重み・表示を変えたあと）。 */
+  private applyLayerChange(o: SceneObject, level: number, label: string, snapshot: ReturnType<History["snapshot"]> | null): void {
+    applyLayers(o, level);
+    if (snapshot) this.history.commit(label, snapshot);
+    this.viewport.refreshPositions(o);
+    this.renderToolColumn();
+    this.refresh();
+  }
+
+  private addSculptLayer(): void {
+    const o = this.state.selected;
+    if (!o || o.activeLevel < 1) {
+      this.hud.toast("段を足してから使います");
+      return;
+    }
+    const level = o.activeLevel;
+    const snapshot = this.history.snapshot();
+    const count = levelsOf(o).level(level).vertexCount;
+    const id = `L${Date.now().toString(36)}${Math.floor(Math.random() * 1e4).toString(36)}`;
+    const name = `レイヤー ${o.sculptLayers.filter((l) => l.level === level).length + 1}`;
+    o.sculptLayers = [...o.sculptLayers, { id, name, level, weight: 1, visible: true, delta: new Float32Array(count * 3) }];
+    this.state.activeLayer = id;
+    this.applyLayerChange(o, level, `${name} を足した`, snapshot);
+    this.hud.toast(`${name} に記録します`);
+  }
+
+  private setRecordingLayer(id: string | null): void {
+    this.state.activeLayer = id;
+    const name = id ? (layerById(this.state.selected!, id)?.name ?? "レイヤー") : "素のデルタ";
+    this.renderToolColumn();
+    this.reopenToolOptions("layer");
+    this.hud.toast(`${name} に記録します`);
+  }
+
+  private setLayerVisible(id: string, on: boolean): void {
+    const o = this.state.selected;
+    const layer = o ? layerById(o, id) : null;
+    if (!o || !layer) return;
+    const snapshot = this.history.snapshot();
+    layer.visible = on;
+    this.applyLayerChange(o, layer.level, `${layer.name} を${on ? "表示" : "非表示"}`, snapshot);
+    this.reopenToolOptions("layer");
+  }
+
+  private setLayerWeight(id: string, value: number, commit: boolean): void {
+    const o = this.state.selected;
+    const layer = o ? layerById(o, id) : null;
+    if (!o || !layer) return;
+    if (!commit) {
+      // 動かしている最中は履歴に積まない（`25` の T4 の不透明度と同じ）
+      if (this.layerWeightSnap === null) this.layerWeightSnap = this.history.snapshot();
+      layer.weight = value;
+      applyLayers(o, layer.level);
+      this.viewport.refreshPositions(o);
+      return;
+    }
+    const snapshot = this.layerWeightSnap;
+    this.layerWeightSnap = null;
+    if (snapshot) this.history.commit(`${layer.name} の重み ${layer.weight.toFixed(2)}`, snapshot);
+    this.refresh();
+  }
+
+  /** 重みを動かし始めたときの控え。離すまで持つ。 */
+  private layerWeightSnap: ReturnType<History["snapshot"]> | null = null;
+
+  private deleteSculptLayer(id: string): void {
+    const o = this.state.selected;
+    const layer = o ? layerById(o, id) : null;
+    if (!o || !layer) return;
+    const snapshot = this.history.snapshot();
+    o.sculptLayers = o.sculptLayers.filter((l) => l.id !== id);
+    if (this.state.activeLayer === id) this.state.activeLayer = null;
+    this.applyLayerChange(o, layer.level, `${layer.name} を削除`, snapshot);
+    this.reopenToolOptions("layer");
+  }
+
+  /** 見えているレイヤーを素のデルタへ足し込んで 1 枚にする。形は変わらない。 */
+  private mergeSculptLayers(): void {
+    const o = this.state.selected;
+    if (!o) return;
+    const level = o.activeLevel;
+    const here = this.layersHere();
+    if (!here.length) return;
+    const snapshot = this.history.snapshot();
+    const base = baseDelta(o, level);
+    if (base) {
+      for (const l of here) {
+        if (!l.visible || l.weight === 0) continue;
+        for (let i = 0; i < base.length && i < l.delta.length; i++) base[i] += l.delta[i] * l.weight;
+      }
+    }
+    o.sculptLayers = o.sculptLayers.filter((l) => l.level !== level);
+    if (this.state.activeLayer && !layerById(o, this.state.activeLayer)) this.state.activeLayer = null;
+    this.applyLayerChange(o, level, `レベル ${level} のレイヤーを統合`, snapshot);
+    this.reopenToolOptions("layer");
+    this.hud.toast(`${here.length} 枚を統合しました`);
+  }
+
+  /** 通し確認からレイヤーを触る（`42` の T3）。 */
+  layerForTest(what: "add" | "merge", id?: string): void {
+    if (what === "add") this.addSculptLayer();
+    else this.mergeSculptLayers();
+    void id;
   }
 
   /* ---- マスク（`34` の T4） ------------------------------------------- */
@@ -4211,6 +4360,22 @@ export class App {
         run: () => this.burnDownLevel(),
       };
     }
+    if (top > 0) {
+      menu.NE = {
+        label: "ローをハイに合わせる",
+        sub: "形はそのまま・デルタを小さく",
+        icon: ICONS.smooth,
+        run: () => this.fitLowLevel(),
+      };
+    }
+    if (o.detailCache) {
+      menu.NW = {
+        label: top > 0 ? "ハイを戻す（再投影）" : "段を足してから",
+        sub: `控え: レベル ${o.detailCache.level}`,
+        icon: ICONS.dup,
+        run: () => this.reprojectLevel(),
+      };
+    }
     return menu;
   }
 
@@ -4347,6 +4512,59 @@ export class App {
     this.renderToolColumn();
     this.refresh();
     this.hud.toast(`レベル ${at} を焼き込みました（${o.mesh.faceCount.toLocaleString()} 面）`);
+  }
+
+  /**
+   * ローをハイに合わせる（`42` の T1）。
+   *
+   * **いちばん上の形は動かさない。** レベル 0 が上の形に沿うので、デルタが小さくなり、
+   * ベイクの変位の幅が縮む。レベル 0 の座標が変わるのでパラメトリックではなくなる。
+   */
+  private fitLowLevel(): void {
+    const o = this.state.selected;
+    if (!o || !o.multires.length) {
+      this.hud.toast("段を足してから使います");
+      return;
+    }
+    const snapshot = this.history.snapshot();
+    // 座標をその場で書き換えるので、**控えと同じものを指さない**ように 1 枚複製する
+    o.mesh = o.mesh.clone();
+    o.invalidateLevels();
+    const out = fitLowToHigh(o);
+    if (!out) return;
+    this.history.commit("ローをハイに合わせた", snapshot);
+    this.viewport.rebuildObject(o);
+    this.viewport.rebuildOverlay();
+    this.refresh();
+    this.hud.toast(
+      `ローをハイに合わせました（変位 ${out.before.toFixed(3)} → ${out.after.toFixed(3)}・残り ${out.residual.toFixed(4)}）`,
+    );
+  }
+
+  /** 捨てる前のハイを、いまのいちばん上の段へ焼き戻す（`42` の T2）。 */
+  private reprojectLevel(): void {
+    const o = this.state.selected;
+    if (!o) return;
+    if (!o.detailCache) {
+      this.hud.toast("控えがありません（トポロジを変える前の段が要ります）");
+      return;
+    }
+    if (!o.multires.length) {
+      this.hud.toast("段を足してから戻します");
+      return;
+    }
+    const snapshot = this.history.snapshot();
+    const out = reprojectDetail(o);
+    if (!out) return;
+    this.history.commit("ハイを戻した（再投影）", snapshot);
+    this.viewport.rebuildObject(o);
+    this.viewport.rebuildOverlay();
+    this.refresh();
+    this.hud.toast(
+      out.missed
+        ? `ハイを戻しました（${out.moved} 頂点・${out.missed} 頂点は遠すぎて置いたまま）`
+        : `ハイを戻しました（${out.moved} 頂点・いちばん遠いところで ${out.worst.toFixed(3)}）`,
+    );
   }
 
   /** 「追加」のアイコンに出す種類。選択がパラメトリックならそれ、無ければ最後に足したもの。 */
@@ -4591,6 +4809,10 @@ export class App {
       attrDock: this.attrDock,
       isolate: !!this.viewport.pane.isolate,
       cut: this.state.cut,
+      layers: this.layersHere().map((l) => ({ id: l.id, name: l.name, weight: l.weight, visible: l.visible })),
+      activeLayer: this.state.activeLayer,
+      canLayer: this.state.mode === "sculpt" && (this.state.selected?.activeLevel ?? 0) > 0,
+      activeLevel: this.state.selected?.activeLevel ?? 0,
       brush: this.state.brush,
       bevel: this.state.bevel,
       bevelActive: this.bevel.active,
@@ -4824,6 +5046,12 @@ export class App {
         this.state.brush[key] = value;
         this.rememberBrush();
       },
+      onLayerAdd: () => this.addSculptLayer(),
+      onLayerRecord: (id) => this.setRecordingLayer(id),
+      onLayerVisible: (id, on) => this.setLayerVisible(id, on),
+      onLayerWeight: (id, value, commit) => this.setLayerWeight(id, value, commit),
+      onLayerDelete: (id) => this.deleteSculptLayer(id),
+      onLayerMerge: () => this.mergeSculptLayers(),
       onBrushPowChange: (key, value) => {
         this.state.brush[key] = value;
         this.rememberBrush();

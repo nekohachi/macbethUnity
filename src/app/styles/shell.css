@@ -212,6 +212,13 @@ button{font-family:inherit; font-size:inherit; color:inherit; background:none; b
   border:1px solid var(--line-soft); border-radius:var(--radius); color:var(--text); font-size:11px}
 .act:hover{background:var(--accent-dim); border-color:var(--accent)}
 .chk{display:flex; align-items:center; gap:8px; padding:5px 2px; color:var(--text-dim); font-size:11px; width:100%}
+/* スカルプトレイヤーの 1 枚（`42` の T3） */
+.lyr{border:1px solid var(--line-soft); border-radius:3px; padding:4px 6px; margin-top:4px}
+.lyr-h{display:flex; align-items:center; gap:6px}
+.lyr-h .chk{flex:1 1 auto}
+.lyr-h .act{width:auto; margin:0; padding:4px 8px; flex:0 0 auto}
+.lyr-foot{display:flex; gap:6px}
+.lyr-foot .act{margin-top:6px}
 .chk i{width:14px; height:14px; border:1px solid var(--line-soft); border-radius:2px; background:var(--panel-lo); flex:0 0 auto}
 .chk[aria-pressed="true"] i{background:var(--accent); border-color:var(--accent)}
 .chk[aria-pressed="true"]{color:var(--text)}

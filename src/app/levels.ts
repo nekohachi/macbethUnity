@@ -11,8 +11,11 @@
  */
 import {
   Multires,
+  averageEdge,
   boundsDiagonal,
+  buildBvh,
   buildMirrorMap,
+  projectOnto,
   catmullClark,
   estimateLevelBytes,
   maskDown,
@@ -21,6 +24,7 @@ import {
   type Mesh,
   type MirrorMap,
   type SceneObject,
+  type SculptLayer,
 } from "../core/index.js";
 import { buildFromGeometry, loadWasm, subdivGeometry, type WasmModule } from "./wasm/index.js";
 
@@ -76,12 +80,90 @@ export function levelsOf(o: SceneObject): Multires {
     for (let i = 0; i < want; i++) stack.divide();
     o.stack = stack;
   }
-  // デルタを入れ直す（履歴で戻ったときも、ここでそろう）
+  // デルタを入れ直す（履歴で戻ったときも、ここでそろう）。
+  // **レイヤーがある段だけ**合成したものを入れる（`42` の T3）。1 枚も無ければ
+  // 今までどおり `multires` のデルタをそのまま渡すので、掛かりも増えない
   for (let i = 0; i < want; i++) {
     const level = o.multires.find((m) => m.level === i + 1);
-    stack.deltas[i] = level ? level.delta : null;
+    stack.deltas[i] = hasLayers(o, i + 1) ? combinedFor(o, i + 1) : (level ? level.delta : null);
   }
   return stack;
+}
+
+/** その段にレイヤーが 1 枚でもあるか。 */
+export function hasLayers(o: SceneObject, level: number): boolean {
+  return o.sculptLayers.some((l) => l.level === level);
+}
+
+/** その段の素のデルタ（レイヤーを足す前）。無ければ null。 */
+export function baseDelta(o: SceneObject, level: number): Float32Array | null {
+  return o.multires.find((m) => m.level === level)?.delta ?? null;
+}
+
+/**
+ * その段の**効いているデルタ**（`42` の T3）。`base + Σ(見えているレイヤー × 重み)`。
+ * 控えは `o.combined`。長さが合わなければ作り直す。
+ */
+export function combinedFor(o: SceneObject, level: number): Float32Array {
+  const base = baseDelta(o, level);
+  const size = base?.length ?? 0;
+  let out = o.combined.get(level);
+  if (!out || out.length !== size) {
+    out = new Float32Array(size);
+    o.combined.set(level, out);
+    refreshCombined(o, level);
+  }
+  return out;
+}
+
+/**
+ * 合成を計算し直す。`verts` を渡せばその頂点だけ（1 コマぶんの流しで使う）。
+ * レイヤーが無い段なら何もしない（`multires` のデルタがそのまま効いている）。
+ */
+export function refreshCombined(o: SceneObject, level: number, verts?: Iterable<number>): void {
+  const out = o.combined.get(level);
+  const base = baseDelta(o, level);
+  if (!out || !base || out.length !== base.length) return;
+  const layers = o.sculptLayers.filter((l) => l.level === level && l.visible && l.weight !== 0);
+  const write = (v: number) => {
+    const i = v * 3;
+    if (i + 2 >= out.length) return;
+    let x = base[i],
+      y = base[i + 1],
+      z = base[i + 2];
+    for (const l of layers) {
+      if (i + 2 >= l.delta.length) continue;
+      x += l.delta[i] * l.weight;
+      y += l.delta[i + 1] * l.weight;
+      z += l.delta[i + 2] * l.weight;
+    }
+    out[i] = x;
+    out[i + 1] = y;
+    out[i + 2] = z;
+  };
+  if (verts) for (const v of verts) write(v);
+  else for (let v = 0; v * 3 < out.length; v++) write(v);
+}
+
+/**
+ * レイヤーの重み・表示・並びを触ったあとに呼ぶ。合成を捨てて形を作り直す。
+ * 戻り値はその段の頂点の数（描画の作り直しに使う）。
+ */
+export function applyLayers(o: SceneObject, level: number): number {
+  o.combined.delete(level);
+  const stack = levelsOf(o);
+  if (level < 1 || level > stack.levelCount) return 0;
+  const count = stack.level(level).vertexCount;
+  const all = new Uint32Array(count);
+  for (let v = 0; v < count; v++) all[v] = v;
+  stack.rebuildDetail(level, all);
+  return count;
+}
+
+/** いま記録しているレイヤー（`state.activeLayer`）。素のデルタへ書くなら null。 */
+export function layerById(o: SceneObject, id: string | null): SculptLayer | null {
+  if (!id) return null;
+  return o.sculptLayers.find((l) => l.id === id) ?? null;
 }
 
 /**
@@ -114,6 +196,57 @@ export function moveMaskTo(o: SceneObject, level: number): void {
   }
   // 全部 0 になったら持たない（`34` の 1 章）
   o.mask = maskIsEmpty(values) ? null : { level: want, values };
+}
+
+/**
+ * `o.stack.deltas` を `o.multires` へ書き戻す（`42`）。
+ *
+ * ふつうは同じ `Float32Array` を指しているので何もしなくてよいが、
+ * `Multires.sculpt` はデルタを**作り直す**（新しい配列になる）。
+ * それを使ったあとは必ずここを通すこと。
+ */
+export function syncDeltas(o: SceneObject): void {
+  const stack = o.stack;
+  if (!stack) return;
+  o.multires = stack.deltas.map((d, i) => ({
+    level: i + 1,
+    delta: d ?? new Float32Array(stack.level(i + 1).vertexCount * 3),
+  }));
+}
+
+/**
+ * ローをハイに合わせる（`42` の T1）。形は変わらず、デルタだけ小さくなる。
+ * レベル 0 の座標が変わるので、パラメトリックではなくなる。
+ */
+export function fitLowToHigh(o: SceneObject): { residual: number; before: number; after: number } | null {
+  if (!o.multires.length) return null;
+  const out = levelsOf(o).fitBaseToDetail();
+  o.parametric = false;
+  syncDeltas(o);
+  // レベル 0 が変われば対称の対応表も引き直す
+  o.mirrorMaps.clear();
+  return out;
+}
+
+/**
+ * 捨てる前のハイを、今のいちばん上の段へ焼き戻す（`42` の T2）。
+ * 控えが無ければ `null`。
+ */
+export function reprojectDetail(o: SceneObject): { moved: number; worst: number; missed: number } | null {
+  const cache = o.detailCache;
+  if (!cache || !o.multires.length) return null;
+  const stack = levelsOf(o);
+  const top = o.multires.length;
+  const mesh = stack.level(top);
+  const src = cache.mesh;
+  const tris = src.triangulate();
+  const bvh = buildBvh(src.positions, { tri: tris.tri });
+  const edge = averageEdge(src.positions, { tri: tris.tri });
+  const out = projectOnto(mesh, src.positions, { tri: tris.tri }, bvh, Math.max(edge * 2, 1e-6), edge * 32);
+  // 動かした座標をデルタに焼く（`sculpt` は控えを捨てるので `syncDeltas` が要る）
+  stack.sculpt(top, mesh);
+  syncDeltas(o);
+  return out;
 }
 
 /** 段の数（レベル 0 を含まない）。 */

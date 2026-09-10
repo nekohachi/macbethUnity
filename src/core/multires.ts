@@ -468,11 +468,114 @@ export class Multires {
     if (level < stack.length) this.propagate(level, cache.mesh, verts);
   }
 
+  /**
+   * **ローをハイに合わせる**（`42` の T1）。いちばん上の形は 1 ミリも動かさない。
+   *
+   * スカルプトはレベル 0 を動かさない（`33`）ので、高い段で大きく形を変えると
+   * その差がぜんぶデルタに乗る。ベイクの対応は光線なしで正確だが、
+   * **変位の幅が広がってローのシルエットがハイに似ない**（`28` の v3.5）。
+   *
+   * 段 L の**頂点点**は段 L−1 の頂点と 1 対 1（Catmull-Clark の並びは
+   * 頂点点 → エッジ点 → 面点）。だから
+   *
+   * ```
+   * 下 ← 下 + (上の頂点点 − 細分割(下) の頂点点) × relax
+   * ```
+   *
+   * を数回まわせば、細分割した結果が上にいちばん近づく下の形が出る。
+   * これを**いちばん上から順に下ろす**と、レベル 0 までが上の形に沿う。
+   * 行の和が 1 の作用素なので `relax < 2` なら縮む。
+   *
+   * **守るのはいちばん上の形だけ。** 途中の段は「上に近い滑らかな面」に置き直す
+   * （そのためにデルタが小さくなる）。最後に上の形へ合わせ直すので、見た目は変わらない。
+   *
+   * 境界と折り目の規則は `subdivide` に任せる（頂点点の式をここに書き写すと、
+   * 規則が 2 か所に分かれて必ずずれる）。
+   *
+   * @returns 残差（最後に残ったずれの最大）と、デルタの最大の長さの前後
+   */
+  fitBaseToDetail(iterations = 8, relax = 1.6): { residual: number; before: number; after: number } {
+    const before = maxDeltaLength(this.deltas);
+    const n = this.deltas.length;
+    if (!n) return { residual: 0, before, after: before };
+
+    // 段ごとの目当て。いちばん上（`fitted[n]`）だけが動かせない形
+    const fitted: Mesh[] = [this.baseMesh, ...this.ensure().map((c) => c.mesh.clone())];
+    let residual = 0;
+
+    // 上から順に、1 つ下を「細分割すると上になる形」へ寄せる。
+    //
+    // **上の段ほど回す数を減らす**（1 回の細分割が 4 倍ずつ重くなるのに、
+    // 途中の段は「上に近い滑らかな面」でしかないので、そこまで詰めなくてよい）
+    for (let level = n; level >= 1; level--) {
+      const target = fitted[level];
+      const low = fitted[level - 1];
+      const p = low.positions;
+      const count = low.vertexCount;
+      const rounds = Math.max(3, iterations >> (level - 1));
+      for (let it = 0; it < rounds; it++) {
+        const sub = this.subdivide(low);
+        for (let v = 0; v < count; v++) {
+          p[v * 3] += (target.positions[v * 3] - sub.positions[v * 3]) * relax;
+          p[v * 3 + 1] += (target.positions[v * 3 + 1] - sub.positions[v * 3 + 1]) * relax;
+          p[v * 3 + 2] += (target.positions[v * 3 + 2] - sub.positions[v * 3 + 2]) * relax;
+        }
+      }
+    }
+
+    // 目当てに合わせ直す。**下の段から順に**（下を決めてからでないと上の S(L) が決まらない）。
+    // レベル 0 は `fitted[0] === this.baseMesh` をその場で書き換えてあるので、
+    // 呼ぶ側が持っている `o.mesh` の参照とずれない。
+    //
+    // `sculpt` を段の数だけ呼ぶと、そのたびに控えを捨てて全段を組み直す
+    // （25 万で 4 秒かかった）。ここは `rebuild` と同じ道を 1 回だけ歩いて、
+    // 組みながらデルタを取る
+    const stack: LevelCache[] = [];
+    let below = this.baseMesh;
+    for (let i = 0; i < n; i++) {
+      const smooth = this.subdivide(below);
+      const framePlan = new FramePlan(smooth);
+      const frames = framePlan.build(smooth);
+      const target = fitted[i + 1];
+      this.deltas[i] = captureDeltas(smooth, target, frames);
+      // 残差はいちばん下の段のぶんを返す（ローがハイにどれだけ沿ったか）
+      if (i === 0) {
+        residual = 0;
+        for (let v = 0; v < this.baseMesh.vertexCount; v++) {
+          const d = Math.hypot(
+            target.positions[v * 3] - smooth.positions[v * 3],
+            target.positions[v * 3 + 1] - smooth.positions[v * 3 + 1],
+            target.positions[v * 3 + 2] - smooth.positions[v * 3 + 2],
+          );
+          if (d > residual) residual = d;
+        }
+      }
+      const mesh = target.clone();
+      stack.push({ plan: null, below, smooth, framePlan, frames, mesh });
+      below = mesh;
+    }
+    this.stack = stack;
+    return { residual, before, after: maxDeltaLength(this.deltas) };
+  }
+
   /** 上位レベルを捨てる。トポロジを変える前に呼ぶ。 */
   dropAbove(level: number): void {
     this.deltas.length = Math.max(0, level);
     this.stack = null;
   }
+}
+
+/** デルタの長さの最大（`42` の T1 の報告に使う）。 */
+function maxDeltaLength(deltas: Array<Float32Array | null>): number {
+  let worst = 0;
+  for (const d of deltas) {
+    if (!d) continue;
+    for (let i = 0; i < d.length; i += 3) {
+      const len = Math.hypot(d[i], d[i + 1], d[i + 2]);
+      if (len > worst) worst = len;
+    }
+  }
+  return worst;
 }
 
 /**

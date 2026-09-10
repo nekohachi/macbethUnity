@@ -20,12 +20,13 @@ import {
   type Mesh,
   type MirrorMap,
   type SceneObject,
+  type SculptLayer,
   type StrokeInput,
 } from "../core/index.js";
 import type { Viewport } from "./render/viewport.js";
 import type { Picker, ScreenPoint } from "./render/picking.js";
 import type { History } from "./history.js";
-import { levelsOf, mirrorMapOf } from "./levels.js";
+import { baseDelta, layerById, levelsOf, mirrorMapOf } from "./levels.js";
 import { brushAt, type AppState } from "./state.js";
 import { Matrix4, Plane, Raycaster, Vector3 } from "three";
 
@@ -52,6 +53,11 @@ interface Live {
   invert: boolean;
   /** ムーブの掴み（`39` の T5）。ムーブ以外は null。 */
   grab: Grab | null;
+  /**
+   * 彫った分を書き込む先のレイヤー（`42` の T3）。素のデルタへ書くなら null。
+   * **押した瞬間に決める**（途中でレイヤーを切り替えても、この 1 本は同じ所へ）。
+   */
+  layer: SculptLayer | null;
   /**
    * X 対称の対応表（`41` の T1）。対称が切ってあるか、対にならないメッシュなら null。
    * **押した瞬間に決めて、離すまで変えない。**
@@ -203,6 +209,7 @@ export class StrokeDriver {
       erase: role === "mask" && alt,
       invert: role === "sculpt" && alt,
       grab: null,
+      layer: role === "sculpt" ? this.recordingLayer(o) : null,
       mirror: this.state.brush.symmetryX ? mirrorMapOf(o, o.activeLevel, this.viewport.meshOf(o)) : null,
       primarySign: at[0] < 0 ? -1 : 1,
       viewDir: role === "sculpt" && this.state.brush.backfaceMask ? this.viewDirOf(o) : null,
@@ -215,7 +222,7 @@ export class StrokeDriver {
       skippedNormals: false,
     };
     if (role === "mask") this.history.beginMask(o, o.activeLevel);
-    else this.history.beginSculpt(o, o.activeLevel);
+    else this.history.beginSculpt(o, o.activeLevel, this.live.layer?.id);
     if (role === "sculpt" && kind === "move") {
       // 押した瞬間の頂点を掴む（`39` の T5）。動かすのは `move()` から
       this.live.grab = this.beginGrab(this.live, p, at, pressure, alt);
@@ -346,6 +353,18 @@ export class StrokeDriver {
     }
     if (any) live.hits++;
     this.flush(live);
+  }
+
+  /**
+   * いま記録しているレイヤー（`42` の T3）。
+   *
+   * 選ばれていても**段が違う**か**重みが 0**なら素のデルタへ書く
+   * （重み 0 のレイヤーへ書くと、書いた分が見た目に出ないうえ 0 で割ることになる）。
+   */
+  private recordingLayer(o: SceneObject): SculptLayer | null {
+    const layer = layerById(o, this.state.activeLayer);
+    if (!layer || layer.level !== o.activeLevel || layer.weight === 0 || !layer.visible) return null;
+    return layer;
   }
 
   /**
@@ -563,8 +582,10 @@ export class StrokeDriver {
     const fp = grabbed ?? strokeFootprint(mesh, bvh, view.tri, input.point, input.radius);
     if (!fp.verts.length) return false;
 
-    const delta = levelsOf(o).deltas[live.level - 1];
-    // 動かす前のデルタを控える。同じ頂点を何度なぞっても最初の値が残る
+    // 動かす前のデルタを控える。同じ頂点を何度なぞっても最初の値が残る。
+    // **書き込む先**（レイヤーか素のデルタ）を控えること。合成のほうを控えると、
+    // 戻したときに `base + Σ レイヤー` と食い違う（`42` の T3）
+    const delta = live.layer ? live.layer.delta : baseDelta(o, live.level);
     if (delta) this.history.trackSculpt(fp.verts, delta);
 
     const moved = applyStroke(mesh, fp, view.tri, input);
@@ -660,7 +681,33 @@ export class StrokeDriver {
       this.viewport.refreshMask(live.object, verts);
       return;
     }
-    levelsOf(live.object).sculptAt(live.level, verts);
+    // レイヤーがあれば、`sculptAt` が書くのは**合成のほう**。彫った分だけを
+    // 書き込む先へ切り分ける（`42` の T3）
+    const stack = levelsOf(live.object);
+    const combined = stack.deltas[live.level - 1];
+    const target = live.layer ? live.layer.delta : baseDelta(live.object, live.level);
+    const split = !!combined && !!target && combined !== target;
+    let prev: Float32Array | null = null;
+    if (split && combined) {
+      prev = new Float32Array(verts.length * 3);
+      for (let i = 0; i < verts.length; i++) {
+        const v = verts[i];
+        prev[i * 3] = combined[v * 3];
+        prev[i * 3 + 1] = combined[v * 3 + 1];
+        prev[i * 3 + 2] = combined[v * 3 + 2];
+      }
+    }
+    stack.sculptAt(live.level, verts);
+    if (split && combined && target && prev) {
+      const w = live.layer ? live.layer.weight : 1;
+      for (let i = 0; i < verts.length; i++) {
+        const v = verts[i];
+        if (v * 3 + 2 >= target.length) continue;
+        target[v * 3] += (combined[v * 3] - prev[i * 3]) / w;
+        target[v * 3 + 1] += (combined[v * 3 + 1] - prev[i * 3 + 1]) / w;
+        target[v * 3 + 2] += (combined[v * 3 + 2] - prev[i * 3 + 2]) / w;
+      }
+    }
     // 動いた頂点だけ書き換える
     this.viewport.refreshMoved(live.object, verts);
     // 法線も動いた頂点の周りだけ直す（`40` の T3）。陰影が引いている間に付いてくる。

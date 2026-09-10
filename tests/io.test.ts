@@ -220,3 +220,24 @@ describe(".mbz", () => {
     expect(() => unpackMbz(zipSync(files))).toThrow(/新しい版/);
   });
 });
+
+describe("スカルプトレイヤーの往復（`42` の T3）", () => {
+  it(".mbz に重み・表示・デルタが残る", () => {
+    const doc = new Document();
+    const o = doc.addMesh(cube(), "Layered");
+    o.multires = [{ level: 1, delta: new Float32Array(9).fill(0.25) }];
+    o.sculptLayers = [
+      { id: "a", name: "しわ", level: 1, weight: 0.5, visible: true, delta: new Float32Array(9).fill(0.1) },
+      { id: "b", name: "傷", level: 1, weight: 1.75, visible: false, delta: new Float32Array(9).fill(-0.2) },
+    ];
+    const back = unpackMbz(packMbz(doc)).document.objects[0];
+    expect(back.sculptLayers.map((l) => [l.id, l.name, l.weight, l.visible])).toEqual([
+      ["a", "しわ", 0.5, true],
+      ["b", "傷", 1.75, false],
+    ]);
+    // Float32 に落ちるので、丸めの幅で見る
+    for (const v of back.sculptLayers[0].delta) expect(v).toBeCloseTo(0.1, 6);
+    for (const v of back.sculptLayers[1].delta) expect(v).toBeCloseTo(-0.2, 6);
+    for (const v of back.multires[0].delta) expect(v).toBeCloseTo(0.25, 6);
+  });
+});
