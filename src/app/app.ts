@@ -802,16 +802,23 @@ export class App {
       },
       // 指で置いた場所がツールの対象か。マニピュレータのハンドルは
       // メッシュの外にはみ出すので、面のヒットだけで判定すると指でつかめない
+      // スカルプトは矩形選択が無いので、何も無い所を引いたら回す（`36` の T2）
+      freeDragTumbles: () => this.state.mode === "sculpt",
       isOnMesh: (p, e) => {
         const tol = this.tolerance(e);
-        if (this.state.selected && this.manipulator.pick(p, this.pivotWorld(), this.state.manip, tol) >= 0) {
+        // スカルプト中はハンドルを見ない（`36` の T1）。`refreshManipulator` が
+        // `clear()` してあるので当たらないはずだが、そこに頼らず明示的に飛ばす
+        // （あとで `clear` の順番が変わっても壊れないように）
+        const gizmo = this.state.mode !== "sculpt" && this.state.selected;
+        if (gizmo && this.manipulator.pick(p, this.pivotWorld(), this.state.manip, tol) >= 0) {
           return true;
         }
         return this.hitSelectedComponent(p, tol) || !!this.picker.pickSurface(p);
       },
       zoomPivot: () => this.pivotWorld(),
       marqueeStart: (p) => this.startMarquee(p),
-      tumble: (dx, dy) => this.viewport.tumble(dx, dy),
+      tumble: (dx, dy, pivot) => (pivot ? this.viewport.tumbleAbout(pivot, dx, dy) : this.viewport.tumble(dx, dy)),
+      tumblePivot: (p) => this.tumblePivot(p),
       pan: (dx, dy) => this.viewport.pan(dx, dy),
       dolly: (f) => this.viewport.dolly(f),
       dollyAbout: (pivot, f) => this.viewport.dollyAbout(pivot, f),
@@ -2090,7 +2097,11 @@ export class App {
 
   /** マニピュレータを今の選択に合わせる。 */
   private refreshManipulator(): void {
-    if (this.state.tool !== "select") {
+    // **スカルプト中は出さない**（`36` の T1）。邪魔なだけでなく、
+    // ハンドルは「ツールの対象」に数えられているので、指が乗るとタンブルにも
+    // ならず、彫りにも行って外れる（言い訳のトーストだけ出る）。
+    // スカルプト中の変形は 3 本指でできる（`25` の T2、`26` の T1〜T3）
+    if (this.state.tool !== "select" || this.state.mode === "sculpt") {
       this.manipulator.clear();
       return;
     }
@@ -2275,6 +2286,29 @@ export class App {
   }
 
   /** 選択の中心（ワールド）。Maya と同じで、オブジェクトなら原点、コンポーネントなら境界箱の中心。 */
+  /**
+   * 回す中心（`36` の T3。`04` の 4.2）。**置いた瞬間に 1 回だけ決める。**
+   *
+   * 上から順に:
+   *   1. コンポーネントを選んでいる → 選択の箱の中心
+   *   2. 指 / ペンの下に面がある → その点
+   *   3. 外 → 選んでいるオブジェクトの中心、無ければ全体の箱の中心
+   *   4. 何も無い → null（今までどおり的のまわりを回る）
+   */
+  private tumblePivot(p: ScreenPoint): Vector3 | null {
+    if (this.state.compMode !== "object" && this.state.comp.size) {
+      const at = this.pivotWorld();
+      if (at) return at;
+    }
+    const hit = this.picker.pickSurface(p);
+    if (hit) return hit.point.clone();
+    if (this.state.selected) {
+      const at = this.pivotWorld();
+      if (at) return at;
+    }
+    return this.viewport.contentCenter();
+  }
+
   private pivotWorld(): Vector3 | null {
     const o = this.state.selected;
     if (!o) return null;

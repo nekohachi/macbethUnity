@@ -55,6 +55,17 @@ export interface GestureHandlers {
   transformEnd(): void;
 
   /**
+   * **何も無い所からのドラッグをタンブルにするか**（`36` の T2）。
+   *
+   * スカルプトでは true。矩形選択が無いので、何も無い所を引いても
+   * 「モデルの上をなぞってください」が出るだけだった。ZBrush / Nomad /
+   * ZBrush for iPad は全部そこで回る。
+   *
+   * モデリングでは false（何も無い所からの左ドラッグは矩形選択。Maya と同じ）。
+   */
+  freeDragTumbles(): boolean;
+
+  /**
    * 指を置いた場所がツールの対象か。true = ツール、false = タンブル（Nomad 方式）。
    * マニピュレータのハンドルも対象に含める（指で直接つかめるように）。
    */
@@ -65,7 +76,14 @@ export interface GestureHandlers {
   /** 矩形選択の開始。更新と確定はツール側（toolMove / toolUp）が担う。 */
   marqueeStart(p: ScreenPoint): void;
 
-  tumble(dx: number, dy: number): void;
+  /**
+   * 回す。`pivot` が来たらその点のまわり、null なら今までどおり的のまわり
+   * （`36` の T3）。**ジェスチャの始まりで 1 回だけ決めて、途中で取り直さない**
+   * （毎コマ取り直すと滑る。`04` の 4.2）。
+   */
+  tumble(dx: number, dy: number, pivot: Vector3 | null): void;
+  /** 回す中心。指やペンを置いた点で決める（`36` の T3）。 */
+  tumblePivot(p: ScreenPoint, e: PointerEvent): Vector3 | null;
   pan(dx: number, dy: number): void;
   dolly(factor: number): void;
   dollyAbout(pivot: Vector3, factor: number): void;
@@ -439,7 +457,10 @@ export class GestureRouter {
 
     if (e.pointerType === "mouse") {
       if (this.h.altOn(e)) {
-        this.gesture = { mode: e.button === 0 ? "tumble" : e.button === 1 ? "pan" : "dolly" };
+        this.gesture =
+          e.button === 0
+            ? { mode: "tumble", pivot: this.h.tumblePivot(p, e) ?? undefined }
+            : { mode: e.button === 1 ? "pan" : "dolly" };
         return;
       }
       // 右クリック = マーキングメニュー、Shift + 右クリック = 編集メニュー（Maya と同じ）
@@ -454,10 +475,14 @@ export class GestureRouter {
       }
     }
 
-    if (e.pointerType === "touch") {
-      const onMesh = !this.fingerCam && this.h.isOnMesh(p, e);
+    // 指は前から「メッシュの外ならタンブル」（Nomad 方式）。
+    // スカルプトではペンとマウス左も同じ道に乗せる（`36` の T2）。
+    // **マウスの Alt / 中 / 右はこの前で捌いてある**ので、ここへは来ない
+    if (e.pointerType === "touch" || this.h.freeDragTumbles()) {
+      const finger = e.pointerType === "touch";
+      const onMesh = !(finger && this.fingerCam) && this.h.isOnMesh(p, e);
       if (!onMesh) {
-        this.gesture = { mode: "tumble", live: false, acc: 0 };
+        this.gesture = { mode: "tumble", live: false, acc: 0, pivot: this.h.tumblePivot(p, e) ?? undefined };
         this.startMarkingHold(e);
         return;
       }
@@ -497,7 +522,7 @@ export class GestureRouter {
         if (g.acc < TUMBLE_DEADZONE) return;
         g.live = true;
       }
-      this.h.tumble(e.clientX - px, e.clientY - py);
+      this.h.tumble(e.clientX - px, e.clientY - py, g.pivot ?? null);
       return;
     }
     if (g.mode === "pan") return this.h.pan(e.clientX - px, e.clientY - py);

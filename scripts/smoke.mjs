@@ -1291,6 +1291,207 @@ check(
     `反転 ${maskMenu.inverted} / 全解除 ${maskMenu.cleared}・素の材質 ${maskMenu.materialPlain} / 取り消しで戻る ${maskMenu.backAfterUndo} / 裏面 ${maskMenu.backToggled}`,
 );
 
+/* 17q. マスクの残り（`34` の T5）: やり直し・SHF のスムース・裏面マスク・破棄の言葉 */
+//
+// T2〜T4 で見ていないものだけ。**app の道を通す**のが肝で、
+// 裏面マスクは単体テストにはあるが `viewDir` を作って渡す所は通っていなかった。
+const maskRest = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const core = window.macbethCore;
+  const keep = app.state.doc.objects.slice();
+  const camBefore = app.viewport.saveLayout();
+  const modeBefore = app.state.mode;
+  const selBefore = app.state.selected;
+  const modsBefore = { ...app.state.mods };
+  const backBefore = app.state.brush.backfaceMask;
+  const kindBefore = app.state.brush.kind;
+
+  app.state.doc.objects.length = 0;
+  const o = app.state.doc.addMesh(
+    core.PRIMITIVES.sphere.build({ ...core.defaultParams("sphere"), sdAxis: 24, sdHeight: 16 }),
+    "Rest",
+  );
+  app.viewport.syncAll();
+  app.state.select(o);
+  app.setMode("sculpt");
+  await app.levelForTest("add");
+  await app.levelForTest("add");
+  app.viewport.frameSelected();
+  app.refresh();
+  await new Promise((r) => setTimeout(r, 120));
+
+  const pane = document.getElementById("pane3d").getBoundingClientRect();
+  const gl = document.getElementById("gl");
+  const cx = pane.left + pane.width / 2;
+  const cy = pane.top + pane.height / 2;
+  const ev = (type, x, y) =>
+    new PointerEvent(type, {
+      pointerId: 79, pointerType: "pen", bubbles: true, cancelable: true,
+      clientX: x, clientY: y, pressure: 0.9, buttons: type === "pointerup" ? 0 : 1,
+    });
+  const drag = async (dy = 0) => {
+    gl.dispatchEvent(ev("pointerdown", cx - 60, cy + dy));
+    for (let i = 1; i <= 24; i++) gl.dispatchEvent(ev("pointermove", cx - 60 + i * 5, cy + dy));
+    gl.dispatchEvent(ev("pointerup", cx + 60, cy + dy));
+    await new Promise((r) => setTimeout(r, 40));
+  };
+  const shown = () => o.shown(app.state.shownLevel(o)).positions;
+  const spread = (a) => {
+    let m = 0;
+    for (const x of a) m += x;
+    m /= a.length;
+    let s = 0;
+    for (const x of a) s += (x - m) ** 2;
+    return s / a.length;
+  };
+  /**
+   * でこぼこ具合。**原点からの距離のばらつき**で見る。
+   *
+   * 座標そのもののばらつきを見ると**球の形そのもの**に呑まれて、
+   * 局所の凹凸が桁で埋もれる（最初そう書いて 3.26e-1 → 3.26e-1 になった）。
+   * 素の球は距離が一定なのでばらつき 0、彫ると増え、均すと減る。
+   */
+  const roughness = () => {
+    const p = shown();
+    const r = [];
+    for (let v = 0; v < p.length / 3; v++) r.push(Math.hypot(p[v * 3], p[v * 3 + 1], p[v * 3 + 2]));
+    return spread(r);
+  };
+
+  /* --- 4 の後半: やり直しと履歴の段の数 --- */
+  app.history.clear();
+  app.state.mods.ctrl = "on";
+  app.refresh();
+  await drag();
+  await drag(20);
+  app.state.mods.ctrl = "off";
+  app.refresh();
+  // マスクのストローク 2 本 = 履歴 2 段
+  const entriesAfterTwo = app.history.depthForTest();
+  const maxAfterTwo = Math.max(...Array.from(o.mask.values));
+  app.history.undo();
+  app.history.undo();
+  const goneAfterUndo = o.mask === null;
+  app.history.redo();
+  app.history.redo();
+  const backAfterRedo = !!o.mask && Math.abs(Math.max(...Array.from(o.mask.values)) - maxAfterTwo) < 1e-6;
+  // 全部消してから先へ進む
+  o.mask = null;
+  app.viewport.refreshMaskAll(o);
+  app.history.clear();
+
+  /* --- 7 の後半: SHF の一時スムースでばらつきが減る --- */
+  // まずスタンダードででこぼこにする
+  await drag();
+  await drag(14);
+  const bumpy = roughness();
+  app.state.mods.shift = "on";
+  app.refresh();
+  for (let i = 0; i < 3; i++) {
+    await drag();
+    await drag(14);
+  }
+  app.state.mods.shift = "off";
+  app.refresh();
+  const smoothed = roughness();
+  const kindAfterShift = app.state.brush.kind;
+
+  /* --- 8: 裏面マスクを app の道で通す --- */
+  app.history.clear();
+  // **筆を球ぜんぶが入る太さにする。** 既定は対角の 6.6%（半径 0.23）なので、
+  // 半径 1 の球の裏（2 離れている）には最初から届かない。裏面マスクの有無を
+  // 比べたいのに、どちらでも奥が 0 になってしまう
+  //
+  // **カメラを「前」に固定する。** 既定のパースは斜めから見ているので、
+  // オブジェクト空間の -Z が「奥」とは限らない。最初そのまま比べて、
+  // 裏面マスクが効いているのに「奥 500」が出た（判定のほうが誤り）
+  const radiusBefore = app.state.brush.radius;
+  app.viewport.setView("front");
+  app.refresh();
+  await new Promise((r) => setTimeout(r, 80));
+  const backTest = async (on) => {
+    app.state.brush.backfaceMask = on;
+    app.state.brush.kind = "move";
+    app.state.brush.radius = 3;
+    app.refresh();
+    const before = shown().slice();
+    // 手前の真ん中を掴んで引く
+    gl.dispatchEvent(ev("pointerdown", cx, cy));
+    for (let i = 1; i <= 10; i++) gl.dispatchEvent(ev("pointermove", cx + i * 3, cy));
+    gl.dispatchEvent(ev("pointerup", cx + 30, cy));
+    await new Promise((r) => setTimeout(r, 60));
+    const after = shown();
+    let front = 0;
+    let back = 0;
+    for (let v = 0; v < before.length / 3; v++) {
+      const d = Math.hypot(after[v * 3] - before[v * 3], after[v * 3 + 1] - before[v * 3 + 1], after[v * 3 + 2] - before[v * 3 + 2]);
+      if (d <= 1e-6) continue;
+      // カメラは +Z 側から見ている。奥（-Z）に居たものが動いたら裏まで掴んでいる
+      if (before[v * 3 + 2] < -0.2) back++;
+      else front++;
+    }
+    // 元に戻す
+    while (app.history.canUndo) app.history.undo();
+    return { front, back };
+  };
+  const backOn = await backTest(true);
+  const backOff = await backTest(false);
+  app.state.brush.radius = radiusBefore;
+
+  /* --- 9 の後半: トポロジを変えたときの言葉 --- */
+  o.mask = { level: o.activeLevel, values: new Float32Array(o.stack.level(o.activeLevel).vertexCount).fill(1) };
+  app.setMode("model");
+  app.setCompMode("face");
+  app.state.comp.clear();
+  app.state.comp.add(0);
+  app.runEditForTest("extrude");
+  await new Promise((r) => setTimeout(r, 60));
+  const note = document.getElementById("hudHint")?.textContent ?? "";
+  const maskDropped = o.mask === null;
+
+  // 片づけ
+  app.state.brush.backfaceMask = backBefore;
+  app.state.brush.kind = kindBefore;
+  app.state.mods.ctrl = modsBefore.ctrl;
+  app.state.mods.shift = modsBefore.shift;
+  app.state.mods.alt = modsBefore.alt;
+  app.setCompMode("object");
+  app.state.comp.clear();
+  app.setMode(modeBefore);
+  app.state.doc.objects.length = 0;
+  app.state.doc.objects.push(...keep);
+  app.viewport.syncAll();
+  app.viewport.restoreLayout(camBefore);
+  app.state.select(selBefore ?? keep[0] ?? null);
+  app.history.clear();
+  app.refresh();
+  return {
+    entriesAfterTwo, goneAfterUndo, backAfterRedo,
+    bumpy, smoothed, kindAfterShift,
+    backOn, backOff, note, maskDropped,
+  };
+});
+check(
+  "マスクの残り: やり直し・SHF のスムース・裏面マスク・破棄の言葉",
+  maskRest.entriesAfterTwo === 2 &&
+    maskRest.goneAfterUndo &&
+    maskRest.backAfterRedo &&
+    maskRest.bumpy > 1e-9 &&
+    maskRest.smoothed < maskRest.bumpy * 0.9 &&
+    maskRest.kindAfterShift === "standard" &&
+    // 裏面マスクあり: 手前は動くが奥は 1 つも動かない
+    maskRest.backOn.front > 5 &&
+    maskRest.backOn.back === 0 &&
+    // 切ると奥も掴む
+    maskRest.backOff.back > 0 &&
+    maskRest.note.includes("マスクを破棄") &&
+    maskRest.maskDropped,
+  `マスク 2 本で履歴 ${maskRest.entriesAfterTwo} 段・取り消しで消える ${maskRest.goneAfterUndo}・やり直しで戻る ${maskRest.backAfterRedo} / ` +
+    `SHF でばらつき ${maskRest.bumpy.toExponential(2)} → ${maskRest.smoothed.toExponential(2)}（種類は ${maskRest.kindAfterShift}）/ ` +
+    `裏面マスク オン 手前 ${maskRest.backOn.front}・奥 ${maskRest.backOn.back} / オフ 奥 ${maskRest.backOff.back} / ` +
+    `破棄の言葉「${maskRest.note}」`,
+);
+
 /* 17p. マスクが段について回り、.mbz に残る（`34` の T2） */
 //
 // マスクは 1 つの段にしか無いので、彫る段を変えたら一緒に移す。

@@ -23,6 +23,7 @@ import {
   OrthographicCamera,
   PerspectiveCamera,
   Points,
+  Quaternion,
   Scene,
   Vector3,
   WebGLRenderTarget,
@@ -78,6 +79,12 @@ export const STANDARD_VIEWS: Record<ViewName, { label: string; sub: string; thet
 
 const MIN_DIST = 0.3;
 const MAX_DIST = 140;
+
+/** ピボット回転の控え（1 コマごとに作らないため）。 */
+const orbitFrom = new Vector3();
+const orbitTo = new Vector3();
+const orbitQuat = new Quaternion();
+const contentBox = new Box3();
 
 /** 筆の輪を組むための控え（1 コマごとに作らないため）。 */
 const brushInv = new Matrix4();
@@ -535,6 +542,37 @@ export class Viewport {
     this.applyCamera();
   }
 
+  /**
+   * ピボットのまわりを回る（`36` の T3。`04` の 4.2）。
+   *
+   * `tumble` は `cam.target` のまわりを回るので、パンで的が模型から外れた
+   * あとにタンブルすると**模型が画面を横切る**（Maya のブレ）。ここは
+   * 「指の下の点」や「オブジェクトの中心」を渡して、そこを軸に回す。
+   *
+   * 仕掛けは `dollyAbout` と同じで、カメラと的の**組ごと**ピボットのまわりに
+   * 回す。カメラの位置は `target + 球座標(θ, φ, 距離)` なので、
+   *
+   *   1. 回す前の向き `v` と、θ / φ を進めたあとの向き `v'` を出す
+   *   2. `v → v'` の回転を `target - pivot` にも掛ける
+   *
+   * とすると、カメラは `pivot` のまわりを回る（距離は変わらない）。
+   * φ の詰めで実際の回転が要求より小さくなっても、`v'` は詰めたあとの値なので
+   * 食い違わない。
+   */
+  tumbleAbout(pivot: Vector3, dx: number, dy: number): void {
+    if (this.locked) return;
+    const cam = this.cam;
+    const dir = (theta: number, phi: number, out: Vector3): Vector3 =>
+      out.set(Math.sin(phi) * Math.sin(theta), Math.cos(phi), Math.sin(phi) * Math.cos(theta));
+    dir(cam.theta, cam.phi, orbitFrom);
+    cam.theta -= dx * 0.0088;
+    cam.phi = Math.max(0.05, Math.min(Math.PI - 0.05, cam.phi - dy * 0.0088));
+    dir(cam.theta, cam.phi, orbitTo);
+    orbitQuat.setFromUnitVectors(orbitFrom, orbitTo);
+    cam.target.sub(pivot).applyQuaternion(orbitQuat).add(pivot);
+    this.applyCamera();
+  }
+
   pan(dx: number, dy: number): void {
     if (this.locked) return;
     const right = new Vector3().setFromMatrixColumn(this.camera.matrix, 0);
@@ -558,6 +596,28 @@ export class Viewport {
     this.cam.target.sub(pivot).multiplyScalar(f).add(pivot);
     this.cam.distance = next;
     this.applyCamera();
+  }
+
+  /**
+   * 見えているものぜんぶを包む箱の中心（`36` の T3）。
+   *
+   * 何も選ばず、指の下にも何も無いときの**回す中心**。`frameSelected` と違って
+   * 頂点を総なめしない（three が持っている境界箱を使う。ジオメトリを作り直す
+   * まで控えが効くので、タンブルのたびに 25 万頂点を舐めずに済む）。
+   */
+  contentCenter(): Vector3 | null {
+    const box = new Box3();
+    let any = false;
+    for (const view of this.views.values()) {
+      if (!this.shownIn(this.pane, view.object)) continue;
+      const g = view.surface.geometry;
+      if (!g.boundingBox) g.computeBoundingBox();
+      if (!g.boundingBox) continue;
+      view.group.updateMatrixWorld();
+      box.union(contentBox.copy(g.boundingBox).applyMatrix4(view.group.matrixWorld));
+      any = true;
+    }
+    return any ? box.getCenter(new Vector3()) : null;
   }
 
   /** 選択（なければ全体）にフレームを合わせる。Maya の F。 */

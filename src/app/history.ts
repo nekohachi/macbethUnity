@@ -179,6 +179,11 @@ export class History {
   get canRedo(): boolean {
     return this.redoStack.length > 0;
   }
+  /** 積んである段の数。通し確認から「1 操作で 1 段」を見るため。 */
+  depthForTest(): number {
+    return this.undoStack.length;
+  }
+
   get undoLabel(): string | null {
     return this.undoStack.at(-1)?.label ?? null;
   }

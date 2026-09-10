@@ -1171,10 +1171,12 @@ export class UvMode {
       transformUpdate: (t) => this.gestureUpdate(t),
       transformEnd: () => this.gestureEnd(),
       // 2D はどこを触ってもツール。タンブルは無い
+      freeDragTumbles: () => false,
       isOnMesh: () => true,
       zoomPivot: () => null,
       marqueeStart: () => {},
       tumble: () => {},
+      tumblePivot: () => null,
       pan: (dx, dy) => this.view.pan(dx, dy),
       dolly: (factor) => this.view.zoom(factor),
       dollyAbout: (_pivot, factor) => this.view.zoom(factor),
