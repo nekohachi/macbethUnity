@@ -5,7 +5,7 @@
  * 入れ替わる。パラメトリックなプリミティブならそのパラメータが出る。
  */
 import { PRIMITIVES } from "../../core/index.js";
-import type { SceneObject } from "../../core/index.js";
+import type { BakeMap, SceneObject } from "../../core/index.js";
 import { el } from "./dom.js";
 import { ICONS, iconSvg } from "./icons.js";
 import { openRadial, type RadialMenu } from "./radial.js";
@@ -44,6 +44,10 @@ export interface PanelHost {
   onBrushPowChange(key: "pressureSizePow" | "pressureStrengthPow", value: number): void;
   onSmoothAngleChange(value: number): void;
   onManipSizeChange(value: number): void;
+  /** ベイク（`46` の T4）。 */
+  onBakeSizeChange(size: number): void;
+  onBakeMapChange(kind: BakeMap, on: boolean): void;
+  onBakeSamplesChange(n: number): void;
   /** マニピュレータの軸の向き（`45` の T2）。 */
   onManipSpaceChange(space: ManipSpace): void;
   onUvMethodChange(method: "lscm" | "projection" | "none"): void;
@@ -210,7 +214,12 @@ function gripDots(): string {
   );
 }
 
-function checkbox(parent: HTMLElement, label: string, on: boolean, toggle: (v: boolean) => void): void {
+function checkbox(
+  parent: HTMLElement,
+  label: string,
+  on: boolean,
+  toggle: (v: boolean) => void,
+): HTMLElement {
   const b = el("button", "chk");
   b.setAttribute("aria-pressed", String(on));
   b.appendChild(el("i"));
@@ -221,6 +230,7 @@ function checkbox(parent: HTMLElement, label: string, on: boolean, toggle: (v: b
     toggle(next);
   });
   parent.appendChild(b);
+  return b;
 }
 
 export interface OptionsState {
@@ -270,6 +280,8 @@ export interface OptionsState {
   manip: "all" | "move" | "rotate" | "scale";
   /** マニピュレータの軸の向き（`45` の T2）。 */
   manipSpace: ManipSpace;
+  /** 焼き方（`46` の T4）。選んでいるオブジェクトのもの、無ければ既定。 */
+  bake: { size: number; maps: readonly BakeMap[]; aoSamples: number };
   pivotEdit: boolean;
   rotateStep: number;
   preventNegativeScale: boolean;
@@ -506,6 +518,71 @@ export function selectSection(state: OptionsState, host: PanelHost): HTMLElement
  * タブレットで扱いにくいので作らない（`05` は「カーブで調整可能に」だが、
  * 数 1 つで足りる）。
  */
+/**
+ * ベイク（`46` の T4）。大きさと、焼く絵と、AO の本数。
+ *
+ * 大きさは `44` では長押しの輪に置いていたが、絵が 7 枚になって方位が足りない。
+ */
+export function bakeSection(state: OptionsState, host: PanelHost): HTMLElement {
+  const s = section("ベイク", "BAKE");
+  const bake = state.bake;
+
+  const sizeRow = el("div", "row");
+  sizeRow.appendChild(el("label", undefined, "大きさ"));
+  const sizes = el("div", "segmented");
+  for (const size of [1024, 2048, 4096]) {
+    const b = el("button", "seg") as HTMLButtonElement;
+    b.textContent = `${size / 1024}K`;
+    b.dataset.size = String(size);
+    b.setAttribute("aria-pressed", String(bake.size === size));
+    b.addEventListener("click", () => host.onBakeSizeChange(size));
+    sizes.appendChild(b);
+  }
+  sizeRow.appendChild(sizes);
+  s.appendChild(sizeRow);
+
+  s.appendChild(el("div", "minilbl", "焼く絵"));
+  for (const [kind, label] of [
+    ["normal", "法線"],
+    ["height", "高さ"],
+    ["curvature", "曲率"],
+    ["position", "位置"],
+    ["id", "ID"],
+    ["ao", "AO（光線）"],
+    ["thickness", "厚み（光線）"],
+  ] as const) {
+    const on = bake.maps.includes(kind);
+    const row = checkbox(s, label, on, (v) => host.onBakeMapChange(kind, v));
+    row.dataset.map = kind;
+    // 法線と高さは土台なので外せない
+    if (kind === "normal" || kind === "height") (row as HTMLButtonElement).disabled = true;
+  }
+
+  const aoRow = el("div", "row");
+  aoRow.appendChild(el("label", undefined, "AO の本数"));
+  const samples = el("div", "segmented");
+  for (const n of [4, 8, 16, 32]) {
+    const b = el("button", "seg") as HTMLButtonElement;
+    b.textContent = String(n);
+    b.setAttribute("aria-pressed", String(bake.aoSamples === n));
+    b.addEventListener("click", () => host.onBakeSamplesChange(n));
+    samples.appendChild(b);
+  }
+  aoRow.appendChild(samples);
+  s.appendChild(aoRow);
+
+  s.appendChild(
+    el(
+      "div",
+      "hint",
+      "AO と 厚みだけ光線を飛ばします（ハイの頂点ごと）。\n" +
+        "本数を増やすほどなめらかになり、そのぶん遅くなります。\n" +
+        "2K の法線 + 高さで 200MB ほど使います。4K はその 4 倍です。",
+    ),
+  );
+  return s;
+}
+
 export function brushSection(state: OptionsState, host: PanelHost): HTMLElement {
   const s = section("筆圧", "PRESSURE");
   const b = state.brush;

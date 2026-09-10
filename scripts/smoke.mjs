@@ -9076,6 +9076,149 @@ check(
     ` / .mbz に焼き方 ${bakeRun.kept}・絵は入らない ${bakeRun.noResult}`,
 );
 
+/* 46a. 残りのベイク（`46`）: 絵を選ぶ → 焼く → 書き出し → 触った所だけ焼き直す */
+const bake46 = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const core = window.macbethCore;
+  const keep = [...app.state.doc.objects];
+  const keepSel = app.state.selected;
+  const camBefore = app.viewport.saveLayout();
+  app.setMode("model");
+  app.state.doc.objects.length = 0;
+  const o = app.state.doc.addMesh(
+    core.PRIMITIVES.sphere.build({ ...core.defaultParams("sphere"), sdAxis: 16, sdHeight: 12 }),
+    "Maps",
+  );
+  app.viewport.syncAll();
+  app.state.select(o);
+  app.setMode("sculpt");
+  await app.levelForTest("add");
+  app.viewport.frameSelected();
+  app.state.brush.kind = "standard";
+  app.refresh();
+  app.history.clear();
+  await new Promise((r) => setTimeout(r, 120));
+
+  await app.bakeForTest("size", 1024);
+  // 既定は法線と高さだけ
+  await app.bakeForTest("bake");
+  const plain = app.bakeInfoForTest();
+
+  // 曲率・位置・ID・AO を足して焼き直す
+  for (const m of ["curvature", "position", "id", "ao"]) await app.bakeForTest("map", m, true);
+  await app.bakeForTest("samples", 4);
+  await app.bakeForTest("bake");
+  const rich = app.bakeInfoForTest();
+  const result = o.bakeResult;
+  // 曲率は平らでない所で 128 から外れる
+  let curvOff = 0;
+  let aoBright = 0;
+  let aoDark = 0;
+  for (let t = 0; t < result.coverage.length; t++) {
+    if (result.coverage[t] !== 1) continue;
+    if (Math.abs(result.curvature[t] - 128) > 4) curvOff++;
+    // **球は凸なので、どのテクセルも遮られない**（AO は真っ白が正しい）。
+    // 遮る形での AO は core のテスト（溝を彫った板）で見ている
+    if (result.ao[t] >= 250) aoBright++;
+    else aoDark++;
+  }
+
+  // 彫ると升目が立つ
+  const pane = document.getElementById("pane3d").getBoundingClientRect();
+  const gl = document.getElementById("gl");
+  const cx = pane.left + pane.width / 2;
+  const cy = pane.top + pane.height / 2;
+  const ev = (type, x, y) =>
+    new PointerEvent(type, {
+      pointerId: 96, pointerType: "pen", bubbles: true, cancelable: true,
+      clientX: x, clientY: y, pressure: 0.9, buttons: type === "pointerup" ? 0 : 1,
+    });
+  gl.dispatchEvent(ev("pointerdown", cx - 20, cy));
+  for (let i = 1; i <= 10; i++) gl.dispatchEvent(ev("pointermove", cx - 20 + i * 4, cy));
+  gl.dispatchEvent(ev("pointerup", cx + 20, cy));
+  await new Promise((r) => setTimeout(r, 80));
+  const dirtyAfterStroke = app.bakeInfoForTest().dirty;
+  const tiles = (1024 / 256) * (1024 / 256);
+
+  // 触った所だけ焼き直す
+  const normalBefore = result.normal.slice();
+  await app.bakeForTest("partial");
+  const dirtyAfterBake = app.bakeInfoForTest().dirty;
+  const sameArray = o.bakeResult.normal === result.normal;
+  let changed = 0;
+  for (let t = 0; t < result.coverage.length; t++) {
+    if (result.normal[t * 4] !== normalBefore[t * 4]) changed++;
+  }
+
+  // 書き出しの一覧と、曲率の PNG
+  const realPicker = window.showSaveFilePicker;
+  window.showSaveFilePicker = undefined;
+  const clicked = [];
+  const realClick = HTMLAnchorElement.prototype.click;
+  HTMLAnchorElement.prototype.click = function () {
+    clicked.push({ name: this.download, bytes: fetch(this.href).then((r) => r.arrayBuffer()) });
+  };
+  await app.bakeForTest("curvature");
+  HTMLAnchorElement.prototype.click = realClick;
+  window.showSaveFilePicker = realPicker;
+  const png = [];
+  for (const c of clicked) {
+    const bytes = new Uint8Array(await c.bytes);
+    const w = (bytes[16] << 24) | (bytes[17] << 16) | (bytes[18] << 8) | bytes[19];
+    png.push({ name: c.name, magic: bytes[0] === 0x89 && bytes[1] === 0x50, w, bytes: bytes.length });
+  }
+
+  o.bakeResult = null;
+  o.bake = null;
+  o.bakeDirty = null;
+  app.setMode("model");
+  app.state.doc.objects.length = 0;
+  app.state.doc.objects.push(...keep);
+  app.viewport.syncAll();
+  if (keepSel) app.state.select(keepSel);
+  app.viewport.restoreLayout(camBefore);
+  app.history.clear();
+  app.refresh();
+  return {
+    plain, rich, curvOff, aoBright, aoDark, dirtyAfterStroke, dirtyAfterBake, tiles,
+    sameArray, changed, png,
+  };
+});
+check(
+  "焼く絵を選べる: 曲率・位置・ID・AO を足すと出て、選ばなければ作らない",
+  !bake46.plain.has.curvature &&
+    !bake46.plain.has.ao &&
+    bake46.plain.list.join(" / ") === "法線を書き出し / 高さを書き出し" &&
+    bake46.rich.has.curvature &&
+    bake46.rich.has.position &&
+    bake46.rich.has.id &&
+    bake46.rich.has.ao &&
+    !bake46.rich.has.thickness &&
+    bake46.curvOff > 100 &&
+    bake46.aoBright > 100 &&
+    bake46.aoDark === 0 &&
+    bake46.rich.list.length === 6,
+  `既定 ${bake46.plain.maps.join("・")} → 足して ${bake46.rich.maps.join("・")} / ` +
+    `曲率が 128 から外れたテクセル ${bake46.curvOff} · AO が白いテクセル ${bake46.aoBright}（凸なので遮られない）/ ` +
+    `一覧 ${bake46.rich.list.length} 件`,
+);
+check(
+  "升目: 彫ると立ち、触った所だけ焼き直すと消える",
+  bake46.dirtyAfterStroke > 0 &&
+    bake46.dirtyAfterStroke < bake46.tiles &&
+    bake46.dirtyAfterBake === 0 &&
+    bake46.sameArray &&
+    bake46.changed > 0,
+  `彫って ${bake46.dirtyAfterStroke}/${bake46.tiles} 升目 → 焼いて ${bake46.dirtyAfterBake} / ` +
+    `同じ配列に上書き ${bake46.sameArray} · 変わったテクセル ${bake46.changed}`,
+);
+check(
+  "曲率も PNG で書き出せる",
+  bake46.png.length === 1 && bake46.png[0].magic && bake46.png[0].w === 1024 &&
+    bake46.png[0].name.includes("curvature"),
+  bake46.png.map((p) => `${p.name} ${p.w}px・${(p.bytes / 1024).toFixed(0)}KB`).join(" / "),
+);
+
 /* 45a. 対称のボタン（`45` の T1）: 入り切り → 反対側が動く → 中心線は留まる */
 const symButton = await page.evaluate(async () => {
   const app = window.macbeth;

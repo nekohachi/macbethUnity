@@ -15,7 +15,7 @@ import { Mesh } from "./mesh.js";
 import { PRIMITIVES, defaultParams, type PrimitiveParams } from "./primitives.js";
 import type { Multires } from "./multires.js";
 import type { MirrorMap } from "./symmetry.js";
-import type { BakeResult } from "./bake.js";
+import type { BakeMap, BakeResult } from "./bake.js";
 import { topologyHash } from "./io/hash.js";
 import { reconcile, type UvRecipe } from "./uv/recipe.js";
 
@@ -57,6 +57,10 @@ export interface BakeRecipe {
   padding: number;
   /** 焼いたときの指紋（`bakeStamp`）。今の指紋と違えば「古い」。まだ焼いていなければ null。 */
   stamp: string | null;
+  /** 焼く絵（`46` の T4）。既定は法線と高さ。 */
+  maps: BakeMap[];
+  /** AO と 厚みの本数（`46` の T2）。既定 8。 */
+  aoSamples: number;
 }
 
 /** スカルプトレイヤー。対象レベルのデルタに重みを掛けて合成する。 */
@@ -178,6 +182,13 @@ export class SceneObject {
    * 2K で 20MB になるので、開き直したら焼き直す。
    */
   bakeResult: BakeResult | null = null;
+  /**
+   * 焼き直す升目（`46` の T3）。升目ごとに 0 / 1。**`.mbz` にも履歴にも入れない。**
+   *
+   * ストロークを離したときに、動いた頂点の UV から立てる。
+   * 全部焼き直したら消す。null は「まだ何も動いていない」。
+   */
+  bakeDirty: Uint8Array | null = null;
 
   constructor(kind: string, id: string, name?: string) {
     this.id = id;

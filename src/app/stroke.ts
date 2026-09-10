@@ -27,6 +27,7 @@ import type { Viewport } from "./render/viewport.js";
 import type { Picker, ScreenPoint } from "./render/picking.js";
 import type { History } from "./history.js";
 import { baseDelta, layerById, levelsOf, mirrorMapOf } from "./levels.js";
+import { markBakeTiles } from "./bake.js";
 import { brushAt, type AppState } from "./state.js";
 import { Matrix4, Plane, Raycaster, Vector3 } from "three";
 
@@ -458,6 +459,9 @@ export class StrokeDriver {
     // **しない**（前は `refreshPositions` で 25 万四角形 764ms。離すたびに止まっていた）。
     // 念のため触った頂点の周りをもう一度だけ通す（コマ飛ばしをしたときの取りこぼし）
     if (live.skippedNormals) this.viewport.refreshNormals(live.object, live.touched);
+    // 焼き直す升目を立てる（`46` の T3）。**離したときに 1 回だけ**。
+    // 焼いていないオブジェクトでは何もしないので、掛かりは増えない
+    markBakeTiles(live.object, this.viewport.meshOf(live.object), live.touched);
     this.history.commitPending(`${BRUSH_LABEL[live.kind]}で彫った`);
   }
 

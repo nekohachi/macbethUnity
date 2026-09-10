@@ -546,7 +546,7 @@ export async function runBench(app: App, quick: boolean, size?: number): Promise
     /* B10 — 2K の法線 + 高さを焼く（`44` の T3）。押したときだけ走る 1 回きりの操作 */
     {
       sculpted.activeLevel = 2;
-      sculpted.bake = { size: 2048, padding: 4, stamp: null };
+      sculpted.bake = { size: 2048, padding: 4, stamp: null, maps: ["normal", "height"], aoSamples: 16 };
       const t = performance.now();
       const report = bakeObject(sculpted);
       const b10 = performance.now() - t;
@@ -562,6 +562,33 @@ export async function runBench(app: App, quick: boolean, size?: number): Promise
           : `焼けなかった（${report.reason}）`,
       });
       // 20MB を超える控えなので、メモリの数字を汚さないように捨てる
+      sculpted.bakeResult = null;
+      sculpted.bake = null;
+    }
+
+    /* B11 — 2K で 曲率 + AO + 厚み（`46` の T5）。**光線はハイの頂点ごと** */
+    {
+      sculpted.activeLevel = 2;
+      sculpted.bake = {
+        size: 2048,
+        padding: 4,
+        stamp: null,
+        maps: ["curvature", "ao", "thickness"],
+        aoSamples: 8,
+      };
+      const t = performance.now();
+      const report = bakeObject(sculpted);
+      const b11 = performance.now() - t;
+      await add({
+        key: "B11",
+        label: `2K の 曲率 + AO + 厚みを焼く（${faces(multi.level(2).faceCount)}）`,
+        value: b11,
+        unit: "ms",
+        target: 20000,
+        note: report.result
+          ? `光線 ${multi.level(2).vertexCount} 頂点 × 8 本 × 2 方向`
+          : `焼けなかった（${report.reason}）`,
+      });
       sculpted.bakeResult = null;
       sculpted.bake = null;
     }

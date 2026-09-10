@@ -209,6 +209,9 @@ export function unpackMbz(bytes: Uint8Array): UnpackResult {
           size: Math.max(1, Math.floor(j.bake.size ?? 2048)),
           padding: Math.max(0, Math.floor(j.bake.padding ?? 4)),
           stamp: j.bake.stamp ?? null,
+          // 焼く絵は `46` で足した。古いファイルには無いので既定へ
+          maps: Array.isArray(j.bake.maps) && j.bake.maps.length ? [...j.bake.maps] : ["normal", "height"],
+          aoSamples: Math.max(1, Math.floor(j.bake.aoSamples ?? 16)),
         }
       : null;
 

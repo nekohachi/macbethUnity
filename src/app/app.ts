@@ -84,11 +84,15 @@ import {
   warmUpLevels,
 } from "./levels.js";
 import {
-  BAKE_SIZES,
+  MAP_LABEL,
+  bakeAllDirty,
   bakeObject,
+  // `markBakeTiles` はストロークの側（`stroke.ts`）で呼ぶ
   bakeState,
   defaultRecipe,
+  dirtyTiles,
   exportBake,
+  mapBytes,
   type BakeMapKind,
   type BakeState,
 } from "./bake.js";
@@ -142,6 +146,7 @@ import { byId, el } from "./ui/dom.js";
 import { Gauge } from "./ui/gauges.js";
 import { Hud } from "./ui/hud.js";
 import {
+  bakeSection,
   bevelSection,
   brushSection,
   layerSection,
@@ -1367,6 +1372,8 @@ export class App {
    * 積んだかどうかを返す。
    */
   private commitDragHistory(label: string): boolean {
+    // レベル 0 が動いたら、焼いた絵は丸ごと古い（`46` の T3）
+    if (this.state.selected) bakeAllDirty(this.state.selected);
     if (this.dragSnapshot) {
       this.history.commit(label, this.dragSnapshot);
       this.dragSnapshot = null;
@@ -3660,6 +3667,7 @@ export class App {
     const snapshot = this.history.snapshot();
     if (!change()) return;
     const dropped = o.markTopologyChanged();
+    bakeAllDirty(o);
     this.state.comp.clear();
     this.history.commit(label, snapshot);
     this.viewport.rebuildObject(o);
@@ -4473,7 +4481,9 @@ export class App {
         badge: () => BAKE_BADGE[bakeState(this.state.selected)],
         pressed: () => bakeState(this.state.selected) === "fresh",
         radial: () => this.bakeMenu(),
-        onTap: () => void this.runBake(),
+        radialList: () => this.bakeItems(),
+        options: () => [bakeSection(this.optionsState(), this.panelHost())],
+        onTap: () => void this.runBake(dirtyTiles(this.state.selected) > 0),
       },
       { kind: "separator" },
       { kind: "label", text: "シェード" },
@@ -4487,37 +4497,84 @@ export class App {
     const o = this.state.selected;
     if (!o) return { N: { label: "オブジェクトを選んでください", run: () => {} } };
     const recipe = o.bake ?? defaultRecipe();
+    const dirty = dirtyTiles(o);
     const menu: RadialMenu = {
       N: {
         label: "焼く",
-        sub: `${recipe.size} × ${recipe.size}・レベル ${o.multires.length}`,
+        sub: `${recipe.size} × ${recipe.size}・${recipe.maps.length} 枚`,
         icon: ICONS.bake,
         run: () => void this.runBake(),
       },
     };
     if (o.bakeResult) {
+      // 触った所だけ（`46` の T3）。立っている升目が無ければ出さない
+      if (dirty) {
+        menu.E = {
+          label: "触った所だけ焼く",
+          sub: `${dirty} 升目`,
+          icon: ICONS.bake,
+          run: () => void this.runBake(true),
+        };
+      }
       menu.W = {
+        label: "全部焼く",
+        sub: `${recipe.size} × ${recipe.size}`,
+        icon: ICONS.bake,
+        run: () => void this.runBake(),
+      };
+      menu.S = {
         label: "法線を書き出し",
         sub: "PNG（接空間）",
         icon: ICONS.file,
         run: () => void this.exportBakeMap("normal"),
       };
-      menu.E = {
-        label: "高さを書き出し",
-        sub: "PNG（グレー・中央が 0）",
-        icon: ICONS.file,
-        run: () => void this.exportBakeMap("height"),
-      };
     }
-    const dirs = ["SW", "S", "SE"] as const;
-    BAKE_SIZES.forEach((size, i) => {
-      menu[dirs[i]] = {
-        label: `${size / 1024}K`,
-        sub: size === recipe.size ? "いま" : `${size} × ${size}`,
-        run: () => this.setBakeSize(size),
-      };
-    });
     return menu;
+  }
+
+  /**
+   * 輪の下の一覧（`46` の T4）。**焼いてある絵の書き出し**を並べる。
+   * 焼いていない絵は出さない（押しても何も落ちないので）。
+   */
+  private bakeItems(): RadialItem[] {
+    const result = this.state.selected?.bakeResult;
+    if (!result) return [];
+    return result.maps
+      .filter((kind) => mapBytes(result, kind))
+      .map((kind) => ({
+        label: `${MAP_LABEL[kind]}を書き出し`,
+        sub: `PNG ${result.size}`,
+        icon: ICONS.file,
+        run: () => void this.exportBakeMap(kind),
+      }));
+  }
+
+  /** 焼く絵を選ぶ（`46` の T4）。顔ぶれが変わるので、焼いた絵は捨てる。 */
+  private setBakeMap(kind: BakeMapKind, on: boolean): void {
+    const o = this.state.selected;
+    if (!o) return;
+    const recipe = o.bake ?? defaultRecipe();
+    // 法線と高さは土台なので外せない
+    if (!on && (kind === "normal" || kind === "height")) return;
+    const maps = on ? [...new Set([...recipe.maps, kind])] : recipe.maps.filter((m) => m !== kind);
+    o.bake = { ...recipe, maps, stamp: null };
+    o.bakeResult = null;
+    o.bakeDirty = null;
+    this.renderToolColumn();
+    this.reopenToolOptions("bake");
+    this.hud.toast(`${MAP_LABEL[kind]}を${on ? "焼く" : "焼かない"}`);
+  }
+
+  /** AO の本数（`46` の T2）。 */
+  private setBakeSamples(n: number): void {
+    const o = this.state.selected;
+    if (!o) return;
+    const recipe = o.bake ?? defaultRecipe();
+    if (recipe.aoSamples === n) return;
+    o.bake = { ...recipe, aoSamples: n, stamp: null };
+    this.renderToolColumn();
+    this.reopenToolOptions("bake");
+    this.hud.toast(`AO の本数 ${n}`);
   }
 
   /** 焼く大きさを決める。焼いた絵は大きさが変わるので捨てる。 */
@@ -4532,12 +4589,12 @@ export class App {
     this.renderToolColumn();
   }
 
-  /** 焼く（`44` の T2）。 */
-  private async runBake(): Promise<void> {
+  /** 焼く（`44` の T2。`46` の T3 で差分を足した）。 */
+  private async runBake(partial = false): Promise<void> {
     const o = this.state.selected;
     if (!o) return this.hud.toast("オブジェクトを選んでください");
     if (!o.bake) o.bake = defaultRecipe();
-    const report = bakeObject(o);
+    const report = bakeObject(o, partial);
     if (!report.ok) {
       const why =
         report.reason === "noLevels"
@@ -4549,9 +4606,9 @@ export class App {
     }
     const r = report.result!;
     const filled = r.size * r.size;
+    const where = report.tiles ? `触った ${report.tiles} 升目` : `${Math.round((r.covered / filled) * 100)}%`;
     this.hud.toast(
-      `焼いた: ${r.size} × ${r.size}・${Math.round((r.covered / filled) * 100)}% ・` +
-        `高さ ${r.heightRange[0].toFixed(3)} 〜 ${r.heightRange[1].toFixed(3)}・${Math.round(report.ms ?? 0)}ms`,
+      `焼いた: ${r.size} × ${r.size}・${r.maps.length} 枚・${where}・${Math.round(report.ms ?? 0)}ms`,
     );
     this.renderToolColumn();
   }
@@ -4674,11 +4731,44 @@ export class App {
     this.hud.toast(`${here.length} 枚を統合しました`);
   }
 
-  /** 通し確認からベイクを触る（`44` の T2）。 */
-  async bakeForTest(what: "bake" | "normal" | "height" | "size", size?: number): Promise<void> {
+  /** 通し確認からベイクを触る（`44` の T2、`46` の T4）。 */
+  async bakeForTest(
+    what: "bake" | "partial" | "size" | "samples" | "map" | BakeMapKind,
+    arg?: number | string,
+    on = true,
+  ): Promise<void> {
     if (what === "bake") await this.runBake();
-    else if (what === "size") this.setBakeSize(size ?? 1024);
+    else if (what === "partial") await this.runBake(true);
+    else if (what === "size") this.setBakeSize(Number(arg) || 1024);
+    else if (what === "samples") this.setBakeSamples(Number(arg) || 16);
+    else if (what === "map") this.setBakeMap(String(arg) as BakeMapKind, on);
     else await this.exportBakeMap(what);
+  }
+
+  /** 焼いた絵の状態（`46` の通し確認）。 */
+  bakeInfoForTest(): {
+    maps: string[];
+    has: Record<string, boolean>;
+    dirty: number;
+    list: string[];
+    size: number;
+  } | null {
+    const o = this.state.selected;
+    if (!o) return null;
+    const r = o.bakeResult;
+    return {
+      maps: r ? [...r.maps] : [],
+      has: {
+        curvature: !!r?.curvature,
+        ao: !!r?.ao,
+        thickness: !!r?.thickness,
+        position: !!r?.position,
+        id: !!r?.id,
+      },
+      dirty: dirtyTiles(o),
+      list: this.bakeItems().map((i) => i.label),
+      size: r?.size ?? 0,
+    };
   }
 
   /** 通し確認からレイヤーを触る（`42` の T3）。 */
@@ -5318,6 +5408,7 @@ export class App {
       manipSize: this.state.manipSize,
       manip: this.state.manip,
       manipSpace: this.state.manipSpace,
+      bake: this.state.selected?.bake ?? defaultRecipe(),
       pivotEdit: this.state.pivotEdit,
       rotateStep: this.state.rotateStep,
       preventNegativeScale: this.state.preventNegativeScale,
@@ -5556,6 +5647,9 @@ export class App {
       },
       onManipSizeChange: (value) => this.setManipSize(value),
       onManipSpaceChange: (space) => this.setManipSpace(space),
+      onBakeSizeChange: (size) => this.setBakeSize(size),
+      onBakeMapChange: (kind, on) => this.setBakeMap(kind, on),
+      onBakeSamplesChange: (n) => this.setBakeSamples(n),
       onUvMethodChange: (method) => {
         this.uv?.setMethod(method);
         this.refresh();
