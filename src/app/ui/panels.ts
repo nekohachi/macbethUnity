@@ -28,6 +28,9 @@ export interface PanelHost {
   /** ブリッジの分割数（`23` の T4）。 */
   onBridgeSegmentsChange(value: number): void;
   onCutChange(key: "snapStep" | "edgeFlow", value: number | boolean): void;
+  /** 筆圧の効き方（`38` の T4）。 */
+  onBrushChange(key: "pressureSize" | "pressureStrength", value: boolean): void;
+  onBrushPowChange(key: "pressureSizePow" | "pressureStrengthPow", value: number): void;
   onSmoothAngleChange(value: number): void;
   onManipSizeChange(value: number): void;
   onUvMethodChange(method: "lscm" | "projection" | "none"): void;
@@ -220,6 +223,13 @@ export interface OptionsState {
   /** 今のペインが「選択したものだけ」になっているか（`27` の T3）。 */
   isolate: boolean;
   cut: { snapStep: number; edgeFlow: boolean };
+  /** ブラシの筆圧まわり（`38` の T4）。 */
+  brush: {
+    pressureSize: boolean;
+    pressureStrength: boolean;
+    pressureSizePow: number;
+    pressureStrengthPow: number;
+  };
   bevel: { width: number; segments: number };
   /** ベベルを確定した直後か。作り直せる間だけ出す。 */
   bevelActive: boolean;
@@ -430,6 +440,46 @@ export function selectSection(state: OptionsState, host: PanelHost): HTMLElement
       "div",
       "hint",
       "オンにすると、カメラから見えているものだけを選びます。\n裏側の頂点やエッジは、タップでも矩形でも拾いません。",
+    ),
+  );
+  return s;
+}
+
+/**
+ * 筆のカットイン（`38` の T4）。筆圧の効き方だけ。
+ *
+ * カーブは**数 1 つ**（`効き = 筆圧 ^ pow`）。点を打つ曲線の編集 UI は
+ * タブレットで扱いにくいので作らない（`05` は「カーブで調整可能に」だが、
+ * 数 1 つで足りる）。
+ */
+export function brushSection(state: OptionsState, host: PanelHost): HTMLElement {
+  const s = section("筆圧", "PRESSURE");
+  const b = state.brush;
+  checkbox(s, "サイズに効かせる", b.pressureSize, (v) => host.onBrushChange("pressureSize", v));
+  paramRow(s, {
+    label: "サイズのカーブ",
+    value: b.pressureSizePow,
+    min: 0.25,
+    max: 4,
+    step: 0.25,
+    format: (v) => (v === 1 ? "そのまま" : v < 1 ? `軽め ${v.toFixed(2)}` : `重め ${v.toFixed(2)}`),
+    onInput: (v) => host.onBrushPowChange("pressureSizePow", v),
+  });
+  checkbox(s, "強さに効かせる", b.pressureStrength, (v) => host.onBrushChange("pressureStrength", v));
+  paramRow(s, {
+    label: "強さのカーブ",
+    value: b.pressureStrengthPow,
+    min: 0.25,
+    max: 4,
+    step: 0.25,
+    format: (v) => (v === 1 ? "そのまま" : v < 1 ? `軽め ${v.toFixed(2)}` : `重め ${v.toFixed(2)}`),
+    onInput: (v) => host.onBrushPowChange("pressureStrengthPow", v),
+  });
+  s.appendChild(
+    el(
+      "div",
+      "hint",
+      "効き = 筆圧 ^ カーブ。1 なら軽く触れただけで効き、\n大きいほど押し込まないと効きません。",
     ),
   );
   return s;

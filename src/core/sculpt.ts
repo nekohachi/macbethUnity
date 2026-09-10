@@ -16,7 +16,41 @@ import { trianglesNear } from "./bvh.js";
 import type { Mesh, Triangulation } from "./mesh.js";
 
 /** ブラシの種類。 */
-export type BrushKind = "standard" | "move" | "smooth";
+export type BrushKind =
+  | "standard"
+  | "move"
+  | "smooth"
+  /** 平面から外へ盛る（`38` の T2）。 */
+  | "clay"
+  /** 平面を見ずに法線方向へ一定。重ねると立ち上がる。 */
+  | "claybuildup"
+  /** 面を押し広げる。 */
+  | "inflate"
+  /** 範囲の中心へ寄せて稜線を立てる。 */
+  | "pinch"
+  /** 平面へ両側から寄せる。 */
+  | "flatten"
+  /** 平面より外だけ削り取る。 */
+  | "trim"
+  /** Standard を細く鋭く。 */
+  | "damien"
+  /** 平面へ寄せてから隣の平均へ少し寄せる。 */
+  | "polish";
+
+/** 法線を使う種類。`localNormals` を作るかどうかの判定に使う。 */
+const NEEDS_NORMAL: ReadonlySet<BrushKind> = new Set<BrushKind>([
+  "standard",
+  "clay",
+  "claybuildup",
+  "inflate",
+  "flatten",
+  "trim",
+  "damien",
+  "polish",
+]);
+
+/** 平面をあてる種類。 */
+const NEEDS_PLANE: ReadonlySet<BrushKind> = new Set<BrushKind>(["clay", "flatten", "trim", "polish"]);
 
 /** 1 回ぶんのブラシ。 */
 export interface StrokeInput {
@@ -98,6 +132,25 @@ export function falloff(t: number): number {
  * この章の前提が崩れるため。
  */
 const scratch = { gen: new Int32Array(0), val: new Int32Array(0), stamp: 0 };
+
+/**
+ * 面ごとの控え（`38` の T1）。面積の重みを**面の単位**で持つため。
+ *
+ * 三角形ごとの面積にすると、四角をどちらの対角で割ったかで重みが変わり、
+ * **`35` で立てた「コーナーの並び順で結果が変わらない」が壊れる**
+ * （実際そう書いて通し確認が落ちた）。面の面積なら割り方に依らない。
+ */
+const faceScratch = { gen: new Int32Array(0), area: new Float32Array(0), stamp: 0 };
+
+/** 面の控えを用意して、世代を 1 つ進める。 */
+function beginFaceScratch(faceCount: number): number {
+  if (faceScratch.gen.length < faceCount) {
+    faceScratch.gen = new Int32Array(faceCount);
+    faceScratch.area = new Float32Array(faceCount);
+    faceScratch.stamp = 0;
+  }
+  return ++faceScratch.stamp;
+}
 
 /** 控えを頂点数ぶん用意して、世代を 1 つ進める。返り値がその世代番号。 */
 function beginScratch(vertexCount: number): number {
@@ -214,51 +267,144 @@ function localNormals(mesh: Mesh, fp: Footprint, tris: Triangulation, stamp: num
   return out;
 }
 
-/** 範囲の三角形から、頂点ごとの「隣の平均」を作る。 */
+/**
+ * 範囲の三角形から、頂点ごとの「隣の平均」を作る。
+ *
+ * **面積で重みを付ける**（`38` の T1）。数を数えるだけだと、三角形と四角の
+ * 境目のように**密度が食い違う所で細かい側へ寄る**。辺を挟む三角形の面積を
+ * 重みにすると、粗い側と細かい側が同じだけ効く。
+ *
+ * cotangent（本式の Laplace-Beltrami）は使わない。**鈍角で負になって暴れる**。
+ * 面積なら常に正で、密度には同じだけ効く。
+ *
+ * 面積は外積の長さの半分。`localNormals` と同じ量なので、三角形を 2 度なめない。
+ */
 function localAverages(mesh: Mesh, fp: Footprint, tris: Triangulation, stamp: number): Float32Array {
   const sum = new Float32Array(fp.verts.length * 3);
-  const count = new Uint32Array(fp.verts.length);
+  const total = new Float32Array(fp.verts.length);
   const tri = tris.tri;
   const real = tris.realEdges;
+  const toFace = tris.triToFace;
   const p = mesh.positions;
   const gen = scratch.gen;
   const val = scratch.val;
-  const add = (v: number, u: number): void => {
-    if (gen[v] !== stamp) return;
-    const i = val[v];
-    sum[i * 3] += p[u * 3];
-    sum[i * 3 + 1] += p[u * 3 + 1];
-    sum[i * 3 + 2] += p[u * 3 + 2];
-    count[i]++;
-  };
-  for (const t of fp.tris) {
+
+  /** その三角形の面積（外積の長さの半分）。 */
+  const areaOf = (t: number): number => {
     const a = tri[t * 3];
     const b = tri[t * 3 + 1];
     const c = tri[t * 3 + 2];
+    const ax = p[a * 3],
+      ay = p[a * 3 + 1],
+      az = p[a * 3 + 2];
+    const ux = p[b * 3] - ax,
+      uy = p[b * 3 + 1] - ay,
+      uz = p[b * 3 + 2] - az;
+    const vx = p[c * 3] - ax,
+      vy = p[c * 3 + 1] - ay,
+      vz = p[c * 3 + 2] - az;
+    return Math.hypot(uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx) / 2;
+  };
+
+  // 1 周目: **面ごと**に面積を足す（三角形ごとだと割り方で変わる）
+  const fstamp = beginFaceScratch(mesh.faceCount);
+  const fgen = faceScratch.gen;
+  const farea = faceScratch.area;
+  for (const t of fp.tris) {
+    const f = toFace[t];
+    if (fgen[f] !== fstamp) {
+      fgen[f] = fstamp;
+      farea[f] = 0;
+    }
+    farea[f] += areaOf(t);
+  }
+
+  // 2 周目: 面の面積を重みにして、面の本物の辺だけ足す
+  let w = 0;
+  const add = (v: number, u: number): void => {
+    if (gen[v] !== stamp) return;
+    const i = val[v];
+    sum[i * 3] += p[u * 3] * w;
+    sum[i * 3 + 1] += p[u * 3 + 1] * w;
+    sum[i * 3 + 2] += p[u * 3 + 2] * w;
+    total[i] += w;
+  };
+  for (const t of fp.tris) {
+    w = farea[toFace[t]];
+    if (w <= 0) continue;
     // **面の本物の辺だけ**（`35` の T1）。四角を扇で割ると対角線が出るが、
     // それは隣ではない。数えると 1 リングの外まで平均してしまい、しかも
     // どちらの対角が出るかはコーナーの並び順で決まるので方向に偏る
     const r = real[t];
     if (r & 1) {
-      add(a, b);
-      add(b, a);
+      add(a2(tri, t, 0), a2(tri, t, 1));
+      add(a2(tri, t, 1), a2(tri, t, 0));
     }
     if (r & 2) {
-      add(b, c);
-      add(c, b);
+      add(a2(tri, t, 1), a2(tri, t, 2));
+      add(a2(tri, t, 2), a2(tri, t, 1));
     }
     if (r & 4) {
-      add(c, a);
-      add(a, c);
+      add(a2(tri, t, 2), a2(tri, t, 0));
+      add(a2(tri, t, 0), a2(tri, t, 2));
     }
   }
   for (let i = 0; i < fp.verts.length; i++) {
-    if (!count[i]) continue;
-    sum[i * 3] /= count[i];
-    sum[i * 3 + 1] /= count[i];
-    sum[i * 3 + 2] /= count[i];
+    if (!total[i]) continue;
+    sum[i * 3] /= total[i];
+    sum[i * 3 + 1] /= total[i];
+    sum[i * 3 + 2] /= total[i];
   }
   return sum;
+}
+
+/** 三角形 `t` の `k` 番目の頂点。 */
+function a2(tri: Uint32Array, t: number, k: number): number {
+  return tri[t * 3 + k];
+}
+
+/** 範囲にあてた平面。Clay / Flatten / Trim / Polish が使う（`38` の T1）。 */
+export interface LocalPlane {
+  center: readonly [number, number, number];
+  normal: readonly [number, number, number];
+}
+
+/**
+ * 範囲に平面をあてる（`38` の T1）。
+ *
+ * 中心は**重みつきの重心**、向きは**範囲の法線の重みつき平均**。
+ *
+ * 共分散行列の固有分解はしない。3×3 の対称行列を解くぶんの値打ちが無く、
+ * 法線の平均で十分に同じ向きが出る（範囲は筆の大きさなので、もともと
+ * 平らに近い）。
+ */
+function localPlane(fp: Footprint, normals: Float32Array, positions: Float32Array, weights: Float32Array): LocalPlane | null {
+  let cx = 0,
+    cy = 0,
+    cz = 0,
+    nx = 0,
+    ny = 0,
+    nz = 0,
+    total = 0;
+  for (let i = 0; i < fp.verts.length; i++) {
+    const w = weights[i];
+    if (w <= 0) continue;
+    const v = fp.verts[i];
+    cx += positions[v * 3] * w;
+    cy += positions[v * 3 + 1] * w;
+    cz += positions[v * 3 + 2] * w;
+    nx += normals[i * 3] * w;
+    ny += normals[i * 3 + 1] * w;
+    nz += normals[i * 3 + 2] * w;
+    total += w;
+  }
+  if (!total) return null;
+  const len = Math.hypot(nx, ny, nz);
+  if (len < 1e-20) return null;
+  return {
+    center: [cx / total, cy / total, cz / total],
+    normal: [nx / len, ny / len, nz / len],
+  };
 }
 
 /**
@@ -296,7 +442,7 @@ export function applyStroke(mesh: Mesh, fp: Footprint, tris: Triangulation, inpu
 
   // 法線。Standard は動く向きに、裏面マスクは向きの判定に使う。
   // **どちらも範囲の三角形から作る**ので、メッシュ全体には触らない
-  const normals = input.kind === "standard" || input.viewDir ? localNormals(mesh, fp, tris, stamp) : null;
+  const normals = NEEDS_NORMAL.has(input.kind) || input.viewDir ? localNormals(mesh, fp, tris, stamp) : null;
   if (input.viewDir && normals) {
     // カメラから面へ向かう向きと同じ側を向いている＝背を向けている。触らない
     const [dx, dy, dz] = input.viewDir;
@@ -305,6 +451,15 @@ export function applyStroke(mesh: Mesh, fp: Footprint, tris: Triangulation, inpu
       if (normals[i * 3] * dx + normals[i * 3 + 1] * dy + normals[i * 3 + 2] * dz > 0) weights[i] = 0;
     }
   }
+
+  // 平面は裏面マスクを掛けたあとの重みであてる（触らない所を勘定に入れない）
+  const plane = NEEDS_PLANE.has(input.kind) && normals ? localPlane(fp, normals, p, weights) : null;
+  /** 平面からの符号つき距離。外が正。 */
+  const signedTo = (v: number): number => {
+    const [cx, cy, cz] = plane!.center;
+    const [nx, ny, nz] = plane!.normal;
+    return (p[v * 3] - cx) * nx + (p[v * 3 + 1] - cy) * ny + (p[v * 3 + 2] - cz) * nz;
+  };
 
   const moved: number[] = [];
   if (input.kind === "standard" && normals) {
@@ -335,6 +490,97 @@ export function applyStroke(mesh: Mesh, fp: Footprint, tris: Triangulation, inpu
       p[v * 3] += mx * w;
       p[v * 3 + 1] += my * w;
       p[v * 3 + 2] += mz * w;
+      moved.push(v);
+    }
+  } else if ((input.kind === "claybuildup" || input.kind === "inflate" || input.kind === "damien") && normals) {
+    // 法線方向へ。深さの基準は Standard と同じ `DAB_DEPTH` にして、
+    // **強さの手触りを揃える**（実機で決めた 0.67 が全部に効くように）
+    const amount = input.radius * DAB_DEPTH * (input.invert ? -1 : 1);
+    for (let i = 0; i < n; i++) {
+      let w = weights[i];
+      if (w === 0) continue;
+      // Damien は減衰を 2 乗して細く鋭くする（`t⁴` になる）
+      if (input.kind === "damien") w *= w / Math.max(input.strength, 1e-6);
+      const k = w * amount;
+      const v = fp.verts[i];
+      p[v * 3] += normals[i * 3] * k;
+      p[v * 3 + 1] += normals[i * 3 + 1] * k;
+      p[v * 3 + 2] += normals[i * 3 + 2] * k;
+      moved.push(v);
+    }
+  } else if (input.kind === "pinch") {
+    // 範囲の中心へ寄せる。**寄る量は半径に対する割合**で決める
+    // （ワールド単位にすると大きい像で効かなくなる）
+    const [cx, cy, cz] = input.point;
+    const amount = DAB_DEPTH * (input.invert ? -1 : 1);
+    for (let i = 0; i < n; i++) {
+      const w = weights[i] * amount;
+      if (w === 0) continue;
+      const v = fp.verts[i];
+      const ex = (cx - p[v * 3]) * w;
+      const ey = (cy - p[v * 3 + 1]) * w;
+      const ez = (cz - p[v * 3 + 2]) * w;
+      // **ちょうど中心に居る頂点は動かない。** 動いていないものを返すと、
+      // 履歴の差分が無駄に太る（`sculpt.ts` の前置きの約束）
+      if (ex === 0 && ey === 0 && ez === 0) continue;
+      p[v * 3] += ex;
+      p[v * 3 + 1] += ey;
+      p[v * 3 + 2] += ez;
+      moved.push(v);
+    }
+  } else if ((input.kind === "clay" || input.kind === "flatten" || input.kind === "trim") && plane) {
+    const [nx, ny, nz] = plane.normal;
+    const sign = input.invert ? -1 : 1;
+    for (let i = 0; i < n; i++) {
+      const w = weights[i];
+      if (w === 0) continue;
+      const v = fp.verts[i];
+      const d = signedTo(v);
+      // Clay は平面より内側を上げる（土を盛る）。外側は動かさない
+      // Flatten は両側から平面へ寄せる
+      // Trim は平面より外だけ落とす
+      let k = 0;
+      if (input.kind === "flatten") k = -d * w;
+      else if (input.kind === "clay") k = d < 0 ? -d * w * sign : 0;
+      else k = d > 0 ? -d * w : 0;
+      if (k === 0) continue;
+      p[v * 3] += nx * k;
+      p[v * 3 + 1] += ny * k;
+      p[v * 3 + 2] += nz * k;
+      moved.push(v);
+    }
+  } else if (input.kind === "polish" && plane) {
+    // **先に隣の平均へ寄せて、そのあと平面へ寄せる。**
+    //
+    // 逆にすると、平均は「平らにする前」の位置から取ってあるので、
+    // 平均へ寄せた分が平らにした分を打ち消す（最初そう書いて、フラットより
+    // でこぼこが残った）。
+    //
+    // 平面への寄せは控えめ（半分）にして、形そのものは残す。ZBrush の
+    // Polish は「全体の形を保ったまま磨く」もので、Flatten とは別物。
+    const avg = localAverages(mesh, fp, tris, stamp);
+    const [cx, cy, cz] = plane.center;
+    const [nx, ny, nz] = plane.normal;
+    const next = new Float32Array(n * 3);
+    for (let i = 0; i < n; i++) {
+      const v = fp.verts[i];
+      const w = Math.min(1, weights[i]);
+      // 1. 隣の平均へ
+      const x = p[v * 3] + (avg[i * 3] - p[v * 3]) * w;
+      const y = p[v * 3 + 1] + (avg[i * 3 + 1] - p[v * 3 + 1]) * w;
+      const z = p[v * 3 + 2] + (avg[i * 3 + 2] - p[v * 3 + 2]) * w;
+      // 2. 平面へ（控えめに）
+      const d = ((x - cx) * nx + (y - cy) * ny + (z - cz) * nz) * w * 0.5;
+      next[i * 3] = x - nx * d;
+      next[i * 3 + 1] = y - ny * d;
+      next[i * 3 + 2] = z - nz * d;
+    }
+    for (let i = 0; i < n; i++) {
+      if (weights[i] === 0) continue;
+      const v = fp.verts[i];
+      p[v * 3] = next[i * 3];
+      p[v * 3 + 1] = next[i * 3 + 1];
+      p[v * 3 + 2] = next[i * 3 + 2];
       moved.push(v);
     }
   } else {

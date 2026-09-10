@@ -79,6 +79,7 @@ import {
 import {
   AppState,
   brushAt,
+  type BrushState,
   type BrushKind,
   type CompMode,
   type Display,
@@ -112,6 +113,7 @@ import { Gauge } from "./ui/gauges.js";
 import { Hud } from "./ui/hud.js";
 import {
   bevelSection,
+  brushSection,
   bridgeSection,
   cameraSection,
   connectSection,
@@ -319,6 +321,29 @@ const BRUSH_ICONS: Record<BrushKind, string> = {
   standard: ICONS.smooth,
   move: ICONS.move,
   smooth: ICONS.shade,
+  clay: ICONS.bClay,
+  claybuildup: ICONS.bClayBuildup,
+  inflate: ICONS.bInflate,
+  pinch: ICONS.bPinch,
+  flatten: ICONS.bFlatten,
+  trim: ICONS.bTrim,
+  damien: ICONS.bDamien,
+  polish: ICONS.bPolish,
+};
+
+/** ブラシの名前（`38` の T3）。トーストと一覧に出す。 */
+const BRUSH_NAMES: Record<BrushKind, { label: string; sub: string }> = {
+  standard: { label: "スタンダード", sub: "Standard" },
+  clay: { label: "クレイ", sub: "Clay · 平面から盛る" },
+  move: { label: "ムーブ", sub: "Move" },
+  inflate: { label: "インフレート", sub: "Inflate · 膨らませる" },
+  smooth: { label: "スムース", sub: "Smooth" },
+  flatten: { label: "フラット", sub: "Flatten · 平らにする" },
+  pinch: { label: "ピンチ", sub: "Pinch · 稜線を立てる" },
+  damien: { label: "ダミアン", sub: "Damien · 細く鋭く" },
+  claybuildup: { label: "クレイビルドアップ", sub: "ClayBuildup · 積み上げる" },
+  trim: { label: "トリム", sub: "Trim · 削り取る" },
+  polish: { label: "ポリッシュ", sub: "Polish · 磨く" },
 };
 
 const DISPLAY_ICONS: Record<Display, string> = {
@@ -458,6 +483,16 @@ export class App {
     else if (what === "down") await this.goLevel((this.state.selected?.activeLevel ?? 0) - 1);
     else if (what === "dropAbove") this.dropAboveLevel();
     else this.burnDownLevel();
+  }
+
+  /** 筆圧の効き（`38` の T4）。通し確認から式を確かめるため。 */
+  brushAtForTest(b: BrushState, pressure: number): { radius: number; strength: number } {
+    return brushAt(b, pressure);
+  }
+
+  /** 筆の長押しメニューと一覧（`38` の T3）。通し確認から中身を見るため。 */
+  brushMenuForTest(): { menu: RadialMenu; list: RadialItem[] } {
+    return { menu: this.brushMenu(), list: this.brushItems() };
   }
 
   /** マスクの長押しメニュー（`34` の T4）。通し確認から中身を叩くため。 */
@@ -3947,10 +3982,12 @@ export class App {
         kind: "button",
         id: "brush",
         icon: () => BRUSH_ICONS[this.state.brush.kind],
-        title: "ブラシ（長押しで スタンダード / ムーブ / スムース · 対称）",
+        title: "ブラシ（長押しで 11 種類 · 対称）",
         pressed: () => this.state.brush.symmetryX,
         badge: () => (this.state.brush.symmetryX ? "X" : ""),
         radial: () => this.brushMenu(),
+        radialList: () => this.brushItems(),
+        options: () => [brushSection(this.optionsState(), this.panelHost())],
         onTap: () => {},
       },
       { kind: "separator" },
@@ -4074,24 +4111,33 @@ export class App {
     };
   }
 
-  /** ブラシの長押しメニュー（`33` の T4）。種類と対称。 */
+  /**
+   * ブラシの長押しメニュー（`33` の T4。`38` の T3 で 11 種類に）。
+   *
+   * **8 方位はよく使う 8 つ。** 残り 3 つと対称は下の一覧へ落とす
+   * （段のメニューと同じ `radialList` の仕組み。`32` の T3）。
+   */
   private brushMenu(): RadialMenu {
-    const pick = (kind: BrushKind, label: string, sub: string): RadialItem => ({
-      label,
-      sub,
-      icon: BRUSH_ICONS[kind],
-      run: () => {
-        this.state.brush.kind = kind;
-        this.renderToolColumn();
-        this.hud.toast(`${label}ブラシ`);
-      },
-    });
-    const sym = this.state.brush.symmetryX;
     return {
-      N: pick("standard", "スタンダード", "Standard"),
-      E: pick("move", "ムーブ", "Move"),
-      W: pick("smooth", "スムース", "Smooth"),
-      S: {
+      N: this.brushItem("standard"),
+      NE: this.brushItem("clay"),
+      E: this.brushItem("move"),
+      SE: this.brushItem("inflate"),
+      S: this.brushItem("smooth"),
+      SW: this.brushItem("flatten"),
+      W: this.brushItem("pinch"),
+      NW: this.brushItem("damien"),
+    };
+  }
+
+  /** 一覧に落としたぶん（`38` の T3）。残りのブラシと対称。 */
+  private brushItems(): RadialItem[] {
+    const sym = this.state.brush.symmetryX;
+    return [
+      this.brushItem("claybuildup"),
+      this.brushItem("trim"),
+      this.brushItem("polish"),
+      {
         label: sym ? "対称を切る" : "対称を入れる",
         sub: "ローカル X",
         icon: ICONS.sym,
@@ -4100,6 +4146,21 @@ export class App {
           this.renderToolColumn();
           this.hud.toast(this.state.brush.symmetryX ? "X 対称 オン" : "X 対称 オフ");
         },
+      },
+    ];
+  }
+
+  /** ブラシ 1 つぶんの項目。 */
+  private brushItem(kind: BrushKind): RadialItem {
+    const { label, sub } = BRUSH_NAMES[kind];
+    return {
+      label,
+      sub,
+      icon: BRUSH_ICONS[kind],
+      run: () => {
+        this.state.brush.kind = kind;
+        this.renderToolColumn();
+        this.hud.toast(`${label}ブラシ`);
       },
     };
   }
@@ -4517,6 +4578,7 @@ export class App {
       attrDock: this.attrDock,
       isolate: !!this.viewport.pane.isolate,
       cut: this.state.cut,
+      brush: this.state.brush,
       bevel: this.state.bevel,
       bevelActive: this.bevel.active,
       extrudeDist: this.state.toolOpts.extrudeDist,
@@ -4744,6 +4806,14 @@ export class App {
         if (key === "segments") this.state.bevel.segments = value;
         else this.state.bevel.width = value;
         this.redoBevel();
+      },
+      onBrushChange: (key, value) => {
+        this.state.brush[key] = value;
+        this.rememberBrush();
+      },
+      onBrushPowChange: (key, value) => {
+        this.state.brush[key] = value;
+        this.rememberBrush();
       },
       onCutChange: (key, value) => {
         if (key === "edgeFlow") this.state.cut.edgeFlow = value as boolean;
@@ -5039,6 +5109,12 @@ export class App {
     this.state.preserveUvs = read("preserveUvs") !== "false";
     const step = Number(read("rotateStep"));
     if (Number.isFinite(step) && step >= 0) this.state.rotateStep = step;
+    try {
+      const bp = JSON.parse(read("brushPressure") ?? "null") as Partial<AppState["brush"]> | null;
+      if (bp) this.state.brush = { ...this.state.brush, ...bp };
+    } catch {
+      /* 保存が壊れていても既定で始める */
+    }
     try {
       const ui = JSON.parse(read("ui") ?? "null") as Partial<AppState["ui"]> | null;
       if (ui) this.state.ui = { ...this.state.ui, ...ui };
@@ -5447,6 +5523,20 @@ export class App {
   /** 修飾ボタンの置き場所（`29` の A-T1）。中身は `shell.css`。 */
   private applyClusterPos(): void {
     byId("vp").dataset.cluster = this.state.ui.clusterPos;
+  }
+
+  /** 筆圧の設定を残す（`38` の T4）。ブラシの種類と太さは残さない（作業中の値）。 */
+  private rememberBrush(): void {
+    const b = this.state.brush;
+    this.remember(
+      "brushPressure",
+      JSON.stringify({
+        pressureSize: b.pressureSize,
+        pressureStrength: b.pressureStrength,
+        pressureSizePow: b.pressureSizePow,
+        pressureStrengthPow: b.pressureStrengthPow,
+      }),
+    );
   }
 
   private rememberUi(): void {

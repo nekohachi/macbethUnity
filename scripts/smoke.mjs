@@ -1625,7 +1625,9 @@ const cornerOrder = await page.evaluate(async () => {
 });
 check(
   "スムースが隣でないもの（四角の対角）を数えない",
-  cornerOrder.worst < 1e-6 && cornerOrder.marked > 0 && cornerOrder.wrong === 0,
+  // **平らでない四角には一意な面積が無い**（`38` の T1 で面積の重みを入れて
+  // から 1e-5 台が残る）。対角を数えていれば桁違いにずれるので、この幅でも捕まる
+  cornerOrder.worst < 1e-4 && cornerOrder.marked > 0 && cornerOrder.wrong === 0,
   `コーナーを回しても差は最大 ${cornerOrder.worst.toExponential(1)} / 印 ${cornerOrder.marked} 本すべて面の辺（外れ ${cornerOrder.wrong}）`,
 );
 
@@ -1712,6 +1714,131 @@ check(
     sameSet(polesView.ball, ["灰", "青"]) &&
     sameSet(polesView.mixed, ["橙", "青"]),
   `平面 [${polesView.flat}] / 球 [${polesView.ball}] / 五角錐 [${polesView.mixed}] / 戻すと素の材質 ${polesView.backToPlain}`,
+);
+
+/* 17s. ブラシ 11 種と筆圧のカーブ（`38`） */
+const brushes = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const core = window.macbethCore;
+  const keep = app.state.doc.objects.slice();
+  const camBefore = app.viewport.saveLayout();
+  const modeBefore = app.state.mode;
+  const selBefore = app.state.selected;
+  const brushBefore = { ...app.state.brush };
+
+  app.state.doc.objects.length = 0;
+  const o = app.state.doc.addMesh(
+    core.PRIMITIVES.sphere.build({ ...core.defaultParams("sphere"), sdAxis: 24, sdHeight: 16 }),
+    "Brushes",
+  );
+  app.viewport.syncAll();
+  app.state.select(o);
+  app.setMode("sculpt");
+  await app.levelForTest("add");
+  await app.levelForTest("add");
+  app.viewport.frameSelected();
+  app.refresh();
+  await new Promise((r) => setTimeout(r, 120));
+
+  // 1. 8 方位に 8 種類、一覧に残り 3 つと対称
+  const { menu, list } = app.brushMenuForTest();
+  const dirs = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"].map((d) => menu[d]?.label);
+  const listLabels = list.map((i) => i.label);
+
+  // 2. 全種類で彫れて、形が変わる
+  const pane = document.getElementById("pane3d").getBoundingClientRect();
+  const gl = document.getElementById("gl");
+  const cx = pane.left + pane.width / 2;
+  const cy = pane.top + pane.height / 2;
+  const ev = (type, x, y) =>
+    new PointerEvent(type, {
+      pointerId: 81, pointerType: "pen", bubbles: true, cancelable: true,
+      clientX: x, clientY: y, pressure: 0.9, buttons: type === "pointerup" ? 0 : 1,
+    });
+  const drag = async () => {
+    gl.dispatchEvent(ev("pointerdown", cx - 40, cy));
+    for (let i = 1; i <= 16; i++) gl.dispatchEvent(ev("pointermove", cx - 40 + i * 5, cy));
+    gl.dispatchEvent(ev("pointerup", cx + 40, cy));
+    await new Promise((r) => setTimeout(r, 40));
+  };
+  const shown = () => o.shown(app.state.shownLevel(o)).positions;
+  const kinds = ["standard", "clay", "claybuildup", "inflate", "pinch", "flatten", "trim", "damien", "polish", "smooth"];
+  const carved = [];
+  for (const kind of kinds) {
+    app.state.brush.kind = kind;
+    app.refresh();
+    const was = shown().slice();
+    await drag();
+    const after = shown();
+    let n = 0;
+    for (let v = 0; v < was.length / 3; v++) {
+      if (Math.hypot(after[v * 3] - was[v * 3], after[v * 3 + 1] - was[v * 3 + 1], after[v * 3 + 2] - was[v * 3 + 2]) > 1e-6) n++;
+    }
+    carved.push({ kind, moved: n, entry: app.history.lastEntry()?.kind });
+  }
+  const allCarved = carved.every((c) => c.moved > 3 && c.entry === "sculpt");
+
+  // 3. マスクが全種類に効く
+  const level = o.activeLevel;
+  o.mask = { level, values: new Float32Array(o.stack.level(level).vertexCount).fill(1) };
+  app.viewport.refreshMaskAll(o);
+  let maskedMoved = 0;
+  for (const kind of kinds) {
+    app.state.brush.kind = kind;
+    app.refresh();
+    const was = shown().slice();
+    await drag();
+    const after = shown();
+    for (let i = 0; i < was.length; i++) if (Math.abs(after[i] - was[i]) > 1e-9) maskedMoved++;
+  }
+  o.mask = null;
+  app.viewport.refreshMaskAll(o);
+
+  // 4. 筆圧のカーブ
+  const strengthAt = (pow, pressure) =>
+    core.brushAt
+      ? core.brushAt({ ...app.state.brush, pressureStrengthPow: pow }, pressure).strength
+      : null;
+  const soft = app.brushAtForTest({ ...app.state.brush, pressureStrengthPow: 1 }, 0.4).strength;
+  const hard = app.brushAtForTest({ ...app.state.brush, pressureStrengthPow: 4 }, 0.4).strength;
+
+  // 5. 筆のカットインに筆圧の欄が出る
+  const btn = document.querySelector('#dockLeft [data-group="brush"]');
+  btn?.dispatchEvent(new PointerEvent("pointerdown", {
+    pointerId: 82, pointerType: "touch", bubbles: true, cancelable: true, isPrimary: true,
+    clientX: btn.getBoundingClientRect().left + 10, clientY: btn.getBoundingClientRect().top + 10,
+  }));
+  await new Promise((r) => setTimeout(r, 40));
+  window.dispatchEvent(new PointerEvent("pointerup", { pointerId: 82, pointerType: "touch", bubbles: true }));
+  await new Promise((r) => setTimeout(r, 120));
+  const panelText = document.querySelector('.cutin[data-gauge="brush"]')?.textContent ?? "";
+
+  // 片づけ
+  Object.assign(app.state.brush, brushBefore);
+  app.setMode(modeBefore);
+  app.state.doc.objects.length = 0;
+  app.state.doc.objects.push(...keep);
+  app.viewport.syncAll();
+  app.viewport.restoreLayout(camBefore);
+  app.state.select(selBefore ?? keep[0] ?? null);
+  app.history.clear();
+  app.refresh();
+  return { dirs, listLabels, carved, allCarved, maskedMoved, soft, hard, panelText };
+});
+check(
+  "ブラシ 11 種: 8 方位 + 一覧、全部彫れてマスクが効き、筆圧のカーブが出る",
+  brushes.dirs.filter(Boolean).length === 8 &&
+    brushes.listLabels.length === 4 &&
+    brushes.listLabels.some((l) => l.includes("対称")) &&
+    brushes.allCarved &&
+    // マスク 1 なら、どの種類でも 1 ミリも動かない
+    brushes.maskedMoved === 0 &&
+    brushes.soft > brushes.hard &&
+    brushes.panelText.includes("筆圧"),
+  `8 方位 ${brushes.dirs.join("/")} / 一覧 ${brushes.listLabels.join("・")} / ` +
+    `彫れた ${brushes.carved.filter((c) => c.moved > 3).length}/${brushes.carved.length} 種類 / ` +
+    `マスク 1 で動いた成分 ${brushes.maskedMoved} / ` +
+    `カーブ 1 で ${brushes.soft.toFixed(3)} → 4 で ${brushes.hard.toFixed(3)} / カットイン「${brushes.panelText.slice(0, 12)}」`,
 );
 
 /* 17r. スカルプト中のカメラとマニピュレータ（`36`） */

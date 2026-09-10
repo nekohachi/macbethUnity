@@ -15,6 +15,7 @@ import {
   MeshBuilder,
   Multires,
   strokeFootprint,
+  type BrushKind,
   type Mesh,
   type StrokeInput,
 } from "../src/core/index.js";
@@ -22,6 +23,11 @@ import {
 /** 平面を 1 枚。sd を上げると細かくなる。 */
 function plane(sd = 12): Mesh {
   return PRIMITIVES.plane.build({ ...defaultParams("plane"), sdW: sd, sdH: sd });
+}
+
+/** 球。インフレートの見どころ。 */
+function sphereMesh(sd = 16): Mesh {
+  return PRIMITIVES.sphere.build({ ...defaultParams("sphere"), sdAxis: sd, sdHeight: sd });
 }
 
 /** そのメッシュで 1 回ブラシを当てる。戻り値は動いた頂点。 */
@@ -475,8 +481,10 @@ describe("隣は面の本物の辺だけ（`35` の T1）", () => {
     for (let k = 1; k < runs.length; k++) {
       let worst = 0;
       for (let i = 0; i < runs[0].length; i++) worst = Math.max(worst, Math.abs(runs[k][i] - runs[0][i]));
-      // 足す順が変わるぶんの丸めだけ（対角を数えていれば桁違いにずれる）
-      expect(worst).toBeLessThan(1e-6);
+      // **平らでない四角には一意な面積が無い**（`38` の T1 で面積の重みを
+      // 入れてから 1.6e-5 残る。座標が 1 前後なので 0.002%）。対角を数えて
+      // いれば桁違いにずれるので、この幅でも捕まる
+      expect(worst).toBeLessThan(1e-4);
     }
   });
 
@@ -508,5 +516,211 @@ describe("隣は面の本物の辺だけ（`35` の T1）", () => {
     stroke(m, { kind: "smooth", point: at, radius: spacing * 1.6, strength: 1, invert: false });
     // 対角を 2 つ数えていたときは 2/6 = 0.33 ほど持ち上がっていた
     expect(Math.abs(m.positions[mid * 3 + 1])).toBeLessThan(1e-6);
+  });
+});
+
+/**
+ * 足したブラシ 8 つ（`38` の T2）。
+ *
+ * 共通で見るのは 3 つ。**半径の外は動かない・マスク 1 で動かない・
+ * 動いた頂点だけ返す。** そのうえで種類ごとの持ち味を 1 つずつ。
+ */
+describe("ブラシ 8 種（`38` の T2）", () => {
+  const KINDS: BrushKind[] = ["clay", "claybuildup", "inflate", "pinch", "flatten", "trim", "damien", "polish"];
+  const base: Omit<StrokeInput, "kind" | "point"> = { radius: 0.4, strength: 1, invert: false };
+  const at: [number, number, number] = [0, 0, 0];
+
+  /** でこぼこにした板。平面あてを使う種類の見どころ。 */
+  function bumpy(sd = 14): Mesh {
+    const m = plane(sd);
+    for (let v = 0; v < m.vertexCount; v++) m.positions[v * 3 + 1] += ((v % 5) - 2) * 0.01;
+    return m;
+  }
+  const spreadY = (m: Mesh, within: number): number => {
+    const ys: number[] = [];
+    for (let v = 0; v < m.vertexCount; v++) {
+      if (Math.hypot(m.positions[v * 3], m.positions[v * 3 + 2]) < within) ys.push(m.positions[v * 3 + 1]);
+    }
+    const mean = ys.reduce((a, b) => a + b, 0) / ys.length;
+    return ys.reduce((s, y) => s + (y - mean) ** 2, 0) / ys.length;
+  };
+
+  it("どの種類も、半径の外は 1 ミリも動かない", () => {
+    for (const kind of KINDS) {
+      const m = bumpy();
+      const before = Array.from(m.positions);
+      stroke(m, { ...base, kind, point: at });
+      for (let v = 0; v < m.vertexCount; v++) {
+        const d = Math.hypot(m.positions[v * 3] - at[0], m.positions[v * 3 + 1] - at[1], m.positions[v * 3 + 2] - at[2]);
+        if (d < base.radius) continue;
+        for (let k = 0; k < 3; k++) {
+          expect(Math.abs(m.positions[v * 3 + k] - before[v * 3 + k])).toBeLessThan(1e-9);
+        }
+      }
+    }
+  });
+
+  it("どの種類も、マスク 1 なら動かない", () => {
+    for (const kind of KINDS) {
+      const m = bumpy();
+      const before = Array.from(m.positions);
+      const moved = stroke(m, { ...base, kind, point: at, mask: new Float32Array(m.vertexCount).fill(1) });
+      expect(moved.length, kind).toBe(0);
+      expect(Array.from(m.positions), kind).toEqual(before);
+    }
+  });
+
+  it("どの種類も、返すのは実際に動いた頂点だけ", () => {
+    for (const kind of KINDS) {
+      const m = bumpy();
+      const before = Array.from(m.positions);
+      const moved = stroke(m, { ...base, kind, point: at });
+      expect(moved.length, kind).toBeGreaterThan(0);
+      for (const v of moved) {
+        const d = Math.hypot(
+          m.positions[v * 3] - before[v * 3],
+          m.positions[v * 3 + 1] - before[v * 3 + 1],
+          m.positions[v * 3 + 2] - before[v * 3 + 2],
+        );
+        expect(d, `${kind} の頂点 ${v}`).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  it("フラットはでこぼこを均す。平らな板は平らなまま", () => {
+    // **筆の中ほどで見る。** ふちは減衰が 0 に近くて動かないので、
+    // 半径いっぱいで測ると「中は平ら・ふちはでこぼこ」の形になって
+    // ばらつきがかえって増える（最初そう書いて落ちた）
+    const m = bumpy(24);
+    const was = spreadY(m, base.radius * 0.5);
+    for (let i = 0; i < 4; i++) stroke(m, { ...base, kind: "flatten", point: at });
+    expect(spreadY(m, base.radius * 0.5)).toBeLessThan(was * 0.5);
+
+    // もともと平らなら動かない（平面が板と重なるので）
+    const flat = plane(14);
+    const before = Array.from(flat.positions);
+    stroke(flat, { ...base, kind: "flatten", point: at });
+    for (let i = 0; i < flat.positions.length; i++) {
+      expect(Math.abs(flat.positions[i] - before[i])).toBeLessThan(1e-6);
+    }
+  });
+
+  it("トリムは平面より外だけ削り、内側は動かさない", () => {
+    const m = bumpy();
+    const before = Array.from(m.positions);
+    stroke(m, { ...base, kind: "trim", point: at });
+    let cut = 0;
+    for (let v = 0; v < m.vertexCount; v++) {
+      const dy = m.positions[v * 3 + 1] - before[v * 3 + 1];
+      if (Math.abs(dy) < 1e-9) continue;
+      // 動いたなら必ず下向き（外を落とす）
+      expect(dy).toBeLessThan(0);
+      cut++;
+    }
+    expect(cut).toBeGreaterThan(0);
+  });
+
+  it("クレイは盛る（下がる頂点が無い）", () => {
+    const m = bumpy();
+    const before = Array.from(m.positions);
+    stroke(m, { ...base, kind: "clay", point: at });
+    let up = 0;
+    for (let v = 0; v < m.vertexCount; v++) {
+      const dy = m.positions[v * 3 + 1] - before[v * 3 + 1];
+      if (Math.abs(dy) < 1e-9) continue;
+      expect(dy).toBeGreaterThan(0);
+      up++;
+    }
+    expect(up).toBeGreaterThan(0);
+  });
+
+  it("インフレートは球を膨らませる", () => {
+    const m = sphereMesh(16);
+    const at2: [number, number, number] = [0, 0, 1];
+    const radiusAt = (mesh: Mesh, v: number) =>
+      Math.hypot(mesh.positions[v * 3], mesh.positions[v * 3 + 1], mesh.positions[v * 3 + 2]);
+    const rest = sphereMesh(16);
+    const moved = stroke(m, { ...base, kind: "inflate", point: at2, radius: 0.5 });
+    expect(moved.length).toBeGreaterThan(0);
+    for (const v of moved) expect(radiusAt(m, v)).toBeGreaterThan(radiusAt(rest, v));
+  });
+
+  it("ピンチは範囲の頂点を中心へ寄せる", () => {
+    const m = plane(14);
+    const spread = (mesh: Mesh) => {
+      let s = 0;
+      let n = 0;
+      for (let v = 0; v < mesh.vertexCount; v++) {
+        const d = Math.hypot(mesh.positions[v * 3], mesh.positions[v * 3 + 2]);
+        if (d > base.radius) continue;
+        s += d;
+        n++;
+      }
+      return s / n;
+    };
+    const was = spread(m);
+    for (let i = 0; i < 4; i++) stroke(m, { ...base, kind: "pinch", point: at });
+    expect(spread(m)).toBeLessThan(was);
+  });
+
+  it("ダミアンは同じ強さのスタンダードより細い", () => {
+    const a = plane(20);
+    const b = plane(20);
+    const wide = stroke(a, { ...base, kind: "standard", point: at });
+    const thin = stroke(b, { ...base, kind: "damien", point: at });
+    // 触る範囲は同じでも、実際に動く量が中心へ寄る。
+    // 中心から離れた頂点の動きを比べる
+    const rest = plane(20);
+    const farMove = (m: Mesh) => {
+      let s = 0;
+      for (let v = 0; v < m.vertexCount; v++) {
+        const d = Math.hypot(m.positions[v * 3], m.positions[v * 3 + 2]);
+        if (d < base.radius * 0.5 || d > base.radius) continue;
+        s += Math.abs(m.positions[v * 3 + 1] - rest.positions[v * 3 + 1]);
+      }
+      return s;
+    };
+    expect(wide.length).toBeGreaterThan(0);
+    expect(thin.length).toBeGreaterThan(0);
+    expect(farMove(b)).toBeLessThan(farMove(a) * 0.6);
+  });
+
+  it("ポリッシュはでこぼこを取るが、フラットより形を残す", () => {
+    // ZBrush の Polish は「全体の形を保ったまま磨く」もので、Flatten とは別物。
+    // 見るのは 2 つ: でこぼこが減ること、動かす量がフラットより小さいこと
+    const rest = bumpy(24);
+    const a = bumpy(24);
+    const b = bumpy(24);
+    const was = spreadY(rest, base.radius * 0.5);
+    for (let i = 0; i < 2; i++) stroke(a, { ...base, kind: "flatten", point: at });
+    for (let i = 0; i < 2; i++) stroke(b, { ...base, kind: "polish", point: at });
+    expect(spreadY(b, base.radius * 0.5)).toBeLessThan(was);
+
+    const travel = (m: Mesh) => {
+      let s = 0;
+      for (let v = 0; v < m.vertexCount; v++) {
+        s += Math.hypot(
+          m.positions[v * 3] - rest.positions[v * 3],
+          m.positions[v * 3 + 1] - rest.positions[v * 3 + 1],
+          m.positions[v * 3 + 2] - rest.positions[v * 3 + 2],
+        );
+      }
+      return s;
+    };
+    expect(travel(b)).toBeLessThan(travel(a));
+  });
+
+  it("クレイビルドアップは重ねると積み上がる", () => {
+    const m = plane(14);
+    const rest = plane(14);
+    const highest = () => {
+      let h = 0;
+      for (let v = 0; v < m.vertexCount; v++) h = Math.max(h, m.positions[v * 3 + 1] - rest.positions[v * 3 + 1]);
+      return h;
+    };
+    stroke(m, { ...base, kind: "claybuildup", point: at });
+    const one = highest();
+    for (let i = 0; i < 3; i++) stroke(m, { ...base, kind: "claybuildup", point: at });
+    expect(highest()).toBeGreaterThan(one * 2);
   });
 });

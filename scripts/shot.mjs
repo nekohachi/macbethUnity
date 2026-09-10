@@ -1066,6 +1066,28 @@ const scenes = {
     await new Promise((done) => setTimeout(done, 700));
   },
 
+  /** `38` の T3: 筆の長押しメニュー。8 方位 + 一覧。 */
+  "38-t3-brushes": async () => {
+    const app = window.macbeth;
+    const core = window.macbethCore;
+    app.state.doc.objects.length = 0;
+    const o = app.state.doc.addMesh(
+      core.PRIMITIVES.sphere.build({ ...core.defaultParams("sphere"), sdAxis: 16, sdHeight: 12 }),
+      "Head",
+    );
+    app.viewport.syncAll();
+    app.state.select(o);
+    app.setMode("sculpt");
+    await app.levelForTest("add");
+    app.viewport.frameSelected();
+    app.refresh();
+    const btn = document.querySelector('#dockLeft [data-group="brush"]');
+    const r = btn.getBoundingClientRect();
+    const at = { clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, pointerId: 1, isPrimary: true };
+    btn.dispatchEvent(new PointerEvent("pointerdown", { ...at, bubbles: true }));
+    await new Promise((done) => setTimeout(done, 700));
+  },
+
   /** `34`: マスクを描いたところ。塗った所が暗くなる。 */
   "34-mask": async () => {
     const app = window.macbeth;

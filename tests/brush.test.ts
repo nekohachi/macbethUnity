@@ -45,6 +45,8 @@ describe("ブラシの筆圧", () => {
     radius: 1,
     invert: false,
     pressureSize: true,
+    pressureSizePow: 1,
+    pressureStrengthPow: 2,
     pressureStrength: true,
     symmetryX: true,
     backfaceMask: true,
@@ -76,5 +78,52 @@ describe("ブラシの筆圧", () => {
 
   it("1 を超える筆圧は 1 で頭打ち", () => {
     expect(brushAt(base, 3)).toEqual(brushAt(base, 1));
+  });
+});
+
+/**
+ * 筆圧のカーブ（`38` の T4）。効き = 筆圧 ^ pow。
+ */
+describe("筆圧のカーブ", () => {
+  const b: BrushState = {
+    kind: "standard",
+    strength: 1,
+    radius: 1,
+    invert: false,
+    pressureSize: true,
+    pressureSizePow: 1,
+    pressureStrengthPow: 2,
+    pressureStrength: true,
+    symmetryX: false,
+    backfaceMask: true,
+  };
+
+  it("カーブが小さいほど、軽い筆圧でも効く", () => {
+    const light = 0.4;
+    const soft = brushAt({ ...b, pressureStrengthPow: 1 }, light).strength;
+    const mid = brushAt({ ...b, pressureStrengthPow: 2 }, light).strength;
+    const hard = brushAt({ ...b, pressureStrengthPow: 4 }, light).strength;
+    expect(soft).toBeGreaterThan(mid);
+    expect(mid).toBeGreaterThan(hard);
+    // 目一杯押せばカーブに関わらず同じ
+    for (const pow of [0.25, 1, 4]) {
+      expect(brushAt({ ...b, pressureStrengthPow: pow }, 1).strength).toBeCloseTo(1, 6);
+    }
+  });
+
+  it("サイズと強さで別々に効く", () => {
+    const at = brushAt({ ...b, pressureSizePow: 4, pressureStrengthPow: 1 }, 0.5);
+    const flipped = brushAt({ ...b, pressureSizePow: 1, pressureStrengthPow: 4 }, 0.5);
+    expect(at.radius).toBeLessThan(flipped.radius);
+    expect(at.strength).toBeGreaterThan(flipped.strength);
+  });
+
+  it("切っていればカーブは効かない", () => {
+    const off = { ...b, pressureSize: false, pressureStrength: false };
+    for (const pow of [0.25, 4]) {
+      const r = brushAt({ ...off, pressureSizePow: pow, pressureStrengthPow: pow }, 0.2);
+      expect(r.radius).toBe(1);
+      expect(r.strength).toBe(1);
+    }
   });
 });

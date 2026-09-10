@@ -402,10 +402,24 @@ export class StrokeDriver {
   }
 }
 
-const BRUSH_LABEL: Record<string, string> = {
+/**
+ * 履歴に出すブラシの名前（`38` の T3 で 11 種類に）。
+ *
+ * `Record<BrushKind, string>` にしておくと、種類を足したときに
+ * 書き忘れをコンパイラが見つける（`35` の HUD で `undefined` が出た教訓）。
+ */
+const BRUSH_LABEL: Record<BrushKind, string> = {
   standard: "スタンダード",
   move: "ムーブ",
   smooth: "スムース",
+  clay: "クレイ",
+  claybuildup: "クレイビルドアップ",
+  inflate: "インフレート",
+  pinch: "ピンチ",
+  flatten: "フラット",
+  trim: "トリム",
+  damien: "ダミアン",
+  polish: "ポリッシュ",
 };
 
 /**

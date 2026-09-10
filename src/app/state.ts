@@ -109,6 +109,17 @@ export interface BrushState {
   pressureSize: boolean;
   /** 筆圧を強度に効かせる。 */
   pressureStrength: boolean;
+  /**
+   * 筆圧のカーブ（`38` の T4）。**効き = 筆圧 ^ pow。**
+   *
+   * 1 なら軽く触れただけで効き、大きいほど押し込まないと効かない。
+   * 半径と強度で別に持つ（`05` の「それぞれ独立したカーブで」）。
+   *
+   * **曲線の編集 UI は作らない。** 点を打つ UI はタブレットで扱いにくく、
+   * 数 1 つで足りる。既定は強度 2 / 半径 1 で、`33` の手触りのまま。
+   */
+  pressureSizePow: number;
+  pressureStrengthPow: number;
   /** ローカル X で鏡映（`33` の T4）。 */
   symmetryX: boolean;
   /**
@@ -129,9 +140,11 @@ export interface BrushState {
  */
 export function brushAt(b: BrushState, pressure: number): { radius: number; strength: number } {
   const p = pressure > 0 ? Math.min(1, pressure) : 0.5;
+  // カーブは数 1 つ（`38` の T4）。既定は半径 1 / 強度 2 で、`33` の手触りのまま
+  const curve = (pow: number): number => (pow === 1 ? p : Math.pow(p, pow));
   return {
-    radius: b.radius * (b.pressureSize ? 0.35 + 0.65 * p : 1),
-    strength: b.strength * (b.pressureStrength ? p * p : 1),
+    radius: b.radius * (b.pressureSize ? 0.35 + 0.65 * curve(b.pressureSizePow) : 1),
+    strength: b.strength * (b.pressureStrength ? curve(b.pressureStrengthPow) : 1),
   };
 }
 
@@ -280,6 +293,8 @@ export class AppState {
     invert: false,
     backfaceMask: true,
     pressureSize: true,
+    pressureSizePow: 1,
+    pressureStrengthPow: 2,
     pressureStrength: true,
     symmetryX: true,
   };
