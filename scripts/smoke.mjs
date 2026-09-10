@@ -1931,6 +1931,177 @@ check(
     `表示 ${light.displayBefore} → ${light.displayInSculpt} → ${light.displayBack} / 裏面 ${light.cullModel} → ${light.cullSculpt}（side ${light.sideInSculpt}） → ${light.cullBack}`,
 );
 
+/* 17u. ブラシを ZBrush に合わせる（`39`）: ALT のタップ、スタンダードの向き、ムーブの画面平面と法線 */
+const zb = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const core = window.macbethCore;
+  const keep = [...app.state.doc.objects];
+  const keepSel = app.state.selected;
+  const camBefore = app.viewport.saveLayout();
+  const kindBefore = app.state.brush.kind;
+  const radiusBefore = app.state.brush.radius;
+  const symBefore = app.state.brush.symmetryX;
+  app.setMode("model");
+  app.state.doc.objects.length = 0;
+  const o = app.state.doc.addMesh(
+    core.PRIMITIVES.sphere.build({ ...core.defaultParams("sphere"), sdAxis: 32, sdHeight: 24 }),
+    "ZB",
+  );
+  app.viewport.syncAll();
+  app.state.select(o);
+  app.setMode("sculpt");
+  await app.levelForTest("add");
+  app.viewport.setView("front");
+  app.viewport.frameSelected();
+  app.state.brush.symmetryX = false;
+  app.refresh();
+  // **ここで履歴を空にする。** 下の drag は「取り消せる限り取り消す」ので、
+  // 段を足した履歴が残っていると段まで消えて、2 本目から彫れなくなる
+  app.history.clear();
+  await new Promise((r) => setTimeout(r, 120));
+
+  const pane = document.getElementById("pane3d").getBoundingClientRect();
+  const gl = document.getElementById("gl");
+  const cx = pane.left + pane.width / 2;
+  const cy = pane.top + pane.height / 2;
+  const ev = (type, x, y, alt = false) =>
+    new PointerEvent(type, {
+      pointerId: 80, pointerType: "pen", bubbles: true, cancelable: true,
+      clientX: x, clientY: y, pressure: 0.9, buttons: type === "pointerup" ? 0 : 1, altKey: alt,
+    });
+  const shown = () => o.shown(app.state.shownLevel(o)).positions;
+  const drag = async (x0, y0, dx, dy, steps = 10, alt = false) => {
+    const before = shown().slice();
+    gl.dispatchEvent(ev("pointerdown", x0, y0, alt));
+    for (let i = 1; i <= steps; i++) gl.dispatchEvent(ev("pointermove", x0 + (dx * i) / steps, y0 + (dy * i) / steps, alt));
+    gl.dispatchEvent(ev("pointerup", x0 + dx, y0 + dy, alt));
+    await new Promise((r) => setTimeout(r, 40));
+    const after = shown();
+    // 動いた頂点と、その変位の合計
+    const moved = [];
+    let sx = 0, sy = 0, sz = 0;
+    for (let v = 0; v < before.length / 3; v++) {
+      const ex = after[v * 3] - before[v * 3], ey = after[v * 3 + 1] - before[v * 3 + 1], ez = after[v * 3 + 2] - before[v * 3 + 2];
+      if (Math.hypot(ex, ey, ez) <= 1e-7) continue;
+      moved.push({ v, ex, ey, ez, z: before[v * 3 + 2] });
+      sx += ex; sy += ey; sz += ez;
+    }
+    while (app.history.canUndo) app.history.undo();
+    return { moved, sum: [sx, sy, sz] };
+  };
+  // 手前（+Z）の面を軽く彫る。カメラは前（+Z から -Z を見る）
+  const radial = (m) => {
+    // 変位が半径方向（外向き）なら正
+    let out = 0;
+    for (const e of m.moved) out += e.ez;
+    return out;
+  };
+
+  /* 1. ALT のボタンをタップしてから彫る → 引っ込む。もう一度タップ → 盛る */
+  app.state.brush.kind = "standard";
+  document.getElementById("modAlt").click();
+  const altLatched = app.state.mods.alt;
+  const carved = await drag(cx, cy, 40, 0);
+  document.getElementById("modAlt").click();
+  const raised = await drag(cx, cy, 40, 0);
+  /* 1b. 物理 ALT（altKey）でも引っ込む */
+  const carvedKey = await drag(cx, cy, 40, 0, 10, true);
+
+  /* 2. スタンダードの変位は互いに平行。インフレートは半径方向 */
+  const std = await drag(cx, cy, 0, 0, 1);
+  let parallel = true;
+  if (std.moved.length) {
+    const f = std.moved[0];
+    const fl = Math.hypot(f.ex, f.ey, f.ez);
+    for (const e of std.moved) {
+      const l = Math.hypot(e.ex, e.ey, e.ez);
+      const cx_ = e.ey * f.ez - e.ez * f.ey, cy_ = e.ez * f.ex - e.ex * f.ez, cz_ = e.ex * f.ey - e.ey * f.ex;
+      if (Math.hypot(cx_, cy_, cz_) / (l * fl) > 1e-3) parallel = false;
+    }
+  }
+
+  /* 3. ムーブ: 右へ引くと変位は画面の右（奥行き成分が小さい）。模型の外まで引いても止まらない */
+  app.state.brush.kind = "move";
+  app.state.brush.radius = 0.5;
+  app.refresh();
+  const mv = await drag(cx, cy, 60, 0);
+  const mvLen = Math.hypot(...mv.sum);
+  const mvDepth = Math.abs(mv.sum[2]) / (mvLen || 1);
+  // 右端（シルエットの手前）から、模型の外へ 200px 引く。
+  // **シルエットは当たりで探す**（外から押すとタンブルになってカメラが回り、
+  // あとの判定が全部狂う。最初そうなった）
+  let edgeX = cx;
+  for (let x = cx; x < pane.width; x += 4) {
+    if (!app.strokeForTest({ x: x - pane.left, y: cy - pane.top }).hit) {
+      edgeX = x;
+      break;
+    }
+  }
+  const outside = await drag(edgeX - 16, cy, 200, 0, 20);
+  const outLen = Math.hypot(...outside.sum);
+  /* 4. ALT + ムーブ: 変位は押した点の法線（正面の中心なら +Z）に平行 */
+  app.viewport.setView("front");
+  app.refresh();
+  await new Promise((r) => setTimeout(r, 60));
+  const nm = await drag(cx, cy, 0, -60, 10, true);
+  const nmLen = Math.hypot(...nm.sum);
+  const nmAlong = nm.sum[2] / (nmLen || 1);
+  /* 5. 押した瞬間の頂点を最後まで掴む（途中で増えない） */
+  let grabGrew = false;
+  {
+    const before = shown().slice();
+    gl.dispatchEvent(ev("pointerdown", cx, cy));
+    const count = () => {
+      const after = shown();
+      let n = 0;
+      for (let v = 0; v < before.length / 3; v++) {
+        if (Math.hypot(after[v * 3] - before[v * 3], after[v * 3 + 1] - before[v * 3 + 1], after[v * 3 + 2] - before[v * 3 + 2]) > 1e-7) n++;
+      }
+      return n;
+    };
+    gl.dispatchEvent(ev("pointermove", cx + 20, cy));
+    const n1 = count();
+    for (let i = 2; i <= 8; i++) gl.dispatchEvent(ev("pointermove", cx + i * 20, cy));
+    const n2 = count();
+    gl.dispatchEvent(ev("pointerup", cx + 160, cy));
+    await new Promise((r) => setTimeout(r, 40));
+    grabGrew = n2 > n1;
+    while (app.history.canUndo) app.history.undo();
+    var grabN = [n1, n2];
+  }
+
+  app.state.brush.kind = kindBefore;
+  app.state.brush.radius = radiusBefore;
+  app.state.brush.symmetryX = symBefore;
+  app.state.mods.alt = "off";
+  app.setMode("model");
+  app.state.doc.objects.length = 0;
+  app.state.doc.objects.push(...keep);
+  app.viewport.syncAll();
+  if (keepSel) app.state.select(keepSel);
+  app.viewport.restoreLayout(camBefore);
+  app.history.clear();
+  app.refresh();
+  return {
+    altLatched, carved: radial(carved), raised: radial(raised), carvedKey: radial(carvedKey),
+    stdMoved: std.moved.length, parallel,
+    mvMoved: mv.moved.length, mvRight: mv.sum[0], mvDepth, outMoved: outside.moved.length, outLen, edge: Math.round(edgeX - cx),
+    nmMoved: nm.moved.length, nmAlong, grabGrew, grabN,
+  };
+});
+check(
+  "ブラシを ZBrush に: ALT のタップで引っ込み、スタンダードは 1 本の法線、ムーブは画面平面で外まで引けて ALT で法線に沿う",
+  zb.altLatched === "on" && zb.carved < 0 && zb.raised > 0 && zb.carvedKey < 0 &&
+    zb.stdMoved > 10 && zb.parallel &&
+    zb.mvMoved > 10 && zb.mvRight > 0 && zb.mvDepth < 0.1 &&
+    zb.outMoved > 10 && zb.outLen > 0.5 &&
+    zb.nmMoved > 10 && Math.abs(zb.nmAlong) > 0.95 &&
+    !zb.grabGrew,
+  `ALT ${zb.altLatched} / 彫り ${zb.carved.toFixed(3)} · 盛り ${zb.raised.toFixed(3)} · altKey ${zb.carvedKey.toFixed(3)} / ` +
+    `スタンダード ${zb.stdMoved} 頂点 平行 ${zb.parallel} / ムーブ ${zb.mvMoved} 頂点 右 ${zb.mvRight.toFixed(3)} 奥行き ${zb.mvDepth.toFixed(3)} / ` +
+    `外まで（縁 ${zb.edge}px）${zb.outMoved} 頂点 ${zb.outLen.toFixed(2)} / ALT ムーブ ${zb.nmMoved} 頂点 法線成分 ${zb.nmAlong.toFixed(3)} / 掴み ${zb.grabN.join(" → ")}`,
+);
+
 /* 17r. スカルプト中のカメラとマニピュレータ（`36`） */
 const sculptCam = await page.evaluate(async () => {
   const app = window.macbeth;

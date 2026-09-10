@@ -724,3 +724,182 @@ describe("ブラシ 8 種（`38` の T2）", () => {
     expect(highest()).toBeGreaterThan(one * 2);
   });
 });
+
+describe("ZBrush に合わせる（`39`）", () => {
+  const base: Omit<StrokeInput, "kind" | "point"> = { radius: 0.4, strength: 1, invert: false };
+  const at: [number, number, number] = [0, 0, 0];
+  const top: [number, number, number] = [0, 0, 1];
+
+  /** 動いたベクトル（v ごと）。 */
+  const displacement = (after: Mesh, before: Mesh, v: number): [number, number, number] => [
+    after.positions[v * 3] - before.positions[v * 3],
+    after.positions[v * 3 + 1] - before.positions[v * 3 + 1],
+    after.positions[v * 3 + 2] - before.positions[v * 3 + 2],
+  ];
+  const len = (a: [number, number, number]) => Math.hypot(a[0], a[1], a[2]);
+  const cross = (a: [number, number, number], b: [number, number, number]): [number, number, number] => [
+    a[1] * b[2] - a[2] * b[1],
+    a[2] * b[0] - a[0] * b[2],
+    a[0] * b[1] - a[1] * b[0],
+  ];
+
+  it("T2: スタンダードは球の上で 1 本の法線に平行に動く", () => {
+    const m = sphereMesh(24);
+    const rest = sphereMesh(24);
+    const moved = stroke(m, { ...base, kind: "standard", point: top, radius: 0.5 });
+    expect(moved.length).toBeGreaterThan(10);
+    const first = displacement(m, rest, moved[0]);
+    for (const v of moved) {
+      const d = displacement(m, rest, v);
+      // 互いに平行（外積の長さが 0）
+      expect(len(cross(d, first)) / (len(d) * len(first))).toBeLessThan(1e-3);
+    }
+  });
+
+  it("T2: インフレートは頂点ごとの法線（半径方向）に動く", () => {
+    const m = sphereMesh(24);
+    const rest = sphereMesh(24);
+    const moved = stroke(m, { ...base, kind: "inflate", point: top, radius: 0.5 });
+    expect(moved.length).toBeGreaterThan(10);
+    for (const v of moved) {
+      const d = displacement(m, rest, v);
+      const r: [number, number, number] = [rest.positions[v * 3], rest.positions[v * 3 + 1], rest.positions[v * 3 + 2]];
+      expect(len(cross(d, r)) / (len(d) * len(r))).toBeLessThan(2e-2);
+    }
+  });
+
+  it("T3: クレイは平らな板に層を盛る（中心が strength × h）", () => {
+    const m = plane(20);
+    const rest = plane(20);
+    stroke(m, { ...base, kind: "clay", point: at });
+    // 中心にいちばん近い頂点
+    let c = 0;
+    let best = Infinity;
+    for (let v = 0; v < m.vertexCount; v++) {
+      const d = Math.hypot(rest.positions[v * 3], rest.positions[v * 3 + 2]);
+      if (d < best) {
+        best = d;
+        c = v;
+      }
+    }
+    const h = base.radius * 0.0625;
+    const rise = m.positions[c * 3 + 1] - rest.positions[c * 3 + 1];
+    expect(rise).toBeGreaterThan(h * 0.8);
+    expect(rise).toBeLessThan(h * 1.2);
+  });
+
+  it("T3: 天面より上の頂点は動かない、へこみは縁より多く上がる", () => {
+    const h = base.radius * 0.0625;
+    // 柱: 中心の 1 点を 2h 上げておく
+    const pillar = plane(20);
+    let c = 0;
+    let best = Infinity;
+    for (let v = 0; v < pillar.vertexCount; v++) {
+      const d = Math.hypot(pillar.positions[v * 3], pillar.positions[v * 3 + 2]);
+      if (d < best) {
+        best = d;
+        c = v;
+      }
+    }
+    pillar.positions[c * 3 + 1] += h * 2;
+    const y0 = pillar.positions[c * 3 + 1];
+    stroke(pillar, { ...base, kind: "clay", point: at });
+    expect(Math.abs(pillar.positions[c * 3 + 1] - y0)).toBeLessThan(1e-9);
+
+    // へこみ: 中心の 1 点を h 下げておく → 縁（半径の 0.5）より多く上がる
+    const dent = plane(20);
+    const rest = plane(20);
+    dent.positions[c * 3 + 1] -= h;
+    stroke(dent, { ...base, kind: "clay", point: at });
+    const bottomRise = dent.positions[c * 3 + 1] + h - rest.positions[c * 3 + 1];
+    let edgeRise = 0;
+    let n = 0;
+    for (let v = 0; v < dent.vertexCount; v++) {
+      const d = Math.hypot(rest.positions[v * 3], rest.positions[v * 3 + 2]);
+      if (Math.abs(d - base.radius * 0.5) > 0.03) continue;
+      edgeRise += dent.positions[v * 3 + 1] - rest.positions[v * 3 + 1];
+      n++;
+    }
+    expect(n).toBeGreaterThan(0);
+    expect(bottomRise).toBeGreaterThan(edgeRise / n);
+  });
+
+  it("T3: ALT のクレイは彫る", () => {
+    const m = plane(14);
+    const rest = plane(14);
+    stroke(m, { ...base, kind: "clay", point: at, invert: true });
+    let down = 0;
+    for (let v = 0; v < m.vertexCount; v++) {
+      const dy = m.positions[v * 3 + 1] - rest.positions[v * 3 + 1];
+      if (Math.abs(dy) < 1e-9) continue;
+      expect(dy).toBeLessThan(0);
+      down++;
+    }
+    expect(down).toBeGreaterThan(0);
+  });
+
+  it("T3: クレイビルドアップはクレイより中心の平らな部分が広い", () => {
+    const a = plane(24);
+    const b = plane(24);
+    const rest = plane(24);
+    stroke(a, { ...base, kind: "clay", point: at });
+    stroke(b, { ...base, kind: "claybuildup", point: at });
+    const at04 = (m: Mesh) => {
+      let s = 0;
+      let n = 0;
+      let center = 0;
+      for (let v = 0; v < m.vertexCount; v++) {
+        const d = Math.hypot(rest.positions[v * 3], rest.positions[v * 3 + 2]);
+        if (d < 0.02) center = m.positions[v * 3 + 1] - rest.positions[v * 3 + 1];
+        if (Math.abs(d - base.radius * 0.4) > 0.03) continue;
+        s += m.positions[v * 3 + 1] - rest.positions[v * 3 + 1];
+        n++;
+      }
+      return (s / n) / center;
+    };
+    expect(at04(b)).toBeGreaterThan(at04(a));
+    expect(at04(b)).toBeGreaterThan(0.9);
+  });
+
+  it("T4: ダミアンは既定で彫り、ALT で盛る", () => {
+    const rest = plane(14);
+    const a = plane(14);
+    const b = plane(14);
+    stroke(a, { ...base, kind: "damien", point: at });
+    stroke(b, { ...base, kind: "damien", point: at, invert: true });
+    let low = 0;
+    let high = 0;
+    for (let v = 0; v < rest.vertexCount; v++) {
+      low = Math.min(low, a.positions[v * 3 + 1] - rest.positions[v * 3 + 1]);
+      high = Math.max(high, b.positions[v * 3 + 1] - rest.positions[v * 3 + 1]);
+    }
+    expect(low).toBeLessThan(-1e-4);
+    expect(high).toBeGreaterThan(1e-4);
+  });
+
+  it("T6: ピンチは球の上で法線に直交して動く（膨らまない）", () => {
+    const m = sphereMesh(24);
+    const rest = sphereMesh(24);
+    const moved = stroke(m, { ...base, kind: "pinch", point: top, radius: 0.5 });
+    expect(moved.length).toBeGreaterThan(10);
+    for (const v of moved) {
+      const d = displacement(m, rest, v);
+      const r: [number, number, number] = [rest.positions[v * 3], rest.positions[v * 3 + 1], rest.positions[v * 3 + 2]];
+      const dot = (d[0] * r[0] + d[1] * r[1] + d[2] * r[2]) / (len(d) * len(r));
+      expect(Math.abs(dot)).toBeLessThan(5e-2);
+    }
+  });
+
+  it("T5: grab を渡すと、その重みで動く（範囲と減衰を計算し直さない）", () => {
+    const m = plane(14);
+    const rest = plane(14);
+    const tris = m.triangulate();
+    const bvh = buildBvh(m.positions, { tri: tris.tri });
+    const fp = strokeFootprint(m, bvh, tris, at, base.radius);
+    // 重みを全部 1 にして渡すと、範囲の頂点が全部同じだけ動く
+    const grab = new Float32Array(fp.verts.length).fill(1);
+    const moved = applyStroke(m, fp, tris, { ...base, kind: "move", point: at, move: [0, 0.1, 0], grab });
+    expect(moved.length).toBe(fp.verts.length);
+    for (const v of moved) expect(m.positions[v * 3 + 1] - rest.positions[v * 3 + 1]).toBeCloseTo(0.1, 6);
+  });
+});

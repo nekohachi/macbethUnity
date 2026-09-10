@@ -10,10 +10,12 @@
  */
 import {
   applyStroke,
+  grabWeights,
   maskIsEmpty,
   paintMask,
   strokeFootprint,
   type BrushKind,
+  type Footprint,
   type MaskInput,
   type Mesh,
   type SceneObject,
@@ -24,7 +26,7 @@ import type { Picker, ScreenPoint } from "./render/picking.js";
 import type { History } from "./history.js";
 import { levelsOf } from "./levels.js";
 import { brushAt, type AppState } from "./state.js";
-import { Vector3 } from "three";
+import { Matrix4, Plane, Raycaster, Vector3 } from "three";
 
 /** ストロークの最中に持っておくもの。 */
 interface Live {
@@ -41,6 +43,14 @@ interface Live {
   kind: BrushKind;
   /** 消す（CTL + ALT）。マスクのときだけ見る。 */
   erase: boolean;
+  /**
+   * ALT で反転（`39` の T1）。**押した瞬間に読む。** 前は `state.brush.invert` を
+   * `refresh()` でしか書いていなかったので、ALT のボタンをタップしてから彫っても
+   * 反転しなかった。
+   */
+  invert: boolean;
+  /** ムーブの掴み（`39` の T5）。ムーブ以外は null。 */
+  grab: Grab | null;
   /**
    * 視線の向き（オブジェクト空間、カメラから面へ）。裏面マスクに使う。
    * **押したときに 1 回作る**（ストロークの間はカメラが動かない）。
@@ -67,8 +77,45 @@ interface Live {
   skippedNormals: boolean;
 }
 
+/**
+ * ムーブの掴み（`39` の T5。ZBrush の Move）。
+ *
+ * - **押した瞬間の頂点と重みを最後まで掴む。** 毎回範囲を取り直すと、引いている
+ *   途中で範囲が滑って別の頂点を掴み直す
+ * - **画面に平行な平面の上で引く。** 表面の当たり点を追うと、指の下の面を滑って
+ *   模型の外へ引き出せない（シルエットの外に出た瞬間に当たりが消えて止まる）
+ * - **ALT なら法線に沿って出し入れ。** 押した点の範囲の平均法線 1 本。
+ *   引いた向きを法線の画面上の向きに射影した長さだけ動かす
+ */
+interface Grab {
+  fp: Footprint;
+  weights: Float32Array;
+  /** 対称の鏡映側。対称を切っていれば null。 */
+  mirror: { fp: Footprint; weights: Float32Array } | null;
+  /** 押した点（オブジェクト空間）。`applyStroke` の `point` に渡す（重みは使わない） */
+  origin: [number, number, number];
+  radius: number;
+  strength: number;
+  /** 画面に平行な平面（ワールド）。押した点を通る */
+  plane: Plane;
+  /** 前のコマの平面上の点（ワールド） */
+  lastWorld: Vector3;
+  /** ALT のとき: 法線（ワールド、正規化）。それ以外は null */
+  normalWorld: Vector3 | null;
+  /** ALT のとき: 法線の画面上の向き（px、正規化） */
+  screenDir: [number, number];
+  /** ALT のとき: 前のコマの画面の点 */
+  lastScreen: ScreenPoint;
+  /** 1px がワールドで何単位か（押した点の奥行きで） */
+  worldPerPx: number;
+}
+
 const scratch = new Vector3();
 const dirScratch = new Vector3();
+const grabHit = new Vector3();
+const grabTmp = new Vector3();
+const grabInv = new Matrix4();
+const grabRay = new Raycaster();
 
 /**
  * 打つ間隔（筆の半径に対する割合）。ZBrush の Stroke → Spacing にあたる。
@@ -143,6 +190,8 @@ export class StrokeDriver {
       role,
       kind,
       erase: role === "mask" && alt,
+      invert: role === "sculpt" && alt,
+      grab: null,
       viewDir: role === "sculpt" && this.state.brush.backfaceMask ? this.viewDirOf(o) : null,
       last: at,
       touched: new Set(),
@@ -154,9 +203,135 @@ export class StrokeDriver {
     };
     if (role === "mask") this.history.beginMask(o, o.activeLevel);
     else this.history.beginSculpt(o, o.activeLevel);
+    if (role === "sculpt" && kind === "move") {
+      // 押した瞬間の頂点を掴む（`39` の T5）。動かすのは `move()` から
+      this.live.grab = this.beginGrab(this.live, p, at, pressure, alt);
+      return true;
+    }
     this.stamp(at, pressure, null);
     this.flush(this.live);
     return true;
+  }
+
+  /** ムーブの掴みを作る（`39` の T5）。 */
+  private beginGrab(live: Live, p: ScreenPoint, at: [number, number, number], pressure: number, alt: boolean): Grab | null {
+    const o = live.object;
+    const view = this.viewport.viewOf(o);
+    if (!view) return null;
+    const mesh = this.viewport.meshOf(o);
+    const bvh = this.viewport.bvhOf(view);
+    const { radius, strength } = brushAt(this.state.brush, pressure);
+    const base: StrokeInput = {
+      kind: "move",
+      point: at,
+      radius,
+      strength,
+      invert: false,
+      mask: this.maskFor(live),
+      viewDir: live.viewDir ?? undefined,
+    };
+    const fp = strokeFootprint(mesh, bvh, view.tri, at, radius);
+    const g = grabWeights(mesh, fp, view.tri, base);
+    let mirror: Grab["mirror"] = null;
+    if (this.state.brush.symmetryX) {
+      const mp: [number, number, number] = [-at[0], at[1], at[2]];
+      const mfp = strokeFootprint(mesh, bvh, view.tri, mp, radius);
+      mirror = { fp: mfp, weights: grabWeights(mesh, mfp, view.tri, { ...base, point: mp, excludeNearX: radius * 0.01 }).weights };
+    }
+
+    view.group.updateMatrixWorld();
+    const camera = this.viewport.camera;
+    camera.updateMatrixWorld();
+    const world = grabHit.set(at[0], at[1], at[2]).applyMatrix4(view.group.matrixWorld).clone();
+    // カメラの前方（-Z）を法線にした平面。透視でも平行投影でも同じ式でよい
+    const fwd = dirScratch.setFromMatrixColumn(camera.matrixWorld, 2).negate();
+    const plane = new Plane().setFromNormalAndCoplanarPoint(fwd, world);
+    // 1px がワールドでどれだけか（押した点の奥行き）。ALT の量に使う
+    const a = this.planeHit(p, plane);
+    const b = this.planeHit({ x: p.x + 1, y: p.y }, plane);
+    const worldPerPx = a && b ? a.distanceTo(b) : 0;
+
+    let normalWorld: Vector3 | null = null;
+    let screenDir: [number, number] = [0, -1];
+    if (alt && g.normal) {
+      normalWorld = new Vector3(g.normal[0], g.normal[1], g.normal[2]).transformDirection(view.group.matrixWorld);
+      // 法線の画面上の向き。画面にほぼ垂直なら「上 = 出す」
+      const s0 = this.picker.project(view, at[0], at[1], at[2]);
+      const tip = grabTmp.copy(world).addScaledVector(normalWorld, worldPerPx * 100);
+      const local = tip.applyMatrix4(grabInv.copy(view.group.matrixWorld).invert());
+      const s1 = this.picker.project(view, local.x, local.y, local.z);
+      const dx = s1.x - s0.x;
+      const dy = s1.y - s0.y;
+      const len = Math.hypot(dx, dy);
+      if (len >= 20) screenDir = [dx / len, dy / len];
+    }
+    return {
+      fp,
+      weights: g.weights,
+      mirror,
+      origin: at,
+      radius,
+      strength,
+      plane,
+      lastWorld: world,
+      normalWorld,
+      screenDir,
+      lastScreen: p,
+      worldPerPx,
+    };
+  }
+
+  /** 画面の点から、その平面との交点（ワールド）。 */
+  private planeHit(p: ScreenPoint, plane: Plane): Vector3 | null {
+    grabRay.setFromCamera(this.picker.ndc(p), this.viewport.camera);
+    const hit = new Vector3();
+    return grabRay.ray.intersectPlane(plane, hit) ? hit : null;
+  }
+
+  /** ムーブの 1 コマ（`39` の T5）。指の差分を掴んだ頂点に渡す。 */
+  private moveGrab(live: Live, grab: Grab, p: ScreenPoint): void {
+    const view = this.viewport.viewOf(live.object);
+    if (!view) return;
+    let delta: Vector3;
+    if (grab.normalWorld) {
+      // 法線に沿う。引いた分を法線の画面上の向きに射影した長さ
+      const px = (p.x - grab.lastScreen.x) * grab.screenDir[0] + (p.y - grab.lastScreen.y) * grab.screenDir[1];
+      grab.lastScreen = p;
+      if (px === 0) return;
+      delta = grabTmp.copy(grab.normalWorld).multiplyScalar(px * grab.worldPerPx);
+    } else {
+      const at = this.planeHit(p, grab.plane);
+      if (!at) return;
+      delta = grabTmp.subVectors(at, grab.lastWorld);
+      grab.lastWorld.copy(at);
+      if (delta.lengthSq() === 0) return;
+    }
+    // ワールドの差分をオブジェクト空間へ（向きだけでなく大きさも直す）
+    view.group.updateMatrixWorld();
+    grabInv.copy(view.group.matrixWorld).invert();
+    const o0 = scratch.copy(grab.lastWorld).applyMatrix4(grabInv);
+    const o1 = grabHit.copy(grab.lastWorld).add(delta).applyMatrix4(grabInv);
+    const move: [number, number, number] = [o1.x - o0.x, o1.y - o0.y, o1.z - o0.z];
+    const input: StrokeInput = {
+      kind: "move",
+      point: grab.origin,
+      move,
+      radius: grab.radius,
+      strength: grab.strength,
+      invert: false,
+      grab: grab.weights,
+    };
+    let any = this.hit(live, input, grab.fp);
+    if (grab.mirror) {
+      any =
+        this.hit(
+          live,
+          { ...input, point: [-grab.origin[0], grab.origin[1], grab.origin[2]], move: [-move[0], move[1], move[2]], grab: grab.mirror.weights },
+          grab.mirror.fp,
+        ) || any;
+    }
+    if (any) live.hits++;
+    this.flush(live);
   }
 
   /**
@@ -194,6 +369,13 @@ export class StrokeDriver {
   move(p: ScreenPoint, pressure: number): void {
     const live = this.live;
     if (!live) return;
+    // ムーブだけ別扱い（`33` の T3、`39` の T5）。**`live.kind` で見る**。Shift の一時
+    // スムース中はムーブではないし、マスクを塗るときも距離で刻む。
+    // 表面の当たりは要らない（画面平面で引くので、模型の外に出ても続く）
+    if (live.role === "sculpt" && live.kind === "move") {
+      if (live.grab) this.moveGrab(live, live.grab, p);
+      return;
+    }
     const at = this.hitLocal(p);
     if (!at) return;
     const dx = at[0] - live.last[0];
@@ -201,15 +383,6 @@ export class StrokeDriver {
     const dz = at[2] - live.last[2];
     const dist = Math.hypot(dx, dy, dz);
     if (dist <= 0) return;
-
-    // ムーブだけ別扱い（`33` の T3）。**`live.kind` で見る**。Shift の一時
-    // スムース中はムーブではないし、マスクを塗るときも距離で刻む
-    if (live.role === "sculpt" && live.kind === "move") {
-      this.stamp(at, pressure, [dx, dy, dz]);
-      this.flush(live);
-      live.last = at;
-      return;
-    }
 
     const { radius } = brushAt(this.state.brush, pressure);
     const spacing = Math.max(radius * DAB_SPACING, 1e-5);
@@ -298,7 +471,7 @@ export class StrokeDriver {
       move: move ?? undefined,
       radius,
       strength,
-      invert: b.invert,
+      invert: live.invert,
       mask: this.maskFor(live),
       viewDir: live.viewDir ?? undefined,
     };
@@ -367,13 +540,14 @@ export class StrokeDriver {
    * デルタの取り直しと頂点バッファの書き換えをしていると、同じ頂点を
    * 何度も往復することになる。
    */
-  private hit(live: Live, input: StrokeInput): boolean {
+  private hit(live: Live, input: StrokeInput, grabbed?: Footprint): boolean {
     const o = live.object;
     const view = this.viewport.viewOf(o);
     if (!view) return false;
     const mesh: Mesh = this.viewport.meshOf(o);
     const bvh = this.viewport.bvhOf(view);
-    const fp = strokeFootprint(mesh, bvh, view.tri, input.point, input.radius);
+    // 掴んでいるなら範囲は押した瞬間のもの（`39` の T5）
+    const fp = grabbed ?? strokeFootprint(mesh, bvh, view.tri, input.point, input.radius);
     if (!fp.verts.length) return false;
 
     const delta = levelsOf(o).deltas[live.level - 1];

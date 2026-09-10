@@ -334,13 +334,13 @@ const BRUSH_ICONS: Record<BrushKind, string> = {
 /** ブラシの名前（`38` の T3）。トーストと一覧に出す。 */
 const BRUSH_NAMES: Record<BrushKind, { label: string; sub: string }> = {
   standard: { label: "スタンダード", sub: "Standard" },
-  clay: { label: "クレイ", sub: "Clay · 平面から盛る" },
-  move: { label: "ムーブ", sub: "Move" },
+  clay: { label: "クレイ", sub: "Clay · 層を盛る" },
+  move: { label: "ムーブ", sub: "Move · ALT で法線に沿う" },
   inflate: { label: "インフレート", sub: "Inflate · 膨らませる" },
   smooth: { label: "スムース", sub: "Smooth" },
   flatten: { label: "フラット", sub: "Flatten · 平らにする" },
   pinch: { label: "ピンチ", sub: "Pinch · 稜線を立てる" },
-  damien: { label: "ダミアン", sub: "Damien · 細く鋭く" },
+  damien: { label: "ダミアン", sub: "Damien · 細く彫る（ALT で盛る）" },
   claybuildup: { label: "クレイビルドアップ", sub: "ClayBuildup · 積み上げる" },
   trim: { label: "トリム", sub: "Trim · 削り取る" },
   polish: { label: "ポリッシュ", sub: "Polish · 磨く" },
@@ -5720,8 +5720,7 @@ export class App {
     if (this.state.mode === "sculpt") {
       // 選び直したら半径を合わせ直す（同じものなら何もしない）
       this.fitBrushToSelection();
-      // ALT を押している間だけ反転（`33` の T1）
-      this.state.brush.invert = this.state.modOn("alt");
+      // ALT の反転はストロークを押した瞬間に読む（`39` の T1。`stroke.ts` の `begin`）
     }
     this.viewport.applyDisplayAll();
     this.refreshManipulator();

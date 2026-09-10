@@ -103,8 +103,6 @@ export interface BrushState {
   strength: number;
   /** ワールド単位。画面の px ではない。 */
   radius: number;
-  /** ALT を押している間だけ立つ。Standard は凹み、Move と Smooth では効かない。 */
-  invert: boolean;
   /** 筆圧を半径に効かせる。 */
   pressureSize: boolean;
   /** 筆圧を強度に効かせる。 */
@@ -290,7 +288,6 @@ export class AppState {
     // 67 にあたる。0.25（ZBrush の既定）は控えめすぎるとのことだった
     strength: 0.67,
     radius: 0.4,
-    invert: false,
     backfaceMask: true,
     pressureSize: true,
     pressureSizePow: 1,

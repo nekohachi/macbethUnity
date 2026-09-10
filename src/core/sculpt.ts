@@ -47,10 +47,14 @@ const NEEDS_NORMAL: ReadonlySet<BrushKind> = new Set<BrushKind>([
   "trim",
   "damien",
   "polish",
+  "pinch",
 ]);
 
-/** 平面をあてる種類。 */
-const NEEDS_PLANE: ReadonlySet<BrushKind> = new Set<BrushKind>(["clay", "flatten", "trim", "polish"]);
+/**
+ * 平面をあてる種類。Standard も入る（`39` の T2）: ZBrush の Standard は
+ * **筆の中心の法線 1 本**に沿って持ち上げる。頂点ごとの法線で動かすのは Inflate。
+ */
+const NEEDS_PLANE: ReadonlySet<BrushKind> = new Set<BrushKind>(["standard", "clay", "claybuildup", "flatten", "trim", "polish"]);
 
 /** 1 回ぶんのブラシ。 */
 export interface StrokeInput {
@@ -87,6 +91,13 @@ export interface StrokeInput {
    * 一緒に動いてしまう。
    */
   viewDir?: readonly [number, number, number];
+  /**
+   * 押した瞬間の重み（ムーブ。`39` の T5）。渡すと減衰・マスク・裏面マスクを
+   * 計算し直さず、これをそのまま使う。**押した瞬間の頂点を最後まで掴む**ため
+   * （毎回取り直すと、引いている途中で範囲が滑って別の頂点を掴み直す）。
+   * `grabWeights` で作る。長さは `fp.verts.length`。
+   */
+  grab?: Float32Array;
 }
 
 /** ブラシが当たった範囲。 */
@@ -407,6 +418,62 @@ function localPlane(fp: Footprint, normals: Float32Array, positions: Float32Arra
   };
 }
 
+/** 減衰 × 強さ × (1 − マスク) の重み。`shape` には減衰そのものを書く。 */
+function strokeWeights(p: Float32Array, fp: Footprint, input: StrokeInput, shape: Float32Array): Float32Array {
+  const n = fp.verts.length;
+  const weights = new Float32Array(n);
+  const guard = input.excludeNearX ?? 0;
+  const mask = input.mask;
+  for (let i = 0; i < n; i++) {
+    const v = fp.verts[i];
+    // 中心線の頂点は 1 回目の呼び出しで動かしてある（`33` の T4）
+    if (guard > 0 && Math.abs(p[v * 3]) < guard) continue;
+    const d = Math.hypot(p[v * 3] - input.point[0], p[v * 3 + 1] - input.point[1], p[v * 3 + 2] - input.point[2]);
+    const t = falloff(d / input.radius);
+    shape[i] = t;
+    let w = t * input.strength;
+    // マスク（`34` の T1）。1 なら 1 ミリも動かない
+    if (w !== 0 && mask && v < mask.length) w *= 1 - mask[v];
+    weights[i] = w;
+  }
+  return weights;
+}
+
+/** 裏面マスク: カメラから面へ向かう向きと同じ側を向いている＝背を向けている。触らない */
+function backfaceMask(weights: Float32Array, normals: Float32Array, viewDir: readonly [number, number, number]): void {
+  const [dx, dy, dz] = viewDir;
+  for (let i = 0; i < weights.length; i++) {
+    if (weights[i] === 0) continue;
+    if (normals[i * 3] * dx + normals[i * 3 + 1] * dy + normals[i * 3 + 2] * dz > 0) weights[i] = 0;
+  }
+}
+
+/**
+ * 押した瞬間の重みを作る（ムーブ。`39` の T5）。`applyStroke` と同じ減衰・マスク・
+ * 裏面マスクで、あとは `StrokeInput.grab` に渡して最後まで使う。
+ * 範囲の平均法線（正規化済み）も返す。ALT のムーブ（法線に沿う）に使う。
+ */
+export function grabWeights(
+  mesh: Mesh,
+  fp: Footprint,
+  tris: Triangulation,
+  input: StrokeInput,
+): { weights: Float32Array; normal: readonly [number, number, number] | null } {
+  const n = fp.verts.length;
+  if (!n) return { weights: new Float32Array(0), normal: null };
+  const stamp = beginScratch(mesh.vertexCount);
+  for (let i = 0; i < n; i++) {
+    const v = fp.verts[i];
+    scratch.gen[v] = stamp;
+    scratch.val[v] = i;
+  }
+  const weights = strokeWeights(mesh.positions, fp, input, new Float32Array(n));
+  const normals = localNormals(mesh, fp, tris, stamp);
+  if (input.viewDir) backfaceMask(weights, normals, input.viewDir);
+  const plane = localPlane(fp, normals, mesh.positions, weights);
+  return { weights, normal: plane ? plane.normal : null };
+}
+
 /**
  * ブラシを 1 回当てる。`mesh.positions` を書き換え、**実際に動いた頂点**を返す。
  *
@@ -426,31 +493,16 @@ export function applyStroke(mesh: Mesh, fp: Footprint, tris: Triangulation, inpu
   }
 
   const p = mesh.positions;
-  const weights = new Float32Array(n);
-  const guard = input.excludeNearX ?? 0;
-  const mask = input.mask;
-  for (let i = 0; i < n; i++) {
-    const v = fp.verts[i];
-    // 中心線の頂点は 1 回目の呼び出しで動かしてある（`33` の T4）
-    if (guard > 0 && Math.abs(p[v * 3]) < guard) continue;
-    const d = Math.hypot(p[v * 3] - input.point[0], p[v * 3 + 1] - input.point[1], p[v * 3 + 2] - input.point[2]);
-    let w = falloff(d / input.radius) * input.strength;
-    // マスク（`34` の T1）。1 なら 1 ミリも動かない
-    if (w !== 0 && mask && v < mask.length) w *= 1 - mask[v];
-    weights[i] = w;
-  }
+  const grabbed = !!input.grab && input.grab.length === n;
+  /** 減衰そのもの（強さもマスクも掛ける前）。クレイビルドアップが角ばらせるのに使う */
+  const shape = new Float32Array(n);
+  const weights = grabbed ? input.grab! : strokeWeights(p, fp, input, shape);
 
   // 法線。Standard は動く向きに、裏面マスクは向きの判定に使う。
-  // **どちらも範囲の三角形から作る**ので、メッシュ全体には触らない
-  const normals = NEEDS_NORMAL.has(input.kind) || input.viewDir ? localNormals(mesh, fp, tris, stamp) : null;
-  if (input.viewDir && normals) {
-    // カメラから面へ向かう向きと同じ側を向いている＝背を向けている。触らない
-    const [dx, dy, dz] = input.viewDir;
-    for (let i = 0; i < n; i++) {
-      if (weights[i] === 0) continue;
-      if (normals[i * 3] * dx + normals[i * 3 + 1] * dy + normals[i * 3 + 2] * dz > 0) weights[i] = 0;
-    }
-  }
+  // **どちらも範囲の三角形から作る**ので、メッシュ全体には触らない。
+  // 掴んでいる（`grab`）ときは裏面マスクも押した瞬間に済んでいる
+  const normals = NEEDS_NORMAL.has(input.kind) || (input.viewDir && !grabbed) ? localNormals(mesh, fp, tris, stamp) : null;
+  if (input.viewDir && normals && !grabbed) backfaceMask(weights, normals, input.viewDir);
 
   // 平面は裏面マスクを掛けたあとの重みであてる（触らない所を勘定に入れない）
   const plane = NEEDS_PLANE.has(input.kind) && normals ? localPlane(fp, normals, p, weights) : null;
@@ -462,22 +514,26 @@ export function applyStroke(mesh: Mesh, fp: Footprint, tris: Triangulation, inpu
   };
 
   const moved: number[] = [];
-  if (input.kind === "standard" && normals) {
-    // 法線方向へ。動く量は半径に比例させる（大きい筆は深く彫れる）。
+  if (input.kind === "standard" && plane) {
+    // **範囲の法線 1 本**に沿って動かす（`39` の T2。ZBrush の Standard）。
+    // 頂点ごとの法線で動かすと球が膨らむ（それは Inflate）。1 本にすると
+    // 盛った山の側面が中心の法線に平行になり、ZBrush と同じ山になる。
     //
+    // 動く量は半径に比例させる（大きい筆は深く彫れる）。
     // **1 打ちぶんの深さ**（ZBrush に合わせた。`33` の直し）。
     // 打つ間隔は半径の 1/4 なので、1 回なぞると同じ頂点に 8 打ちほど乗る。
     // 強さ 1 で 1 なぞり ≒ 半径の半分（0.0625 × 8 = 0.5）になる。
     // 既定の強さは 0.67（実機で触って決めた。ZBrush の Z Intensity 67 相当）
     // なので、ふつうに 1 回なぞると半径の 1/3 ほど。重ねれば深くなる。
     const amount = input.radius * DAB_DEPTH * (input.invert ? -1 : 1);
+    const [nx, ny, nz] = plane.normal;
     for (let i = 0; i < n; i++) {
       const w = weights[i] * amount;
       if (w === 0) continue;
       const v = fp.verts[i];
-      p[v * 3] += normals[i * 3] * w;
-      p[v * 3 + 1] += normals[i * 3 + 1] * w;
-      p[v * 3 + 2] += normals[i * 3 + 2] * w;
+      p[v * 3] += nx * w;
+      p[v * 3 + 1] += ny * w;
+      p[v * 3 + 2] += nz * w;
       moved.push(v);
     }
   } else if (input.kind === "move") {
@@ -492,10 +548,13 @@ export function applyStroke(mesh: Mesh, fp: Footprint, tris: Triangulation, inpu
       p[v * 3 + 2] += mz * w;
       moved.push(v);
     }
-  } else if ((input.kind === "claybuildup" || input.kind === "inflate" || input.kind === "damien") && normals) {
-    // 法線方向へ。深さの基準は Standard と同じ `DAB_DEPTH` にして、
-    // **強さの手触りを揃える**（実機で決めた 0.67 が全部に効くように）
-    const amount = input.radius * DAB_DEPTH * (input.invert ? -1 : 1);
+  } else if ((input.kind === "inflate" || input.kind === "damien") && normals) {
+    // **頂点ごとの法線**へ。深さの基準は Standard と同じ `DAB_DEPTH` にして、
+    // **強さの手触りを揃える**（実機で決めた 0.67 が全部に効くように）。
+    // Inflate は膨らむ（球なら半径方向）。
+    // Damien（DamStandard）は **既定で彫る**（`39` の T4。ZBrush は ZSub が既定）。ALT で盛る
+    const dir = input.kind === "damien" ? -1 : 1;
+    const amount = input.radius * DAB_DEPTH * (input.invert ? -dir : dir);
     for (let i = 0; i < n; i++) {
       let w = weights[i];
       if (w === 0) continue;
@@ -508,18 +567,27 @@ export function applyStroke(mesh: Mesh, fp: Footprint, tris: Triangulation, inpu
       p[v * 3 + 2] += normals[i * 3 + 2] * k;
       moved.push(v);
     }
-  } else if (input.kind === "pinch") {
+  } else if (input.kind === "pinch" && normals) {
     // 範囲の中心へ寄せる。**寄る量は半径に対する割合**で決める
-    // （ワールド単位にすると大きい像で効かなくなる）
+    // （ワールド単位にすると大きい像で効かなくなる）。
+    // **接平面の中で**寄せる（`39` の T6）: 中心へ向かうベクトルから頂点の法線成分を
+    // 引く。引かないと、曲がった面では法線方向にも動いて膨らむ / へこむ
     const [cx, cy, cz] = input.point;
     const amount = DAB_DEPTH * (input.invert ? -1 : 1);
     for (let i = 0; i < n; i++) {
       const w = weights[i] * amount;
       if (w === 0) continue;
       const v = fp.verts[i];
-      const ex = (cx - p[v * 3]) * w;
-      const ey = (cy - p[v * 3 + 1]) * w;
-      const ez = (cz - p[v * 3 + 2]) * w;
+      const tx = cx - p[v * 3];
+      const ty = cy - p[v * 3 + 1];
+      const tz = cz - p[v * 3 + 2];
+      const nx = normals[i * 3],
+        ny = normals[i * 3 + 1],
+        nz = normals[i * 3 + 2];
+      const dn = tx * nx + ty * ny + tz * nz;
+      const ex = (tx - nx * dn) * w;
+      const ey = (ty - ny * dn) * w;
+      const ez = (tz - nz * dn) * w;
       // **ちょうど中心に居る頂点は動かない。** 動いていないものを返すと、
       // 履歴の差分が無駄に太る（`sculpt.ts` の前置きの約束）
       if (ex === 0 && ey === 0 && ez === 0) continue;
@@ -528,21 +596,33 @@ export function applyStroke(mesh: Mesh, fp: Footprint, tris: Triangulation, inpu
       p[v * 3 + 2] += ez;
       moved.push(v);
     }
-  } else if ((input.kind === "clay" || input.kind === "flatten" || input.kind === "trim") && plane) {
+  } else if ((input.kind === "clay" || input.kind === "claybuildup" || input.kind === "flatten" || input.kind === "trim") && plane) {
     const [nx, ny, nz] = plane.normal;
-    const sign = input.invert ? -1 : 1;
+    // Clay の層の厚み。Standard の 1 打ちと同じ単位（強さの手触りが揃う）
+    const h = input.radius * DAB_DEPTH;
+    const buildup = input.kind === "claybuildup";
     for (let i = 0; i < n; i++) {
-      const w = weights[i];
+      let w = weights[i];
       if (w === 0) continue;
       const v = fp.verts[i];
       const d = signedTo(v);
-      // Clay は平面より内側を上げる（土を盛る）。外側は動かさない
+      // Clay は**平面の上に厚み h の層を盛る**（`39` の T3。ZBrush の Clay）。
+      //   天面 = 平面 + h。天面より下の頂点を、天面へ向かって w の割合だけ上げる。
+      //   平らな所は w·h 上がり（Standard の 1 打ちと同じ深さ）、へこみはそれより
+      //   多く上がって埋まり、天面より上の頂点は動かない（平らな天面になる）。
+      //   前は「平面より内側だけ埋める」で、平らな所に置いても何も起きなかった。
+      //   ALT は鏡: 底面 = 平面 − h へ向かって下げる（彫る）
+      // ClayBuildup は同じ層を、角ばった減衰で盛る（中心の平らな部分が広い。
+      //   ZBrush のアルファ 39 に相当）
       // Flatten は両側から平面へ寄せる
       // Trim は平面より外だけ落とす
       let k = 0;
       if (input.kind === "flatten") k = -d * w;
-      else if (input.kind === "clay") k = d < 0 ? -d * w * sign : 0;
-      else k = d > 0 ? -d * w : 0;
+      else if (input.kind === "trim") k = d > 0 ? -d * w : 0;
+      else {
+        if (buildup) w = Math.min(w * 2, w / Math.max(shape[i], 1e-6));
+        k = input.invert ? -w * Math.max(0, h + d) : w * Math.max(0, h - d);
+      }
       if (k === 0) continue;
       p[v * 3] += nx * k;
       p[v * 3 + 1] += ny * k;
