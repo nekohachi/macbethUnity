@@ -13,7 +13,7 @@
  */
 import type { Bvh } from "./bvh.js";
 import { trianglesNear } from "./bvh.js";
-import type { Mesh } from "./mesh.js";
+import type { Mesh, Triangulation } from "./mesh.js";
 
 /** ブラシの種類。 */
 export type BrushKind = "standard" | "move" | "smooth";
@@ -113,23 +113,24 @@ function beginScratch(vertexCount: number): number {
 /**
  * ブラシが当たる頂点と三角形を集める。
  *
- * `bvh` と `tri` は**そのメッシュのもの**（表示しているレベルのもの）。
+ * `bvh` と `tris` は**そのメッシュのもの**（表示しているレベルのもの）。
  * `trianglesNear` は葉の単位で返すので半径の外の三角形も混じるが、
  * 頂点は距離で絞るので問題ない。
  */
 export function strokeFootprint(
   mesh: Mesh,
   bvh: Bvh,
-  tri: Uint32Array,
+  tris: Triangulation,
   point: readonly [number, number, number],
   radius: number,
 ): Footprint {
+  const tri = tris.tri;
   const near = trianglesNear(bvh, point, radius);
   const r2 = radius * radius;
   const stamp = beginScratch(mesh.vertexCount);
   const gen = scratch.gen;
   const verts: number[] = [];
-  const tris: number[] = [];
+  const hit: number[] = [];
   const p = mesh.positions;
   for (const t of near) {
     let touches = false;
@@ -148,9 +149,9 @@ export function strokeFootprint(
       }
     }
     // 頂点が 1 つでも入っていれば、法線と隣接のためにこの三角形も持つ
-    if (touches) tris.push(t);
+    if (touches) hit.push(t);
   }
-  return { verts: Uint32Array.from(verts), tris: Uint32Array.from(tris) };
+  return { verts: Uint32Array.from(verts), tris: Uint32Array.from(hit) };
 }
 
 /**
@@ -158,8 +159,9 @@ export function strokeFootprint(
  *
  * `stamp` は `applyStroke` が作った控えの世代（頂点番号 → 範囲内の何番目）。
  */
-function localNormals(mesh: Mesh, fp: Footprint, tri: Uint32Array, stamp: number): Float32Array {
+function localNormals(mesh: Mesh, fp: Footprint, tris: Triangulation, stamp: number): Float32Array {
   const out = new Float32Array(fp.verts.length * 3);
+  const tri = tris.tri;
   const p = mesh.positions;
   const gen = scratch.gen;
   const val = scratch.val;
@@ -213,9 +215,11 @@ function localNormals(mesh: Mesh, fp: Footprint, tri: Uint32Array, stamp: number
 }
 
 /** 範囲の三角形から、頂点ごとの「隣の平均」を作る。 */
-function localAverages(mesh: Mesh, fp: Footprint, tri: Uint32Array, stamp: number): Float32Array {
+function localAverages(mesh: Mesh, fp: Footprint, tris: Triangulation, stamp: number): Float32Array {
   const sum = new Float32Array(fp.verts.length * 3);
   const count = new Uint32Array(fp.verts.length);
+  const tri = tris.tri;
+  const real = tris.realEdges;
   const p = mesh.positions;
   const gen = scratch.gen;
   const val = scratch.val;
@@ -231,13 +235,22 @@ function localAverages(mesh: Mesh, fp: Footprint, tri: Uint32Array, stamp: numbe
     const a = tri[t * 3];
     const b = tri[t * 3 + 1];
     const c = tri[t * 3 + 2];
-    // 三角形の 3 辺。同じ隣を何度も足すことになるが、平均なので偏りは出ない
-    add(a, b);
-    add(b, a);
-    add(b, c);
-    add(c, b);
-    add(c, a);
-    add(a, c);
+    // **面の本物の辺だけ**（`35` の T1）。四角を扇で割ると対角線が出るが、
+    // それは隣ではない。数えると 1 リングの外まで平均してしまい、しかも
+    // どちらの対角が出るかはコーナーの並び順で決まるので方向に偏る
+    const r = real[t];
+    if (r & 1) {
+      add(a, b);
+      add(b, a);
+    }
+    if (r & 2) {
+      add(b, c);
+      add(c, b);
+    }
+    if (r & 4) {
+      add(c, a);
+      add(a, c);
+    }
   }
   for (let i = 0; i < fp.verts.length; i++) {
     if (!count[i]) continue;
@@ -254,7 +267,7 @@ function localAverages(mesh: Mesh, fp: Footprint, tri: Uint32Array, stamp: numbe
  * 重み 0 の頂点は動かさないし返さない。返した頂点はそのまま履歴と部分描画に渡すので、
  * ここに余計なものを混ぜると、履歴の差分が無駄に太る。
  */
-export function applyStroke(mesh: Mesh, fp: Footprint, tri: Uint32Array, input: StrokeInput): Uint32Array {
+export function applyStroke(mesh: Mesh, fp: Footprint, tris: Triangulation, input: StrokeInput): Uint32Array {
   const n = fp.verts.length;
   if (!n || input.radius <= 0 || input.strength <= 0) return new Uint32Array(0);
 
@@ -283,7 +296,7 @@ export function applyStroke(mesh: Mesh, fp: Footprint, tri: Uint32Array, input: 
 
   // 法線。Standard は動く向きに、裏面マスクは向きの判定に使う。
   // **どちらも範囲の三角形から作る**ので、メッシュ全体には触らない
-  const normals = input.kind === "standard" || input.viewDir ? localNormals(mesh, fp, tri, stamp) : null;
+  const normals = input.kind === "standard" || input.viewDir ? localNormals(mesh, fp, tris, stamp) : null;
   if (input.viewDir && normals) {
     // カメラから面へ向かう向きと同じ側を向いている＝背を向けている。触らない
     const [dx, dy, dz] = input.viewDir;
@@ -326,7 +339,7 @@ export function applyStroke(mesh: Mesh, fp: Footprint, tri: Uint32Array, input: 
     }
   } else {
     // 隣の平均へ寄せる。**1 コマで 1 回だけ**（重ねて掛けると形が縮む）
-    const avg = localAverages(mesh, fp, tri, stamp);
+    const avg = localAverages(mesh, fp, tris, stamp);
     // 平均を先に全部読んでから書く。書きながら読むと順番で結果が変わる
     const next = new Float32Array(n * 3);
     for (let i = 0; i < n; i++) {

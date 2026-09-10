@@ -1,5 +1,5 @@
 /** ビューポート上の情報表示。統計、モード、操作のヒント。 */
-import type { AppState } from "../state.js";
+import type { AppState, Display } from "../state.js";
 import { asMb, estimateBytes, levelCount, usingWasm } from "../levels.js";
 import { byId } from "./dom.js";
 
@@ -10,13 +10,16 @@ const COMP_NAME: Record<string, string> = {
   face: "フェース",
 };
 
-const DISPLAY_NAME: Record<string, string> = {
+// `Record<Display, string>` にしておくと、表示を足したときにここの
+// 書き忘れをコンパイラが見つける（`poles` を足したとき HUD が undefined になった）
+const DISPLAY_NAME: Record<Display, string> = {
   wire: "WIRE",
   shaded: "SHADED",
   shadedWire: "SHADED+WIRE",
   smooth: "SMOOTH",
   checker: "CHECKER",
   heat: "HEAT",
+  poles: "POLES",
 };
 
 export class Hud {

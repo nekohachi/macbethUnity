@@ -12,6 +12,7 @@ import {
   buildBvh,
   defaultParams,
   falloff,
+  MeshBuilder,
   Multires,
   strokeFootprint,
   type Mesh,
@@ -25,10 +26,10 @@ function plane(sd = 12): Mesh {
 
 /** そのメッシュで 1 回ブラシを当てる。戻り値は動いた頂点。 */
 function stroke(mesh: Mesh, input: StrokeInput): Uint32Array {
-  const { tri } = mesh.triangulate();
-  const bvh = buildBvh(mesh.positions, { tri });
-  const fp = strokeFootprint(mesh, bvh, tri, input.point, input.radius);
-  return applyStroke(mesh, fp, tri, input);
+  const tris = mesh.triangulate();
+  const bvh = buildBvh(mesh.positions, { tri: tris.tri });
+  const fp = strokeFootprint(mesh, bvh, tris, input.point, input.radius);
+  return applyStroke(mesh, fp, tris, input);
 }
 
 const base: Omit<StrokeInput, "kind" | "point"> = { radius: 0.4, strength: 1, invert: false };
@@ -380,5 +381,132 @@ describe("頂点番号の控えを使い回しても結果が変わらない", (
       stroke(b, { ...base, kind: "standard", point: p });
     }
     expect(Array.from(b.positions)).toEqual(Array.from(a.positions));
+  });
+});
+
+
+/**
+ * 「隣」の数え方（`35` の T1）。
+ *
+ * 四角以上を**頂点 0 からの扇**で三角形にしているので、対角線が三角形の辺として
+ * 出てくる。これを隣として数えると 1 リングの外まで平均してしまい、しかも
+ * **どちらの対角が出るかは面のコーナーの並び順で決まる**ので、形とは関係のない
+ * 方向へ偏る。極（三角形の痕）や境界のまわりで効いてくる。
+ */
+describe("隣は面の本物の辺だけ（`35` の T1）", () => {
+  /** 同じ形のまま、面のコーナーの並びだけ回したメッシュ。 */
+  function rotateCorners(m: Mesh, by: number): Mesh {
+    // 溶接すると頂点の番号が変わってしまうので切る
+    const b = new MeshBuilder({ weld: false });
+    for (let v = 0; v < m.vertexCount; v++) {
+      b.vertex(m.positions[v * 3], m.positions[v * 3 + 1], m.positions[v * 3 + 2]);
+    }
+    for (let f = 0; f < m.faceCount; f++) {
+      const vs = m.faceVerts(f);
+      b.face(vs.map((_, i) => vs[(i + by) % vs.length]));
+    }
+    return b.build();
+  }
+
+  it("印の立っている辺は、必ず面の辺になっている", () => {
+    for (const m of [plane(4), PRIMITIVES.sphere.build({ ...defaultParams("sphere"), sdAxis: 8, sdHeight: 6 })]) {
+      const { tri, realEdges } = m.triangulate();
+      const real = new Set(m.edges().map(([a, b]) => `${Math.min(a, b)},${Math.max(a, b)}`));
+      const key = (a: number, b: number) => `${Math.min(a, b)},${Math.max(a, b)}`;
+      let marked = 0;
+      for (let t = 0; t < realEdges.length; t++) {
+        const [a, b, c] = [tri[t * 3], tri[t * 3 + 1], tri[t * 3 + 2]];
+        const r = realEdges[t];
+        if (r & 1) { expect(real.has(key(a, b))).toBe(true); marked++; }
+        if (r & 2) { expect(real.has(key(b, c))).toBe(true); marked++; }
+        if (r & 4) { expect(real.has(key(c, a))).toBe(true); marked++; }
+      }
+      expect(marked).toBeGreaterThan(0);
+    }
+  });
+
+  it("面のどの辺も、どこかの三角形で印が立っている（数え落としがない）", () => {
+    const m = plane(4);
+    const { tri, realEdges } = m.triangulate();
+    const key = (a: number, b: number) => `${Math.min(a, b)},${Math.max(a, b)}`;
+    const seen = new Set<string>();
+    for (let t = 0; t < realEdges.length; t++) {
+      const [a, b, c] = [tri[t * 3], tri[t * 3 + 1], tri[t * 3 + 2]];
+      const r = realEdges[t];
+      if (r & 1) seen.add(key(a, b));
+      if (r & 2) seen.add(key(b, c));
+      if (r & 4) seen.add(key(c, a));
+    }
+    for (const [a, b] of m.edges()) expect(seen.has(key(a, b))).toBe(true);
+  });
+
+  it("三角形の面は 3 辺とも本物、四角の面は三角形ごとに 2 辺だけ", () => {
+    const b = new MeshBuilder({ weld: false });
+    const v = [0, 1, 2, 3, 4].map((i) => b.vertex(i, 0, 0));
+    b.face([v[0], v[1], v[2]]); // 三角形
+    b.face([v[0], v[1], v[2], v[3]]); // 四角
+    b.face([v[0], v[1], v[2], v[3], v[4]]); // 五角形
+    const { realEdges } = b.build().triangulate();
+    const bits = (r: number) => (r & 1 ? 1 : 0) + (r & 2 ? 1 : 0) + (r & 4 ? 1 : 0);
+    // 三角形 1 枚 / 四角 2 枚 / 五角形 3 枚
+    expect(realEdges.length).toBe(1 + 2 + 3);
+    expect(bits(realEdges[0])).toBe(3);
+    expect([bits(realEdges[1]), bits(realEdges[2])]).toEqual([2, 2]);
+    // 五角形の真ん中の三角形は、面の辺が 1 つだけ
+    expect([bits(realEdges[3]), bits(realEdges[4]), bits(realEdges[5])]).toEqual([2, 1, 2]);
+  });
+
+  it("スムースの結果が、面のコーナーの並び順で変わらない", () => {
+    // 対角を数えていると、同じ形でもコーナーを回しただけで結果が変わる。
+    // ここが一致することが「隣を正しく見ている」ことの証明になる。
+    //
+    // **筆はメッシュ全体を覆う大きさにする。** 範囲のふちでは、どの三角形が
+    // 拾われるかが割り方で変わるので隣が少し欠ける（`sculpt.ts` の前置き
+    // どおり、そこは許している）。見たいのはその欠けではなく対角のほう
+    const at: [number, number, number] = [0, 0, 0];
+    const runs: Float32Array[] = [];
+    for (const by of [0, 1, 2, 3]) {
+      const m = rotateCorners(plane(10), by);
+      // でこぼこにしてから均す（平らなままだとスムースが何もしない）
+      for (let v = 0; v < m.vertexCount; v++) m.positions[v * 3 + 1] += (v % 3) * 0.02;
+      for (let i = 0; i < 3; i++) stroke(m, { kind: "smooth", point: at, radius: 5, strength: 1, invert: false });
+      runs.push(m.positions.slice());
+    }
+    for (let k = 1; k < runs.length; k++) {
+      let worst = 0;
+      for (let i = 0; i < runs[0].length; i++) worst = Math.max(worst, Math.abs(runs[k][i] - runs[0][i]));
+      // 足す順が変わるぶんの丸めだけ（対角を数えていれば桁違いにずれる）
+      expect(worst).toBeLessThan(1e-6);
+    }
+  });
+
+  it("内部の頂点は、対角の頂点を平均に入れない", () => {
+    // 中心の**対角の頂点だけ**を持ち上げる。正しく隣を見ていれば、
+    // 中心は「隣は全部 0」と見るので 0 のまま。対角を数えていると持ち上がる
+    const m = plane(10);
+    let mid = 0;
+    let bestD = Infinity;
+    for (let v = 0; v < m.vertexCount; v++) {
+      const d = Math.hypot(m.positions[v * 3], m.positions[v * 3 + 2]);
+      if (d < bestD) { bestD = d; mid = v; }
+    }
+    const distTo = (v: number) =>
+      Math.hypot(m.positions[v * 3] - m.positions[mid * 3], m.positions[v * 3 + 2] - m.positions[mid * 3 + 2]);
+    let spacing = Infinity;
+    for (let v = 0; v < m.vertexCount; v++) if (v !== mid) spacing = Math.min(spacing, distTo(v));
+    let diagonals = 0;
+    for (let v = 0; v < m.vertexCount; v++) {
+      // 斜めに 1 つ隣（格子の対角）だけを持ち上げる
+      if (Math.abs(distTo(v) - spacing * Math.SQRT2) < spacing * 0.05) {
+        m.positions[v * 3 + 1] = 1;
+        diagonals++;
+      }
+    }
+    expect(diagonals).toBe(4);
+
+    const at: [number, number, number] = [m.positions[mid * 3], 0, m.positions[mid * 3 + 2]];
+    stroke(m, { kind: "smooth", point: at, radius: spacing * 1.6, strength: 1, invert: false });
+    // 対角を 2 つ数えていたときは 2/6 = 0.33 ほど持ち上がっていた
+    expect(Math.abs(m.positions[mid * 3 + 1])).toBeLessThan(1e-6);
   });
 });

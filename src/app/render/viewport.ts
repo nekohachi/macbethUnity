@@ -44,6 +44,7 @@ import {
   heatColors,
   positionGeometry,
   surfaceGeometry,
+  valenceColors,
   wireGeometry,
   type ObjectView,
 } from "./meshView.js";
@@ -743,6 +744,11 @@ export class Viewport {
     view.points.geometry.dispose();
     view.points.geometry = positionGeometry(mesh.positions);
     if (this.state.display === "heat") this.applyHeat(view);
+    // ジオメトリを作り直したので、極の色も積み直す
+    if (this.state.display === "poles") {
+      view.polesStamp = undefined;
+      this.applyPoles(view);
+    }
   }
 
   /**
@@ -794,6 +800,21 @@ export class Viewport {
   }
 
   /**
+   * 極（価数の違う頂点）を頂点色にして積む（`35` の T2）。
+   *
+   * **トポロジが変わったときだけ**作り直す。色は形が動いても変わらないので、
+   * 彫っている最中に作り直す意味がない（境界を探すのに面をひと舐めするので、
+   * 毎コマやると太い筆より重くなる）。
+   */
+  private applyPoles(view: ObjectView): void {
+    const mesh = this.meshOf(view.object);
+    const stamp = `${mesh.vertexCount}/${mesh.faceCount}/${view.tri.tri.length}`;
+    if (view.polesStamp === stamp && view.surface.geometry.getAttribute("color")) return;
+    view.polesStamp = stamp;
+    view.surface.geometry.setAttribute("color", new Float32BufferAttribute(valenceColors(mesh, view.tri), 3));
+  }
+
+  /**
    * そのペインのシェーディングを材質に反映する（`25` の T6）。
    * 描く直前に呼ぶ。材質の付け替えだけなので毎フレームでも軽い。
    */
@@ -825,6 +846,8 @@ export class Viewport {
     view.surface.visible = d !== "wire";
     // チェッカーは UV をそのまま貼る。歪みと継ぎ目が目で分かる
     if (d === "heat") this.applyHeat(view);
+    // 極は価数を色で。三角形や n 角形の痕がどこに残ったか見える（`35` の T2）
+    if (d === "poles") this.applyPoles(view);
     // 不透明度が 1 未満なら、そのオブジェクトだけの材質にする（`25` の T4）。
     // 共有の MAT.surf を透明にすると全部が透けるので、複製を 1 つ持つ。
     const opacity = view.object.opacity;
@@ -833,6 +856,8 @@ export class Viewport {
         ? (view.checker ??= checkerMaterial(this.state.checker.cells, this.state.checker.pattern))
         : d === "heat"
           ? (view.heat ??= heatMaterial())
+          : d === "poles"
+            ? (view.poles ??= heatMaterial())
           : opacity < 1
             ? (view.faded ??= MAT.surf.clone())
             : MAT.surf;
@@ -916,7 +941,7 @@ export class Viewport {
     MAT.surf.side = side;
     MAT.surf.needsUpdate = true;
     for (const view of this.views.values()) {
-      for (const m of [view.checker, view.heat, view.faded]) {
+      for (const m of [view.checker, view.heat, view.poles, view.faded]) {
         if (!m) continue;
         m.side = side;
         m.needsUpdate = true;

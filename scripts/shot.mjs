@@ -1066,6 +1066,42 @@ const scenes = {
     await new Promise((done) => setTimeout(done, 700));
   },
 
+  /** `35` の T2: 極（価数）の表示。三角形と n 角形の痕がどこに残るか。 */
+  "35-t2-poles": async () => {
+    const app = window.macbeth;
+    const core = window.macbethCore;
+    app.state.doc.objects.length = 0;
+    // 五角錐（三角 5 枚 + 五角形 1 枚）と、極を持つ UV 球を並べる
+    const b = new core.MeshBuilder({ weld: false });
+    const v = [];
+    for (let i = 0; i < 5; i++) {
+      v.push(b.vertex(Math.cos((i / 5) * Math.PI * 2) * 1.1 - 1.6, 0, Math.sin((i / 5) * Math.PI * 2) * 1.1));
+    }
+    const top = b.vertex(-1.6, 1.5, 0);
+    for (let i = 0; i < 5; i++) b.face([v[i], v[(i + 1) % 5], top]);
+    b.face([v[4], v[3], v[2], v[1], v[0]]);
+    app.state.doc.addMesh(b.build(), "Pyramid");
+
+    const ball = core.PRIMITIVES.sphere.build({ ...core.defaultParams("sphere"), sdAxis: 16, sdHeight: 12 });
+    for (let i = 0; i < ball.positions.length; i += 3) {
+      ball.positions[i] += 1.6;
+      ball.positions[i + 1] += 0.8;
+    }
+    const o = app.state.doc.addMesh(ball, "Ball");
+    app.viewport.syncAll();
+    app.state.select(o);
+    app.setDisplay("poles");
+    app.viewport.frameSelected();
+    app.viewport.cam.distance *= 1.5;
+    app.viewport.cam.theta = 0.5;
+    app.viewport.cam.phi = 1.05;
+    app.viewport.applyCamera();
+    // 選択を外す。マニピュレータと緑のワイヤが色を隠すため
+    app.state.select(null);
+    app.refresh();
+    await new Promise((done) => setTimeout(done, 400));
+  },
+
   /** `30` の T1: ベンチ画面。数字は CI のものなので当てにしない（表の形だけ）。 */
   "30-t1-bench": async () => {
     // `?bench=1&quick=1` で開いている。表が埋まるまで待つ

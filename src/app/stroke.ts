@@ -218,14 +218,14 @@ export class StrokeDriver {
     if (!view) return false;
     const mesh: Mesh = this.viewport.meshOf(o);
     const bvh = this.viewport.bvhOf(view);
-    const fp = strokeFootprint(mesh, bvh, view.tri.tri, input.point, input.radius);
+    const fp = strokeFootprint(mesh, bvh, view.tri, input.point, input.radius);
     if (!fp.verts.length) return false;
 
     const delta = levelsOf(o).deltas[live.level - 1];
     // 動かす前のデルタを控える。同じ頂点を何度なぞっても最初の値が残る
     if (delta) this.history.trackSculpt(fp.verts, delta);
 
-    const moved = applyStroke(mesh, fp, view.tri.tri, input);
+    const moved = applyStroke(mesh, fp, view.tri, input);
     if (!moved.length) return false;
     for (const v of moved) {
       live.touched.add(v);

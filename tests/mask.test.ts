@@ -20,8 +20,10 @@ import {
   paintMask,
   strokeFootprint,
   catmullClark,
+  MeshBuilder,
   type Mesh,
   type MaskInput,
+  type Triangulation,
   type StrokeInput,
 } from "../src/core/index.js";
 
@@ -34,24 +36,24 @@ function sphere(sd = 12): Mesh {
   return PRIMITIVES.sphere.build({ ...defaultParams("sphere"), sdAxis: sd, sdHeight: sd });
 }
 
-function triOf(mesh: Mesh): Uint32Array {
-  return mesh.triangulate().tri;
+function triOf(mesh: Mesh): Triangulation {
+  return mesh.triangulate();
 }
 
 /** マスクを 1 回塗る。戻り値は変わった頂点。 */
 function mask(mesh: Mesh, values: Float32Array, input: MaskInput): Uint32Array {
-  const tri = triOf(mesh);
-  const bvh = buildBvh(mesh.positions, { tri });
-  const fp = strokeFootprint(mesh, bvh, tri, input.point, input.radius);
+  const tris = triOf(mesh);
+  const bvh = buildBvh(mesh.positions, { tri: tris.tri });
+  const fp = strokeFootprint(mesh, bvh, tris, input.point, input.radius);
   return paintMask(mesh, fp, values, input);
 }
 
 /** ブラシを 1 回当てる。戻り値は動いた頂点。 */
 function stroke(mesh: Mesh, input: StrokeInput): Uint32Array {
-  const tri = triOf(mesh);
-  const bvh = buildBvh(mesh.positions, { tri });
-  const fp = strokeFootprint(mesh, bvh, tri, input.point, input.radius);
-  return applyStroke(mesh, fp, tri, input);
+  const tris = triOf(mesh);
+  const bvh = buildBvh(mesh.positions, { tri: tris.tri });
+  const fp = strokeFootprint(mesh, bvh, tris, input.point, input.radius);
+  return applyStroke(mesh, fp, tris, input);
 }
 
 const at: [number, number, number] = [0, 0, 0];
@@ -172,6 +174,54 @@ describe("ぼかす・反転する", () => {
     expect(Array.from(values)).toEqual([1, 0.75, 0.5, 0]);
     invertMask(values);
     expect(Array.from(values)).toEqual([0, 0.25, 0.5, 1]);
+  });
+
+  it("ぼかしが、面のコーナーの並び順で変わらない（`35` の T1）", () => {
+    // 対角を隣として数えていると、同じ形でもコーナーを回すだけで結果が変わる
+    const rotate = (m: Mesh, by: number): Mesh => {
+      const b = new MeshBuilder({ weld: false });
+      for (let v = 0; v < m.vertexCount; v++) {
+        b.vertex(m.positions[v * 3], m.positions[v * 3 + 1], m.positions[v * 3 + 2]);
+      }
+      for (let f = 0; f < m.faceCount; f++) {
+        const vs = m.faceVerts(f);
+        b.face(vs.map((_, i) => vs[(i + by) % vs.length]));
+      }
+      return b.build();
+    };
+    const runs: Float32Array[] = [];
+    for (const by of [0, 1, 2, 3]) {
+      const m = rotate(plane(8), by);
+      const values = new Float32Array(m.vertexCount);
+      for (let v = 0; v < m.vertexCount; v++) values[v] = v % 2;
+      for (let i = 0; i < 3; i++) blurMask(triOf(m), values);
+      runs.push(values);
+    }
+    for (let k = 1; k < runs.length; k++) {
+      let worst = 0;
+      for (let i = 0; i < runs[0].length; i++) worst = Math.max(worst, Math.abs(runs[k][i] - runs[0][i]));
+      expect(worst).toBeLessThan(1e-6);
+    }
+  });
+
+  it("ぼかしは面の辺でしか広がらない（対角へ跳ばない）", () => {
+    const m = plane(8);
+    const values = new Float32Array(m.vertexCount);
+    // 中心を 1 にして 1 回だけぼかす
+    let mid = 0;
+    let bestD = Infinity;
+    for (let v = 0; v < m.vertexCount; v++) {
+      const d = Math.hypot(m.positions[v * 3], m.positions[v * 3 + 2]);
+      if (d < bestD) { bestD = d; mid = v; }
+    }
+    values[mid] = 1;
+    blurMask(triOf(m), values);
+    const key = (a: number, b: number) => `${Math.min(a, b)},${Math.max(a, b)}`;
+    const real = new Set(m.edges().map(([a, b]) => key(a, b)));
+    for (let v = 0; v < m.vertexCount; v++) {
+      if (v === mid || values[v] === 0) continue;
+      expect(real.has(key(v, mid))).toBe(true);
+    }
   });
 
   it("空かどうかを見分ける", () => {
@@ -328,8 +378,8 @@ describe("裏面マスク", () => {
 describe("マスクを見ても重くならない", () => {
   it("マスクと裏面マスクを渡しても、当てる時間が 2 倍を超えない", () => {
     const m = sphere(60);
-    const tri = triOf(m);
-    const bvh = buildBvh(m.positions, { tri });
+    const tris = triOf(m);
+    const bvh = buildBvh(m.positions, { tri: tris.tri });
     const point: [number, number, number] = [0, 0, 1];
     const base = { kind: "standard" as const, point, radius: 0.6, strength: 0.2, invert: false };
     const values = new Float32Array(m.vertexCount).fill(0.3);
@@ -340,11 +390,11 @@ describe("マスクを見ても重くならない", () => {
       for (let i = 0; i < 20; i++) fn();
       return performance.now() - t0;
     };
-    const fp = strokeFootprint(m, bvh, tri, point, base.radius);
+    const fp = strokeFootprint(m, bvh, tris, point, base.radius);
     expect(fp.verts.length).toBeGreaterThan(100);
 
-    const plainMs = timeIt(() => void applyStroke(m, fp, tri, base));
-    const bothMs = timeIt(() => void applyStroke(m, fp, tri, { ...base, mask: values, viewDir: [0, 0, -1] }));
+    const plainMs = timeIt(() => void applyStroke(m, fp, tris, base));
+    const bothMs = timeIt(() => void applyStroke(m, fp, tris, { ...base, mask: values, viewDir: [0, 0, -1] }));
     // 揺れるので、下限を置いたうえで比を見る
     expect(bothMs).toBeLessThan(Math.max(plainMs, 1) * 2);
   });

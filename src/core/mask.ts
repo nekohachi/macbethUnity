@@ -12,7 +12,7 @@
  * 掛け算も色も払わせないため。
  */
 import { falloff, type Footprint } from "./sculpt.js";
-import type { Mesh } from "./mesh.js";
+import type { Mesh, Triangulation } from "./mesh.js";
 
 /** 1 回ぶんのマスク塗り。 */
 export interface MaskInput {
@@ -70,17 +70,21 @@ export function paintMask(mesh: Mesh, fp: Footprint, values: Float32Array, input
 /**
  * 隣の平均へ 1 リングぶん寄せる。**全頂点**を 1 回。
  *
- * 三角形の 3 辺を両向きに足す（`sculpt.ts` の `localAverages` と同じやり方）。
- * 同じ隣を何度も足すことになるが、平均なので偏りは出ない。
+ * **面の本物の辺だけ**を両向きに足す（`sculpt.ts` の `localAverages` と同じ
+ * やり方。`35` の T1）。四角を扇で割ると対角線が三角形の辺として出てくるが、
+ * それは隣ではない。ぼかしは境目をなじませるためのものなので、隣でないほうへ
+ * 寄ると用を成さない。
  *
  * **読みながら書かない**（先に全部読む）。書きながら読むと、頂点の番号順で
  * 結果が変わってしまう。
  *
- * `Mesh` は要らない（三角形の並びだけで隣が分かる）。呼ぶ側は表示に使っている
- * `view.tri.tri` をそのまま渡せばよい。
+ * `Mesh` は要らない（三角形の並びと印だけで隣が分かる）。呼ぶ側は表示に使って
+ * いる `view.tri` をそのまま渡せばよい。
  */
-export function blurMask(tri: Uint32Array, values: Float32Array): void {
+export function blurMask(tris: Triangulation, values: Float32Array): void {
   const n = values.length;
+  const tri = tris.tri;
+  const real = tris.realEdges;
   const sum = new Float32Array(n);
   const count = new Uint32Array(n);
   const add = (v: number, u: number): void => {
@@ -92,12 +96,19 @@ export function blurMask(tri: Uint32Array, values: Float32Array): void {
     const a = tri[t];
     const b = tri[t + 1];
     const c = tri[t + 2];
-    add(a, b);
-    add(b, a);
-    add(b, c);
-    add(c, b);
-    add(c, a);
-    add(a, c);
+    const r = real[t / 3];
+    if (r & 1) {
+      add(a, b);
+      add(b, a);
+    }
+    if (r & 2) {
+      add(b, c);
+      add(c, b);
+    }
+    if (r & 4) {
+      add(c, a);
+      add(a, c);
+    }
   }
   for (let v = 0; v < n; v++) {
     if (!count[v]) continue;

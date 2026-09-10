@@ -1007,6 +1007,147 @@ check(
   cursorRound.map((r) => `${r.name} 縦横比 ${r.ratio.toFixed(3)}${r.note ? ` ${r.note}` : ` · ${r.px.toFixed(0)}px`}`).join(" / "),
 );
 
+/* 17m. スムースが「隣でないもの」を数えていない（`35` の T1） */
+//
+// 四角を頂点 0 からの扇で三角形にしているので、対角線が三角形の辺として出る。
+// それを隣として数えていると、**同じ形でも面のコーナーを回しただけで結果が
+// 変わる**。中を覗かず、そこで見る。
+const cornerOrder = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const core = window.macbethCore;
+  const rotate = (m, by) => {
+    const b = new core.MeshBuilder({ weld: false });
+    for (let v = 0; v < m.vertexCount; v++) {
+      b.vertex(m.positions[v * 3], m.positions[v * 3 + 1], m.positions[v * 3 + 2]);
+    }
+    for (let f = 0; f < m.faceCount; f++) {
+      const vs = m.faceVerts(f);
+      b.face(vs.map((_, i) => vs[(i + by) % vs.length]));
+    }
+    return b.build();
+  };
+  const runs = [];
+  for (const by of [0, 1]) {
+    const m = rotate(core.PRIMITIVES.plane.build({ ...core.defaultParams("plane"), sdW: 10, sdH: 10 }), by);
+    for (let v = 0; v < m.vertexCount; v++) m.positions[v * 3 + 1] += (v % 3) * 0.02;
+    const tris = m.triangulate();
+    const bvh = core.buildBvh(m.positions, { tri: tris.tri });
+    for (let i = 0; i < 3; i++) {
+      const fp = core.strokeFootprint(m, bvh, tris, [0, 0, 0], 5);
+      core.applyStroke(m, fp, tris, { kind: "smooth", point: [0, 0, 0], radius: 5, strength: 1, invert: false });
+    }
+    runs.push(m.positions.slice());
+  }
+  let worst = 0;
+  for (let i = 0; i < runs[0].length; i++) worst = Math.max(worst, Math.abs(runs[1][i] - runs[0][i]));
+  // 印が正しいか（面の辺だけに立っているか）も一緒に見る
+  const ball = core.PRIMITIVES.sphere.build({ ...core.defaultParams("sphere"), sdAxis: 12, sdHeight: 8 });
+  const t = ball.triangulate();
+  const key = (a, b) => `${Math.min(a, b)},${Math.max(a, b)}`;
+  const real = new Set(ball.edges().map(([a, b]) => key(a, b)));
+  let marked = 0, wrong = 0;
+  for (let k = 0; k < t.realEdges.length; k++) {
+    const [a, b, c] = [t.tri[k * 3], t.tri[k * 3 + 1], t.tri[k * 3 + 2]];
+    const r = t.realEdges[k];
+    for (const [bit, x, y] of [[1, a, b], [2, b, c], [4, c, a]]) {
+      if (!(r & bit)) continue;
+      marked++;
+      if (!real.has(key(x, y))) wrong++;
+    }
+  }
+  return { worst, marked, wrong };
+});
+check(
+  "スムースが隣でないもの（四角の対角）を数えない",
+  cornerOrder.worst < 1e-6 && cornerOrder.marked > 0 && cornerOrder.wrong === 0,
+  `コーナーを回しても差は最大 ${cornerOrder.worst.toExponential(1)} / 印 ${cornerOrder.marked} 本すべて面の辺（外れ ${cornerOrder.wrong}）`,
+);
+
+/* 17n. 極（価数）の表示（`35` の T2） */
+//
+// 色は 3 つだけ: 素の灰 = 価数 4 か境界 / 橙 = 三角形の痕（価数 3 以下）/
+// 青 = n 角形の痕（価数 5 以上）。**UV 球は上下に極を持つ**ので、
+// 「全部四角＝1 色」にはならない。そこが見えることこそ、この表示の目的。
+const polesView = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const core = window.macbethCore;
+  const keep = app.state.doc.objects.slice();
+  const camBefore = app.viewport.saveLayout();
+  const modeBefore = app.state.mode;
+  const dispBefore = app.state.display;
+  const selBefore = app.state.selected;
+
+  const NAMES = { "0.62,0.65,0.68": "灰", "0.95,0.45,0.25": "橙", "0.35,0.55,0.95": "青" };
+  const colorsOf = (o) => {
+    const view = app.viewport.viewOf(o);
+    const attr = view?.surface.geometry.getAttribute("color");
+    if (!attr) return null;
+    const seen = new Set();
+    for (let i = 0; i < attr.count; i++) {
+      const k = `${attr.getX(i).toFixed(2)},${attr.getY(i).toFixed(2)},${attr.getZ(i).toFixed(2)}`;
+      seen.add(NAMES[k] ?? k);
+    }
+    return [...seen].sort();
+  };
+
+  app.state.doc.objects.length = 0;
+  // 平面: 内部は全部価数 4、ふちは境界 → 灰だけ
+  const flat = app.state.doc.addMesh(
+    core.PRIMITIVES.plane.build({ ...core.defaultParams("plane"), sdW: 6, sdH: 6 }),
+    "Flat",
+  );
+  // UV 球: 上下に極がある → 灰 + 青
+  const ball = app.state.doc.addMesh(
+    core.PRIMITIVES.sphere.build({ ...core.defaultParams("sphere"), sdAxis: 12, sdHeight: 8 }),
+    "Ball",
+  );
+  // 五角錐: 三角 5 枚 + 五角形 1 枚。ふちは価数 3、頂は価数 5 → 橙 + 青
+  const b = new core.MeshBuilder({ weld: false });
+  const v = [];
+  for (let i = 0; i < 5; i++) v.push(b.vertex(Math.cos((i / 5) * 6.283), 0, Math.sin((i / 5) * 6.283)));
+  const top = b.vertex(0, 1, 0);
+  for (let i = 0; i < 5; i++) b.face([v[i], v[(i + 1) % 5], top]);
+  b.face([v[4], v[3], v[2], v[1], v[0]]);
+  const mixed = app.state.doc.addMesh(b.build(), "Mixed");
+  app.viewport.syncAll();
+
+  app.setDisplay("poles");
+  app.state.select(flat);
+  app.refresh();
+  const out = {
+    flat: colorsOf(flat),
+    ball: colorsOf(ball),
+    mixed: colorsOf(mixed),
+    usesVertexColors: app.viewport.viewOf(flat)?.surface.material.vertexColors === true,
+  };
+
+  // 表示を戻すと素の材質に戻る
+  app.setDisplay(dispBefore);
+  app.refresh();
+  out.backToPlain = app.viewport.viewOf(flat)?.surface.material.vertexColors !== true;
+
+  // 片づけ
+  app.setMode(modeBefore);
+  app.state.doc.objects.length = 0;
+  app.state.doc.objects.push(...keep);
+  app.viewport.syncAll();
+  app.viewport.restoreLayout(camBefore);
+  app.state.select(selBefore ?? keep[0] ?? null);
+  app.history.clear();
+  app.refresh();
+  return out;
+});
+const sameSet = (a, b) => a && a.length === b.length && a.every((x, i) => x === b[i]);
+check(
+  "極の表示: 平面は灰だけ、球は極が青、三角混じりは橙と青",
+  polesView.usesVertexColors &&
+    polesView.backToPlain &&
+    sameSet(polesView.flat, ["灰"]) &&
+    sameSet(polesView.ball, ["灰", "青"]) &&
+    sameSet(polesView.mixed, ["橙", "青"]),
+  `平面 [${polesView.flat}] / 球 [${polesView.ball}] / 五角錐 [${polesView.mixed}] / 戻すと素の材質 ${polesView.backToPlain}`,
+);
+
 /* 18. 縦持ちでもビューポートが縦一杯（右のドック列は空なので場所を取らない。`24` の T1） */
 await page.setViewportSize({ width: 744, height: 1133 }); // iPad mini の縦
 await page.waitForTimeout(200);

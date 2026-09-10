@@ -396,8 +396,8 @@ export async function runBench(app: App, quick: boolean, size?: number): Promise
       const point: [number, number, number] = [0, topY, 0];
       let touched = 0;
       const ms = timeIt(5, () => {
-        const fp = strokeFootprint(target, app.viewport.bvhOf(view), view.tri.tri, point, brushRadius);
-        const moved = applyStroke(target, fp, view.tri.tri, {
+        const fp = strokeFootprint(target, app.viewport.bvhOf(view), view.tri, point, brushRadius);
+        const moved = applyStroke(target, fp, view.tri, {
           kind: "standard",
           point,
           radius: brushRadius,

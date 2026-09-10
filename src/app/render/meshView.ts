@@ -17,7 +17,7 @@ import {
   Quaternion,
   Vector3,
 } from "three";
-import type { Bvh, Mesh, SceneObject, Transform } from "../../core/index.js";
+import type { Bvh, Mesh, SceneObject, Transform, Triangulation } from "../../core/index.js";
 import { heatColor } from "../uv/heat.js";
 import { MAT } from "./materials.js";
 
@@ -27,7 +27,7 @@ import { MAT } from "./materials.js";
  */
 export function surfaceGeometry(
   mesh: Mesh,
-  tri: { tri: Uint32Array; triToFace: Uint32Array },
+  tri: Triangulation,
   angleDeg: number,
 ): BufferGeometry {
   const fn = mesh.faceNormals();
@@ -104,7 +104,7 @@ export function surfaceGeometry(
  * 面の中はすべて同じ色になる。歪みが無ければ島と同じ色。
  */
 export function heatColors(
-  tri: { tri: Uint32Array; triToFace: Uint32Array },
+  tri: Triangulation,
   heat: Float32Array | null,
 ): Float32Array {
   const count = tri.tri.length;
@@ -118,6 +118,67 @@ export function heatColors(
       col[o + 1] = c[1];
       col[o + 2] = c[2];
     }
+  }
+  return col;
+}
+
+/**
+ * 極（価数の違う頂点）の色（`35` の T2）。
+ *
+ * **三角形や n 角形を混ぜると、その痕が「価数 4 でない頂点」として残る。**
+ * Catmull-Clark を何段かけても消えない。そこは曲面が C¹ 止まりなので、
+ * 強く押すと引きつれや細かい波が出る。**彫る前にどこが荒れるか見せる**ための表示。
+ *
+ * 価数は**その頂点に触る面の数**で数える（`vertexFaces` は陰影付けで既に
+ * 作っているので、新しい隣接表を作らない）。
+ *
+ * **境界の頂点は素の色にする。** 境界では面の数が 1 つ少なく出るので、
+ * そのまま色を付けると平面のふちが全部「異常」に見えて読めなくなる。
+ */
+export function valenceColors(mesh: Mesh, tri: Triangulation): Float32Array {
+  const faces = mesh.vertexFaces();
+  // 境界の頂点。辺に触る面が 1 つしかない辺の両端
+  const onBoundary = new Set<number>();
+  {
+    // 文字列の鍵は 100 万面で重いので、数値 1 つにまとめる
+    const span = mesh.vertexCount;
+    const count = new Map<number, number>();
+    const ends = new Map<number, number>();
+    for (let f = 0; f < mesh.faceCount; f++) {
+      const vs = mesh.faceVerts(f);
+      for (let i = 0; i < vs.length; i++) {
+        const a = vs[i];
+        const b = vs[(i + 1) % vs.length];
+        const k = a < b ? a * span + b : b * span + a;
+        count.set(k, (count.get(k) ?? 0) + 1);
+        ends.set(k, a < b ? a : b);
+      }
+    }
+    for (const [k, n] of count) {
+      if (n !== 1) continue;
+      const lo = ends.get(k)!;
+      onBoundary.add(lo);
+      onBoundary.add(k - lo * span);
+    }
+  }
+
+  const NORMAL: [number, number, number] = [0.62, 0.65, 0.68];
+  const TRI: [number, number, number] = [0.95, 0.45, 0.25];
+  const NGON: [number, number, number] = [0.35, 0.55, 0.95];
+  const colorOf = (v: number): [number, number, number] => {
+    if (onBoundary.has(v)) return NORMAL;
+    const n = faces.get(v)?.length ?? 0;
+    if (n === 4) return NORMAL;
+    return n < 4 ? TRI : NGON;
+  };
+
+  const count = tri.tri.length;
+  const col = new Float32Array(count * 3);
+  for (let k = 0; k < count; k++) {
+    const c = colorOf(tri.tri[k]);
+    col[k * 3] = c[0];
+    col[k * 3 + 1] = c[1];
+    col[k * 3 + 2] = c[2];
   }
   return col;
 }
@@ -170,6 +231,10 @@ export interface ObjectView {
   checker?: MeshPhongMaterial;
   /** ヒートマップ表示の材質。初めて使うときに作る。 */
   heat?: MeshBasicMaterial;
+  /** 極（価数）表示の材質。初めて使うときに作る（`35` の T2）。 */
+  poles?: MeshBasicMaterial;
+  /** 極の色を作ったときのトポロジ。変わっていなければ作り直さない。 */
+  polesStamp?: string;
   /** 不透明度が 1 未満のときの材質（`25` の T4）。共有の `MAT.surf` を複製して使う。 */
   faded?: MeshPhongMaterial;
   /**
@@ -182,7 +247,7 @@ export interface ObjectView {
   backSource?: MeshPhongMaterial | MeshBasicMaterial;
   wire: LineSegments;
   points: Points;
-  tri: { tri: Uint32Array; triToFace: Uint32Array };
+  tri: Triangulation;
   edges: Array<[number, number]>;
   /**
    * 三角形の境界箱の木（`29` の B-T5）。初めて要るときに作る。
@@ -266,9 +331,11 @@ export function buildObjectView(o: SceneObject, smoothAngle: number, mesh: Mesh 
 export function disposeViewMaterials(view: ObjectView): void {
   view.checker?.dispose();
   view.heat?.dispose();
+  view.poles?.dispose();
   view.faded?.dispose();
   view.backMaterial?.dispose();
-  view.checker = view.heat = view.faded = undefined;
+  view.checker = view.heat = view.poles = view.faded = undefined;
+  view.polesStamp = undefined;
   view.backMaterial = view.backSource = view.back = undefined;
 }
 

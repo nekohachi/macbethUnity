@@ -181,6 +181,7 @@ const DISPLAY_KEYS: Record<string, Display> = {
   "7": "smooth",
   "8": "checker",
   "9": "heat",
+  "0": "poles",
 };
 
 const MODE_LABELS: Record<Mode, string> = {
@@ -325,6 +326,7 @@ const DISPLAY_ICONS: Record<Display, string> = {
   smooth: ICONS.smooth,
   checker: ICONS.mUV,
   heat: ICONS.heat,
+  poles: ICONS.poles,
 };
 
 /** カット / ソーのグループのアイコン（`24` の T5）。 */
@@ -2118,6 +2120,7 @@ export class App {
         smooth: "スムースシェード",
         checker: "チェッカー（UV の確認）",
         heat: "ヒートマップ（UV の歪み）",
+        poles: "極（価数。橙 = 三角形の痕 · 青 = n 角形の痕）",
       }[display],
     );
     this.uv?.rebuild();
@@ -2962,6 +2965,7 @@ export class App {
       W: { label: "スムースシェード", sub: "7", icon: ICONS.smooth, run: () => this.setDisplay("smooth") },
       NW: { label: "チェッカー", sub: "8", icon: ICONS.mUV, run: () => this.setDisplay("checker") },
       NE: { label: "ヒートマップ", sub: "9", icon: ICONS.heat, run: () => this.setDisplay("heat") },
+      SE: { label: "極（価数）", sub: "0", icon: ICONS.poles, run: () => this.setDisplay("poles") },
     };
   }
 

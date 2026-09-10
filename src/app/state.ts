@@ -9,7 +9,7 @@ import type { CheckerPattern } from "./render/checker.js";
 
 export type Mode = "model" | "uv" | "sculpt" | "material";
 export type CompMode = "object" | "vertex" | "edge" | "face";
-export type Display = "wire" | "shaded" | "shadedWire" | "smooth" | "checker" | "heat";
+export type Display = "wire" | "shaded" | "shadedWire" | "smooth" | "checker" | "heat" | "poles";
 export type Manip = "all" | "move" | "rotate" | "scale";
 /** 「編集」グループの中身（`21` の 2.3）。ツールとコマンドが混ざっている。 */
 export type EditKind = "multicut" | "bevel" | "bridge" | "extrude" | "connect" | "weld";

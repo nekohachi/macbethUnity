@@ -17,6 +17,27 @@ export function edgeKey(a: number, b: number): string {
 /** UV セット。コーナー単位（faceVarying）なので、シームがあっても正しく持てる。 */
 export type UvSet = Float32Array; // 2 × コーナー数
 
+/**
+ * 三角形にしたもの（`Mesh.triangulate()` が返す。`35` の T1）。
+ *
+ * **「隣」を数えるものは必ず `realEdges` を見ること。** 四角以上を扇で割ると
+ * 対角線が三角形の辺として出てくるが、それは面の辺ではない。対角線を隣として
+ * 数えると、スムースが 1 リングの外まで平均してしまう（閉じた球で 64 回そうなって
+ * いた）。しかもどの対角が出るかは**面のコーナーの並び順**で決まるので、形とは
+ * 関係のない方向へ偏る。
+ */
+export interface Triangulation {
+  /** 3 つ組の頂点インデックス。 */
+  tri: Uint32Array;
+  /** 各三角形の元の面。 */
+  triToFace: Uint32Array;
+  /**
+   * 三角形ごとに、3 辺のうちどれが**面の本物の辺**か（下位 3 ビット）。
+   * bit0 = (v0,v1) / bit1 = (v1,v2) / bit2 = (v2,v0)。
+   */
+  realEdges: Uint8Array;
+}
+
 export interface MeshStats {
   vertices: number;
   edges: number;
@@ -187,12 +208,19 @@ export class Mesh {
     return m;
   }
 
-  /** 三角形分割。tri は 3 つ組の頂点インデックス、triToFace は各三角形の元の面。 */
-  triangulate(): { tri: Uint32Array; triToFace: Uint32Array } {
+  /**
+   * 三角形分割。**頂点 0 からの扇**で割る。
+   *
+   * `realEdges` も一緒に出す。四角以上を扇で割ると**対角線**が出てくるが、
+   * それは面の辺ではない。「隣」を数えるものが対角線を隣として扱うと、
+   * 1 リングの外まで平均してしまう（`35` の 0 章）。
+   */
+  triangulate(): Triangulation {
     let triCount = 0;
     for (let f = 0; f < this.faceCount; f++) triCount += Math.max(0, this.faceSize(f) - 2);
     const tri = new Uint32Array(triCount * 3);
     const triToFace = new Uint32Array(triCount);
+    const realEdges = new Uint8Array(triCount);
     let t = 0;
     for (let f = 0; f < this.faceCount; f++) {
       const s = this.faceOffsets[f];
@@ -202,10 +230,14 @@ export class Mesh {
         tri[t * 3 + 1] = this.faceCorners[s + i];
         tri[t * 3 + 2] = this.faceCorners[s + i + 1];
         triToFace[t] = f;
+        // (c0, c_i) が面の辺なのは i === 1 のときだけ、
+        // (c_{i+1}, c0) は i === n-2 のときだけ。真ん中はいつでも面の辺。
+        // 三角形（n === 3）は i = 1 の 1 回だけなので 3 辺とも立つ
+        realEdges[t] = (i === 1 ? 1 : 0) | 2 | (i === n - 2 ? 4 : 0);
         t++;
       }
     }
-    return { tri, triToFace };
+    return { tri, triToFace, realEdges };
   }
 
   faceCenter(f: number): [number, number, number] {
