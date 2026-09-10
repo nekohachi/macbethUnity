@@ -1007,6 +1007,146 @@ check(
   cursorRound.map((r) => `${r.name} 縦横比 ${r.ratio.toFixed(3)}${r.note ? ` ${r.note}` : ` · ${r.px.toFixed(0)}px`}`).join(" / "),
 );
 
+/* 17o. CTL でマスクを描き、塗った所は彫れない（`34` の T3） */
+const maskPaint = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const core = window.macbethCore;
+  const keep = app.state.doc.objects.slice();
+  const camBefore = app.viewport.saveLayout();
+  const modeBefore = app.state.mode;
+  const selBefore = app.state.selected;
+  const modsBefore = { ...app.state.mods };
+
+  app.state.doc.objects.length = 0;
+  const o = app.state.doc.addMesh(
+    core.PRIMITIVES.sphere.build({ ...core.defaultParams("sphere"), sdAxis: 24, sdHeight: 16 }),
+    "MaskPaint",
+  );
+  app.viewport.syncAll();
+  app.state.select(o);
+  app.setMode("sculpt");
+  await app.levelForTest("add");
+  await app.levelForTest("add");
+  app.viewport.frameSelected();
+  app.refresh();
+  await new Promise((r) => setTimeout(r, 120));
+
+  const pane = document.getElementById("pane3d").getBoundingClientRect();
+  const gl = document.getElementById("gl");
+  const cx = pane.left + pane.width / 2;
+  const cy = pane.top + pane.height / 2;
+  const ev = (type, x, y) =>
+    new PointerEvent(type, {
+      pointerId: 78, pointerType: "pen", bubbles: true, cancelable: true,
+      clientX: x, clientY: y, pressure: 0.9, buttons: type === "pointerup" ? 0 : 1,
+    });
+  // 1 打ちで乗る濃さは筆の半径に対して決まっている（半径ぶん進んで 1.0）。
+  // 16px の短いなぞりでは 1 打ちしか乗らないので、**実際に塗るときのように**
+  // 長めに何度もなぞる
+  const drag = async () => {
+    gl.dispatchEvent(ev("pointerdown", cx - 60, cy));
+    for (let i = 1; i <= 24; i++) gl.dispatchEvent(ev("pointermove", cx - 60 + i * 5, cy));
+    gl.dispatchEvent(ev("pointerup", cx + 60, cy));
+    await new Promise((r) => setTimeout(r, 40));
+  };
+
+  // CTL ラッチを入れて何度かなぞる → マスクが濃くなる
+  app.state.mods.ctrl = "on";
+  app.refresh();
+  for (let i = 0; i < 6; i++) await drag();
+  const painted = o.mask
+    ? { level: o.mask.level, len: o.mask.values.length, max: Math.max(...Array.from(o.mask.values)) }
+    : null;
+  const entryAfterPaint = app.history.lastEntry()?.kind;
+  // 材質が頂点色になり、暗くなっている
+  const view = app.viewport.viewOf(o);
+  const colored = view?.surface.material.vertexColors === true;
+  const attr = view?.surface.geometry.getAttribute("color");
+  let darkest = 1;
+  if (attr) for (let i = 0; i < attr.count; i++) darkest = Math.min(darkest, attr.getX(i));
+
+  // **塗り切った頂点**（1.0）は 1 ミリも動かないはず。
+  // 0.6〜0.99 は「効きが弱くなる」だけで、少しは動くのが正しい
+  const frozen = [];
+  for (let v = 0; v < o.mask.values.length; v++) if (o.mask.values[v] >= 0.999) frozen.push(v);
+
+  // CTL を切って同じ所を彫る → マスクの濃い所は動かない
+  app.state.mods.ctrl = "off";
+  app.refresh();
+  const shownBefore = o.shown(app.state.shownLevel(o)).positions.slice();
+  await drag();
+  const shownAfter = o.shown(app.state.shownLevel(o)).positions;
+  const frozenSet = new Set(frozen);
+  let movedTotal = 0;
+  let movedFrozen = 0;
+  // 「濃い所の平均 vs 薄い所の平均」は**比べても意味がない**。濃い所は筆の
+  // 真ん中（もともといちばん動く所）、薄い所は球の裏まで含むので、population が
+  // 違う。効き目の比は単体テストの「マスク 0.5 ならちょうど半分」で見ている
+  for (let v = 0; v < shownBefore.length / 3; v++) {
+    const d = Math.hypot(
+      shownAfter[v * 3] - shownBefore[v * 3],
+      shownAfter[v * 3 + 1] - shownBefore[v * 3 + 1],
+      shownAfter[v * 3 + 2] - shownBefore[v * 3 + 2],
+    );
+    if (d > 1e-6) {
+      movedTotal++;
+      if (frozenSet.has(v)) movedFrozen++;
+    }
+  }
+
+  // SHF の一時スムース: ブラシの種類は変わらない
+  app.state.mods.shift = "on";
+  app.refresh();
+  await drag();
+  app.state.mods.shift = "off";
+  const kindAfterShift = app.state.brush.kind;
+
+  // 取り消しを続けるとマスクが消える（描く前は無かった）。
+  // マスク 6 本 + 彫り 1 本 + スムース 1 本 + 段 2 回ぶんあるので、
+  // 回数を決め打ちにせず、履歴が尽きるまで戻す
+  let maskGone = false;
+  for (let i = 0; i < 30 && app.history.canUndo; i++) {
+    app.history.undo();
+    if (o.mask === null) { maskGone = true; break; }
+  }
+
+  // 片づけ
+  app.state.mods.ctrl = modsBefore.ctrl;
+  app.state.mods.shift = modsBefore.shift;
+  app.state.mods.alt = modsBefore.alt;
+  app.setMode(modeBefore);
+  app.state.doc.objects.length = 0;
+  app.state.doc.objects.push(...keep);
+  app.viewport.syncAll();
+  app.viewport.restoreLayout(camBefore);
+  app.state.select(selBefore ?? keep[0] ?? null);
+  app.history.clear();
+  app.refresh();
+  return {
+    painted, entryAfterPaint, colored, darkest,
+    frozenCount: frozen.length, movedTotal, movedFrozen,
+    kindAfterShift, maskGone,
+  };
+});
+check(
+  "CTL でマスクを描き、塗り切った所は彫れない",
+  maskPaint.painted !== null &&
+    maskPaint.painted.max > 0.99 &&
+    maskPaint.entryAfterPaint === "mask" &&
+    maskPaint.colored &&
+    Math.abs(maskPaint.darkest - 0.35) < 0.01 &&
+    maskPaint.frozenCount > 0 &&
+    maskPaint.movedTotal > 5 &&
+    // 1.0 の頂点は 1 ミリも動かない
+    maskPaint.movedFrozen === 0 &&
+    maskPaint.kindAfterShift === "standard" &&
+    maskPaint.maskGone,
+  `マスク 段${maskPaint.painted?.level}・最大 ${maskPaint.painted?.max.toFixed(2)}（履歴 ${maskPaint.entryAfterPaint}）/ ` +
+    `頂点色 ${maskPaint.colored}・いちばん暗い ${maskPaint.darkest.toFixed(2)} / ` +
+    `彫って ${maskPaint.movedTotal} 頂点、うち塗り切った所 ${maskPaint.movedFrozen} 個（塗り切りは ${maskPaint.frozenCount}）/ ` +
+    `SHF のあとも ${maskPaint.kindAfterShift} / 取り消しで消える ${maskPaint.maskGone}`,
+);
+
 /* 17p. マスクが段について回り、.mbz に残る（`34` の T2） */
 //
 // マスクは 1 つの段にしか無いので、彫る段を変えたら一緒に移す。

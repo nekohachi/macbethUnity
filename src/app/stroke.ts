@@ -8,7 +8,17 @@
  *   レイ → 当たり点 → 範囲の頂点 → 動かす → デルタを取り直す → 部分描画
  * どれもメッシュ全体を触らないので、重さは**筆の太さ**で決まる。
  */
-import { applyStroke, strokeFootprint, type Mesh, type SceneObject, type StrokeInput } from "../core/index.js";
+import {
+  applyStroke,
+  maskIsEmpty,
+  paintMask,
+  strokeFootprint,
+  type BrushKind,
+  type MaskInput,
+  type Mesh,
+  type SceneObject,
+  type StrokeInput,
+} from "../core/index.js";
 import type { Viewport } from "./render/viewport.js";
 import type { Picker, ScreenPoint } from "./render/picking.js";
 import type { History } from "./history.js";
@@ -20,6 +30,22 @@ import { Vector3 } from "three";
 interface Live {
   object: SceneObject;
   level: number;
+  /**
+   * このストロークの役割（`34` の T3）。**押した瞬間に決めて、離すまで変えない。**
+   *
+   * 途中で CTL を切っても、そのストロークはマスクのまま。役割が入れ替わると
+   * 履歴の 1 段に彫りと塗りが混ざってしまう。
+   */
+  role: "sculpt" | "mask";
+  /** このストロークで使うブラシ（Shift のときは強制的にスムース）。 */
+  kind: BrushKind;
+  /** 消す（CTL + ALT）。マスクのときだけ見る。 */
+  erase: boolean;
+  /**
+   * 視線の向き（オブジェクト空間、カメラから面へ）。裏面マスクに使う。
+   * **押したときに 1 回作る**（ストロークの間はカメラが動かない）。
+   */
+  viewDir: [number, number, number] | null;
   /** 前のコマの当たり点（オブジェクト空間）。間を埋めるのに使う。 */
   last: [number, number, number];
   /** 1 本のあいだに触った頂点。離すときに描画を作り直す範囲。 */
@@ -38,6 +64,7 @@ interface Live {
 }
 
 const scratch = new Vector3();
+const dirScratch = new Vector3();
 
 /**
  * 打つ間隔（筆の半径に対する割合）。ZBrush の Stroke → Spacing にあたる。
@@ -86,16 +113,57 @@ export class StrokeDriver {
   }
 
   /** 押した。当たらなければ何も始めない（カメラにも化けさせない）。 */
-  begin(p: ScreenPoint, pressure: number): boolean {
+  begin(p: ScreenPoint, pressure: number, mods?: { ctrl?: boolean; shift?: boolean; alt?: boolean }): boolean {
     if (!this.canSculpt()) return false;
     const o = this.state.selected!;
     const at = this.hitLocal(p);
     if (!at) return false;
-    this.live = { object: o, level: o.activeLevel, last: at, touched: new Set(), pending: new Set(), hits: 0, carry: 0 };
-    this.history.beginSculpt(o, o.activeLevel);
+
+    // **役割は押した瞬間に決める**（`34` の T3）
+    const ctrl = mods?.ctrl ?? this.state.modOn("ctrl");
+    const shift = mods?.shift ?? this.state.modOn("shift");
+    const alt = mods?.alt ?? this.state.modOn("alt");
+    const role: "sculpt" | "mask" = ctrl ? "mask" : "sculpt";
+    // Shift はこのストロークだけスムース。ブラシの種類そのものは変えない
+    const kind: BrushKind = role === "mask" ? this.state.brush.kind : shift ? "smooth" : this.state.brush.kind;
+
+    this.live = {
+      object: o,
+      level: o.activeLevel,
+      role,
+      kind,
+      erase: role === "mask" && alt,
+      viewDir: role === "sculpt" && this.state.brush.backfaceMask ? this.viewDirOf(o) : null,
+      last: at,
+      touched: new Set(),
+      pending: new Set(),
+      hits: 0,
+      carry: 0,
+    };
+    if (role === "mask") this.history.beginMask(o, o.activeLevel);
+    else this.history.beginSculpt(o, o.activeLevel);
     this.stamp(at, pressure, null);
     this.flush(this.live);
     return true;
+  }
+
+  /**
+   * 視線の向きをオブジェクト空間で出す（裏面マスク用。`34` の T3）。
+   *
+   * **向きだけ**なので平行移動は掛けない。`transformDirection` が正規化する。
+   * 平行投影ではカメラの向きがそのまま視線、透視でもストロークの範囲では
+   * ほぼ変わらないので、押したときに 1 回作れば足りる。
+   */
+  private viewDirOf(o: SceneObject): [number, number, number] | null {
+    const view = this.viewport.viewOf(o);
+    if (!view) return null;
+    view.group.updateMatrixWorld();
+    const camera = this.viewport.camera;
+    camera.updateMatrixWorld();
+    // カメラの前方は -Z（three の決まり）
+    const d = dirScratch.setFromMatrixColumn(camera.matrixWorld, 2).negate();
+    d.transformDirection(view.group.matrixWorld.clone().invert());
+    return [d.x, d.y, d.z];
   }
 
   /**
@@ -122,7 +190,9 @@ export class StrokeDriver {
     const dist = Math.hypot(dx, dy, dz);
     if (dist <= 0) return;
 
-    if (this.state.brush.kind === "move") {
+    // ムーブだけ別扱い（`33` の T3）。**`live.kind` で見る**。Shift の一時
+    // スムース中はムーブではないし、マスクを塗るときも距離で刻む
+    if (live.role === "sculpt" && live.kind === "move") {
       this.stamp(at, pressure, [dx, dy, dz]);
       this.flush(live);
       live.last = at;
@@ -156,9 +226,19 @@ export class StrokeDriver {
       this.history.abortPending();
       return;
     }
+    if (live.role === "mask") {
+      // 全部 0 に消したなら持たない（`34` の 1 章）
+      const o = live.object;
+      if (o.mask && maskIsEmpty(o.mask.values)) {
+        o.mask = null;
+        this.viewport.refreshMaskAll(o);
+      }
+      this.history.commitPending(live.erase ? "マスクを消した" : "マスクを描いた");
+      return;
+    }
     // 動かしている間は法線が古い。ここで正しくする（`29` の B-T6 と同じ形）
     this.viewport.refreshPositions(live.object);
-    this.history.commitPending(`${BRUSH_LABEL[this.state.brush.kind]}で彫った`);
+    this.history.commitPending(`${BRUSH_LABEL[live.kind]}で彫った`);
   }
 
   /** 途中でやめる（指が増えた、モードが変わった）。 */
@@ -172,7 +252,10 @@ export class StrokeDriver {
     this.history.abortPending();
   }
 
-  /** ブラシを 1 回当てる。対称が入っていれば鏡映側にも当てる（`33` の T4）。 */
+  /**
+   * ブラシを 1 回当てる。対称が入っていれば鏡映側にも当てる（`33` の T4）。
+   * マスクを塗るときも同じ道を通る（`34` の T3）。
+   */
   private stamp(point: [number, number, number], pressure: number, move: [number, number, number] | null): void {
     const live = this.live;
     if (!live) return;
@@ -180,13 +263,30 @@ export class StrokeDriver {
     const { radius, strength } = brushAt(b, pressure);
     if (strength <= 0 || radius <= 0) return;
 
+    if (live.role === "mask") {
+      const input: MaskInput = { point, radius, strength, erase: live.erase };
+      let any = this.paint(live, input);
+      if (b.symmetryX) {
+        any =
+          this.paint(live, {
+            ...input,
+            point: [-point[0], point[1], point[2]],
+            excludeNearX: radius * 0.01,
+          }) || any;
+      }
+      if (any) live.hits++;
+      return;
+    }
+
     const input: StrokeInput = {
-      kind: b.kind,
+      kind: live.kind,
       point,
       move: move ?? undefined,
       radius,
       strength,
       invert: b.invert,
+      mask: this.maskFor(live),
+      viewDir: live.viewDir ?? undefined,
     };
     let any = this.hit(live, input);
     if (b.symmetryX) {
@@ -202,6 +302,47 @@ export class StrokeDriver {
       any = this.hit(live, mirrored) || any;
     }
     if (any) live.hits++;
+  }
+
+  /**
+   * 彫るときに見るマスク。**段が合っているときだけ**渡す。
+   *
+   * 段が違うマスクを渡すと頂点の番号がずれて、見当違いの所が固くなる。
+   * `goLevel` が移しているので、ふつうは合っている（`34` の T2）。
+   */
+  private maskFor(live: Live): Float32Array | undefined {
+    const m = live.object.mask;
+    return m && m.level === live.level ? m.values : undefined;
+  }
+
+  /**
+   * マスクを 1 打ちぶん塗る（`34` の T3）。
+   *
+   * 彫るほうと同じで、**値を書き換えるだけ**。色の書き換えは `flush` に回す。
+   */
+  private paint(live: Live, input: MaskInput): boolean {
+    const o = live.object;
+    const view = this.viewport.viewOf(o);
+    if (!view) return false;
+    const mesh: Mesh = this.viewport.meshOf(o);
+    const bvh = this.viewport.bvhOf(view);
+    const fp = strokeFootprint(mesh, bvh, view.tri, input.point, input.radius);
+    if (!fp.verts.length) return false;
+
+    // 無ければここで作る。**段はストロークを始めた段**
+    if (!o.mask || o.mask.level !== live.level || o.mask.values.length !== mesh.vertexCount) {
+      o.mask = { level: live.level, values: new Float32Array(mesh.vertexCount) };
+    }
+    // 塗る前の値を控える。同じ所を何度なぞっても最初の値が残る
+    this.history.trackMask(fp.verts, o.mask.values);
+
+    const changed = paintMask(mesh, fp, o.mask.values, input);
+    if (!changed.length) return false;
+    for (const v of changed) {
+      live.touched.add(v);
+      live.pending.add(v);
+    }
+    return true;
   }
 
   /**
@@ -250,6 +391,11 @@ export class StrokeDriver {
     if (!live.pending.size) return;
     const verts = Uint32Array.from(live.pending);
     live.pending.clear();
+    if (live.role === "mask") {
+      // 形は動いていないので、色だけ書き換える
+      this.viewport.refreshMask(live.object, verts);
+      return;
+    }
     levelsOf(live.object).sculptAt(live.level, verts);
     // 法線は据え置きで、動いた頂点だけ書き換える
     this.viewport.refreshMoved(live.object, verts);
@@ -271,7 +417,13 @@ export function strokeHint(state: AppState): string {
   if (!o) return "オブジェクトを選んでください";
   if (o.locked) return "ロックされています（アウトライナで外せます）";
   if (o.activeLevel === 0) {
+    // マスクも段が要る。レベル 0 はモデリングと同じ道なので、v1.5 では描かせない
     return o.multires.length ? "段を上げてから彫ってください" : "段を足してから彫ってください（段のボタンを長押し）";
   }
+  // いま押したらどうなるかを言う（`34` の T3）
+  if (state.modOn("ctrl")) {
+    return state.modOn("alt") ? "マスクを消しています（ALT を切ると描く）" : "マスクを描いています（ALT で消す）";
+  }
+  if (state.modOn("shift")) return "スムース（SHF のあいだだけ）";
   return "モデルの上をなぞってください";
 }

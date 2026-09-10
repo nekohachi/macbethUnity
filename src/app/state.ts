@@ -111,6 +111,14 @@ export interface BrushState {
   pressureStrength: boolean;
   /** ローカル X で鏡映（`33` の T4）。 */
   symmetryX: boolean;
+  /**
+   * 裏面マスク（`34`）。**既定でオン。**
+   *
+   * こちらに背を向けている頂点を触らない。ZBrush の既定はオフだが、
+   * タブレットで薄い形を触るときに切り忘れて壊すほうが痛い。
+   * これが無いと、ムーブで耳を引くと反対側の耳まで動く。
+   */
+  backfaceMask: boolean;
 }
 
 /**
@@ -270,6 +278,7 @@ export class AppState {
     strength: 0.67,
     radius: 0.4,
     invert: false,
+    backfaceMask: true,
     pressureSize: true,
     pressureStrength: true,
     symmetryX: true,

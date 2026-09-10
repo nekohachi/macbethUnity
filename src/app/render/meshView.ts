@@ -123,6 +123,31 @@ export function heatColors(
 }
 
 /**
+ * マスクを頂点色にする（`34` の T3）。
+ *
+ * マスクの材質は `MAT.surf` の複製に `vertexColors` を立てたものなので、
+ * ここの色は**素の色に掛かる**。0 なら 1 倍で素のまま、1 なら 0.35 倍で暗くなる。
+ * ZBrush と同じ「マスクした所が暗い」見た目。
+ */
+export function maskColorAt(mask: number): number {
+  return 1 - 0.65 * mask;
+}
+
+/** マスクぜんぶを頂点色にする。コーナーごとに 3 つ組で返す。 */
+export function maskColors(tri: Triangulation, values: Float32Array | null): Float32Array {
+  const count = tri.tri.length;
+  const col = new Float32Array(count * 3);
+  for (let k = 0; k < count; k++) {
+    const v = tri.tri[k];
+    const g = maskColorAt(values && v < values.length ? values[v] : 0);
+    col[k * 3] = g;
+    col[k * 3 + 1] = g;
+    col[k * 3 + 2] = g;
+  }
+  return col;
+}
+
+/**
  * 極（価数の違う頂点）の色（`35` の T2）。
  *
  * **三角形や n 角形を混ぜると、その痕が「価数 4 でない頂点」として残る。**
@@ -233,6 +258,15 @@ export interface ObjectView {
   heat?: MeshBasicMaterial;
   /** 極（価数）表示の材質。初めて使うときに作る（`35` の T2）。 */
   poles?: MeshBasicMaterial;
+  /** マスク表示の材質（`34` の T3）。`MAT.surf` の複製に頂点色を立てたもの。 */
+  masked?: MeshPhongMaterial;
+  /**
+   * いま `color` 属性に入っているものの種類（`34` の T3）。
+   *
+   * ヒート・極・マスクが**同じ `color` 属性を取り合う**ので、違う種類が
+   * 入ったまま部分更新すると、マスクの上に価数の色が残る。
+   */
+  colorKind?: "heat" | "poles" | "mask";
   /** 極の色を作ったときのトポロジ。変わっていなければ作り直さない。 */
   polesStamp?: string;
   /** 不透明度が 1 未満のときの材質（`25` の T4）。共有の `MAT.surf` を複製して使う。 */
@@ -332,10 +366,11 @@ export function disposeViewMaterials(view: ObjectView): void {
   view.checker?.dispose();
   view.heat?.dispose();
   view.poles?.dispose();
+  view.masked?.dispose();
   view.faded?.dispose();
   view.backMaterial?.dispose();
-  view.checker = view.heat = view.poles = view.faded = undefined;
-  view.polesStamp = undefined;
+  view.checker = view.heat = view.poles = view.faded = view.masked = undefined;
+  view.polesStamp = view.colorKind = undefined;
   view.backMaterial = view.backSource = view.back = undefined;
 }
 

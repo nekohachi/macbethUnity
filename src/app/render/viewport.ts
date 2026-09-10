@@ -34,7 +34,7 @@ import {
 } from "three";
 import { buildBvh, refitBvh, refitBvhPartial, type Bvh, type Mesh, type PaneLayout, type SceneObject } from "../../core/index.js";
 import { defaultCamOpts, type AppState, type PaneLike } from "../state.js";
-import { MAT, checkerMaterial, heatMaterial } from "./materials.js";
+import { MAT, checkerMaterial, heatMaterial, maskMaterial } from "./materials.js";
 import {
   applyTransform,
   buildObjectView,
@@ -43,6 +43,8 @@ import {
   disposeViewMaterials,
   heatColors,
   positionGeometry,
+  maskColorAt,
+  maskColors,
   surfaceGeometry,
   valenceColors,
   wireGeometry,
@@ -797,6 +799,56 @@ export class Viewport {
   private applyHeat(view: ObjectView): void {
     const colors = heatColors(view.tri, view.object.uvHeat);
     view.surface.geometry.setAttribute("color", new Float32BufferAttribute(colors, 3));
+    view.colorKind = "heat";
+  }
+
+  /**
+   * マスクを頂点色にして積む（`34` の T3）。**ぜんぶ作り直す。**
+   *
+   * 塗っている最中は `refreshMask` で動いた頂点だけ書き換える。ここを通すのは
+   * 表示を切り替えたとき・ぼかしや反転・取り消し・段を移したとき。
+   */
+  private applyMask(view: ObjectView, force = false): void {
+    const attr = view.surface.geometry.getAttribute("color") as BufferAttribute | undefined;
+    const want = view.tri.tri.length;
+    if (!force && view.colorKind === "mask" && attr?.count === want) return;
+    const values = view.object.mask?.values ?? null;
+    view.surface.geometry.setAttribute("color", new Float32BufferAttribute(maskColors(view.tri, values), 3));
+    view.colorKind = "mask";
+  }
+
+  /**
+   * マスクの色を、**動いた頂点のぶんだけ**書き換える（`34` の T3）。
+   * `refreshMoved` と同じ形。塗っている最中はこちらを通す。
+   */
+  refreshMask(o: SceneObject, verts: Iterable<number>): void {
+    const view = this.views.get(o.id);
+    if (!view) return;
+    // 違う種類の色が入っていたら、部分更新では直らない
+    if (view.colorKind !== "mask") return this.applyMask(view, true);
+    const mesh = this.meshOf(o);
+    const slots = (view.slots ??= buildVertexSlots(mesh.vertexCount, view.tri, view.edges));
+    if (slots.surfaceOffsets.length !== mesh.vertexCount + 1) return this.applyMask(view, true);
+    const attr = view.surface.geometry.getAttribute("color") as BufferAttribute | undefined;
+    if (!attr || attr.count !== view.tri.tri.length) return this.applyMask(view, true);
+    const values = o.mask?.values ?? null;
+    for (const v of verts) {
+      if (v < 0 || v >= mesh.vertexCount) continue;
+      const g = maskColorAt(values && v < values.length ? values[v] : 0);
+      for (let i = slots.surfaceOffsets[v]; i < slots.surfaceOffsets[v + 1]; i++) {
+        attr.setXYZ(slots.surfaceSlots[i], g, g, g);
+      }
+    }
+    attr.needsUpdate = true;
+  }
+
+  /** マスクの色をぜんぶ作り直す（ぼかし・反転・全解除・段の移動・読み込み）。 */
+  refreshMaskAll(o: SceneObject): void {
+    const view = this.views.get(o.id);
+    if (!view) return;
+    if (this.state.mode === "sculpt" && o.mask) this.applyMask(view, true);
+    // マスクが無くなったら素の材質へ戻す
+    this.applyDisplay(view);
   }
 
   /**
@@ -809,9 +861,10 @@ export class Viewport {
   private applyPoles(view: ObjectView): void {
     const mesh = this.meshOf(view.object);
     const stamp = `${mesh.vertexCount}/${mesh.faceCount}/${view.tri.tri.length}`;
-    if (view.polesStamp === stamp && view.surface.geometry.getAttribute("color")) return;
+    if (view.polesStamp === stamp && view.colorKind === "poles") return;
     view.polesStamp = stamp;
     view.surface.geometry.setAttribute("color", new Float32BufferAttribute(valenceColors(mesh, view.tri), 3));
+    view.colorKind = "poles";
   }
 
   /**
@@ -848,6 +901,10 @@ export class Viewport {
     if (d === "heat") this.applyHeat(view);
     // 極は価数を色で。三角形や n 角形の痕がどこに残ったか見える（`35` の T2）
     if (d === "poles") this.applyPoles(view);
+    // マスクはスカルプトのときだけ。塗った所が暗くなる（`34` の T3）。
+    // チェッカーとヒートは UV を見るためのものなので、そちらが優先
+    const showMask = this.state.mode === "sculpt" && !!view.object.mask && d !== "checker" && d !== "heat" && d !== "poles";
+    if (showMask) this.applyMask(view);
     // 不透明度が 1 未満なら、そのオブジェクトだけの材質にする（`25` の T4）。
     // 共有の MAT.surf を透明にすると全部が透けるので、複製を 1 つ持つ。
     const opacity = view.object.opacity;
@@ -858,9 +915,11 @@ export class Viewport {
           ? (view.heat ??= heatMaterial())
           : d === "poles"
             ? (view.poles ??= heatMaterial())
-          : opacity < 1
-            ? (view.faded ??= MAT.surf.clone())
-            : MAT.surf;
+            : showMask
+              ? (view.masked ??= maskMaterial())
+              : opacity < 1
+                ? (view.faded ??= MAT.surf.clone())
+                : MAT.surf;
     if (mat !== MAT.surf) {
       // 裏の面が先に描かれて手前が消えるのを避けるため、透けているあいだは深度を書かない
       mat.transparent = opacity < 1;

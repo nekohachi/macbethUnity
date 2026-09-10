@@ -603,6 +603,16 @@ export class App {
       levelsOf(o).rebuildDetail(level, verts);
       this.viewport.refreshPositions(o);
     };
+    // マスクを戻した / やり直した（`34` の T3）。段が違えばその段へ行ってから見せる
+    this.history.onMaskUndo = (o, level) => {
+      if (o.mask && o.activeLevel !== level && level <= levelCount(o)) {
+        o.activeLevel = level;
+        levelsOf(o);
+        this.viewport.rebuildObject(o);
+        this.renderToolColumn();
+      }
+      this.viewport.refreshMaskAll(o);
+    };
     this.autosave.onSaved = (at) =>
       this.hud.setSaveNote(`自動保存 ${new Date(at).toLocaleTimeString("ja-JP", { timeStyle: "short" })}`);
     this.autosave.onError = (m) => this.hud.toast(m);
@@ -1239,7 +1249,13 @@ export class App {
     // スカルプトはペン / 1 本指でそのまま彫る（`33` の T3）。
     // 当たらなければ何も始めない（カメラにも化けさせない）
     if (this.state.mode === "sculpt") {
-      if (!this.stroke.begin(p, pressureOf(e))) this.hud.toast(strokeHint(this.state));
+      // 役割は押した瞬間に決まる（`34` の T3）。PC のキーも見る
+      const mods = {
+        ctrl: this.state.modOn("ctrl") || e.ctrlKey || e.metaKey,
+        shift: this.state.modOn("shift") || e.shiftKey,
+        alt: this.state.modOn("alt") || e.altKey,
+      };
+      if (!this.stroke.begin(p, pressureOf(e), mods)) this.hud.toast(strokeHint(this.state));
       return;
     }
     // マルチカットは押している間ずっと予測線、離した位置で確定する

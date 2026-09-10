@@ -15,6 +15,19 @@ import { checkerTexture, type CheckerPattern } from "./checker.js";
 export const AXIS_COLORS = [0xd8524f, 0x6cc94a, 0x4f8fe0];
 
 /**
+ * マスク表示の材質（`34` の T3）。**`MAT.surf` の複製**に頂点色を立てたもの。
+ *
+ * 頂点色は素の色に**掛かる**ので、マスク 0 なら見た目は素のまま、
+ * 1 なら 0.35 倍で暗くなる。陰影は残るので形が読める（`heatMaterial` の
+ * ように光を無視すると、マスクしている間だけ形が見えなくなる）。
+ */
+export function maskMaterial(): MeshPhongMaterial {
+  const m = MAT.surf.clone();
+  m.vertexColors = true;
+  return m;
+}
+
+/**
  * 歪みのヒートマップ（`23` の T2）。面ごとの色を頂点色で持つので、
  * ライティングは通さない（色をそのまま見せたいため）。
  */

@@ -47,6 +47,7 @@ describe("ブラシの筆圧", () => {
     pressureSize: true,
     pressureStrength: true,
     symmetryX: true,
+    backfaceMask: true,
   };
 
   it("強く押すほど太く強くなる", () => {

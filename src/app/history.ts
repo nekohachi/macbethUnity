@@ -79,6 +79,27 @@ interface SculptDiff {
   after: Float32Array;
 }
 
+/**
+ * マスクの差分（`34` の T3）。
+ *
+ * マスクは**1 つの段にしか無い**ので、差分は段を憶えておく。戻すときに
+ * その段へ行ってから当てる（段ごとにあるスカルプトのデルタとはそこが違う）。
+ *
+ * `wasNull` / `isNull` は「無かった / 無くなった」の印。全解除は
+ * `isNull = true` で、`before` に全部を持つ。
+ */
+interface MaskDiff {
+  ref: SceneObject;
+  /** マスクがあった（できた）段。1 以上。 */
+  level: number;
+  verts: Uint32Array;
+  /** `verts.length`。 */
+  before: Float32Array;
+  after: Float32Array;
+  wasNull: boolean;
+  isNull: boolean;
+}
+
 /** トランスフォームだけの差分。オブジェクトモードのドラッグと 3 本指。 */
 interface TransformDiff {
   ref: SceneObject;
@@ -97,7 +118,8 @@ type Entry =
   | { kind: "full"; label: string; snap: Snapshot }
   | { kind: "positions"; label: string; diff: PositionDiff; sel: SelectionSnap }
   | { kind: "transform"; label: string; diff: TransformDiff; sel: SelectionSnap }
-  | { kind: "sculpt"; label: string; diff: SculptDiff; sel: SelectionSnap };
+  | { kind: "sculpt"; label: string; diff: SculptDiff; sel: SelectionSnap }
+  | { kind: "mask"; label: string; diff: MaskDiff; sel: SelectionSnap };
 
 /** 積む前の控え。`beginPositions` / `beginTransform` からコミットまでのあいだ。 */
 type Pending =
@@ -109,6 +131,15 @@ type Pending =
       level: number;
       /** ストローク中に触った頂点。コマごとに足していく。 */
       touched: Map<number, [number, number, number]>;
+      sel: SelectionSnap;
+    }
+  | {
+      kind: "mask";
+      ref: SceneObject;
+      level: number;
+      /** ストローク中に触った頂点 → **触る前**の値。 */
+      touched: Map<number, number>;
+      wasNull: boolean;
       sel: SelectionSnap;
     };
 
@@ -126,6 +157,11 @@ export class History {
    * デルタは書き戻したので、呼ばれた側は**その頂点の形を作り直す**。
    */
   onSculptUndo: ((o: SceneObject, level: number, verts: Uint32Array) => void) | null = null;
+  /**
+   * マスクを戻した / やり直したときに呼ぶ（`34` の T3）。
+   * 段が変わっている場合もあるので、呼ばれた側で段へ行って色を作り直す。
+   */
+  onMaskUndo: ((o: SceneObject, level: number) => void) | null = null;
 
   /**
    * 何回書き換わったか（`32` の T4）。commit / undo / redo のたびに 1 つ増える。
@@ -252,6 +288,64 @@ export class History {
   }
 
   /**
+   * マスクのストロークを始める（`34` の T3）。**1 本で履歴 1 段。**
+   *
+   * `wasNull` は「始めたときマスクが無かった」の印。取り消すと `null` へ戻す。
+   */
+  beginMask(o: SceneObject, level: number): void {
+    this.pending = {
+      kind: "mask",
+      ref: o,
+      level,
+      touched: new Map(),
+      wasNull: o.mask === null,
+      sel: this.selectionSnap(),
+    };
+  }
+
+  /**
+   * マスクの 1 コマで触った頂点を控える。**塗る前に**呼ぶこと
+   * （まだ知らない頂点だけ、そのときの値を覚える）。
+   */
+  trackMask(verts: Iterable<number>, values: Float32Array): void {
+    const p = this.pending;
+    if (p?.kind !== "mask") return;
+    for (const v of verts) {
+      if (p.touched.has(v)) continue;
+      p.touched.set(v, v < values.length ? values[v] : 0);
+    }
+  }
+
+  /**
+   * マスクを丸ごと入れ替える操作を 1 段積む（ぼかし・反転・全解除。`34` の T4）。
+   *
+   * 塗りと違って**全頂点**を前後で持つ。25 万四角形でも 4 バイト × 頂点数 × 2 で
+   * 2MB ほど。段の全複製（数十 MB）よりずっと軽いので、これでよい。
+   */
+  pushMaskChange(o: SceneObject, level: number, before: Float32Array | null, label: string): void {
+    const after = o.mask?.values ?? null;
+    const n = Math.max(before?.length ?? 0, after?.length ?? 0);
+    if (!n) return;
+    const verts = new Uint32Array(n);
+    const from = new Float32Array(n);
+    const to = new Float32Array(n);
+    let moved = false;
+    for (let v = 0; v < n; v++) {
+      verts[v] = v;
+      from[v] = before && v < before.length ? before[v] : 0;
+      to[v] = after && v < after.length ? after[v] : 0;
+      if (from[v] !== to[v]) moved = true;
+    }
+    if (!moved && (before === null) === (after === null)) return;
+    this.push2({
+      kind: "mask",
+      label,
+      diff: { ref: o, level, verts, before: from, after: to, wasNull: before === null, isNull: after === null },
+      sel: this.selectionSnap(),
+    });
+  }
+
+  /**
    * ストロークの 1 コマで触った頂点を控える。**動かす前に**呼ぶこと
    * （まだ知らない頂点だけ、そのときのデルタを覚える）。
    */
@@ -286,6 +380,30 @@ export class History {
       const after = cloneTransform(p.ref.transform);
       if (sameTransform(p.before, after)) return false;
       this.push2({ kind: "transform", label, diff: { ref: p.ref, before: p.before, after }, sel: p.sel });
+      return true;
+    }
+    if (p.kind === "mask") {
+      const values = p.ref.mask?.values ?? null;
+      if (!p.touched.size) return false;
+      const verts = new Uint32Array(p.touched.size);
+      const before = new Float32Array(p.touched.size);
+      const after = new Float32Array(p.touched.size);
+      let i = 0;
+      let moved = false;
+      for (const [v, was] of p.touched) {
+        verts[i] = v;
+        before[i] = was;
+        after[i] = values && v < values.length ? values[v] : 0;
+        if (before[i] !== after[i]) moved = true;
+        i++;
+      }
+      if (!moved) return false;
+      this.push2({
+        kind: "mask",
+        label,
+        diff: { ref: p.ref, level: p.level, verts, before, after, wasNull: p.wasNull, isNull: values === null },
+        sel: p.sel,
+      });
       return true;
     }
     if (p.kind === "sculpt") {
@@ -355,7 +473,7 @@ export class History {
       return snap;
     }
     // ストロークの途中でトポロジは変わらないので、ここへは来ない
-    if (p.kind === "sculpt") return this.snapshot();
+    if (p.kind === "sculpt" || p.kind === "mask") return this.snapshot();
     const after = new Float32Array(p.verts.length * 3);
     for (let i = 0; i < p.verts.length; i++) {
       const v = p.verts[i];
@@ -415,6 +533,27 @@ export class History {
     if (e.kind === "full") return;
     if (e.kind === "transform") {
       e.diff.ref.transform = cloneTransform(e.diff[which]);
+    } else if (e.kind === "mask") {
+      const d = e.diff;
+      const goneAfter = which === "before" ? d.wasNull : d.isNull;
+      if (goneAfter) {
+        d.ref.mask = null;
+      } else {
+        // 段が違えば作り直す。マスクは 1 つの段にしか無いので、
+        // 差分の段のものとして入れ直す（`34` の T3）
+        const size = d.verts.length ? Math.max(...Array.from(d.verts)) + 1 : 0;
+        let m = d.ref.mask;
+        if (!m || m.level !== d.level) {
+          m = { level: d.level, values: new Float32Array(Math.max(size, m?.values.length ?? 0)) };
+          d.ref.mask = m;
+        }
+        const from = d[which];
+        for (let i = 0; i < d.verts.length; i++) {
+          const v = d.verts[i];
+          if (v < m.values.length) m.values[v] = from[i];
+        }
+      }
+      this.onMaskUndo?.(d.ref, d.level);
     } else if (e.kind === "sculpt") {
       const d = e.diff;
       const delta = deltaOf(d.ref, d.level);
@@ -533,6 +672,9 @@ function deltaOf(o: SceneObject, level: number): Float32Array | null {
 
 function entryBytes(e: Entry): number {
   if (e.kind === "transform") return 2 * 10 * 8;
+  if (e.kind === "mask") {
+    return e.diff.verts.byteLength + e.diff.before.byteLength + e.diff.after.byteLength;
+  }
   if (e.kind === "sculpt") {
     return e.diff.verts.byteLength + e.diff.before.byteLength + e.diff.after.byteLength;
   }
