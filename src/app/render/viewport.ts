@@ -877,6 +877,7 @@ export class Viewport {
     this.refreshPositionsCount++;
     const view = this.views.get(o.id);
     if (!view) return this.rebuildObject(o);
+    view.ghostDirty = true;
     const mesh = this.meshOf(o);
     applyTransform(view.group, o.transform);
     view.group.updateMatrixWorld();
@@ -932,6 +933,7 @@ export class Viewport {
   refreshMoved(o: SceneObject, verts: Iterable<number>): void {
     const view = this.views.get(o.id);
     if (!view) return this.rebuildObject(o);
+    view.ghostDirty = true;
     applyTransform(view.group, o.transform);
     view.group.updateMatrixWorld();
     const mesh = this.meshOf(o);
@@ -1153,7 +1155,10 @@ export class Viewport {
   }
 
   applyDisplayAll(): void {
-    for (const view of this.views.values()) this.applyDisplay(view);
+    for (const view of this.views.values()) {
+      this.applyDisplay(view);
+      this.applyGhost(view);
+    }
     this.applyCulling();
     // 次のフレームでペインの表示を当て直す（選択の色などが変わっているため）
     this.displayStamp++;
@@ -1214,6 +1219,45 @@ export class Viewport {
    * （Maya の Texture Border Edges と同じ考え方。ユーザー要望）。
    */
   seamProvider: (() => Set<string> | null) | null = null;
+
+  /**
+   * ハイを重ねて見せるときの、いちばん上の段（`43` の T4）。app が差し込む。
+   * `null` を返せば重ねない（切ってある / 段が無い / スカルプト中）。
+   */
+  ghostProvider: ((o: SceneObject) => Mesh | null) | null = null;
+
+  /**
+   * ハイを重ねて見せる（`43` の T4。`03` の売り）。
+   *
+   * ローを直している間、いちばん上の段の形が薄く重なって見える。
+   * **選んでいるオブジェクトだけ**（全部出すと何を直しているか分からなくなる）。
+   *
+   * 作り直すのは「ローが動いた」と印が立ったときだけ。ドラッグの最中は
+   * `refreshMoved` が印を立てるが、ここは `refresh()` からしか呼ばれないので、
+   * **離してから 1 回**作り直る。
+   */
+  private applyGhost(view: ObjectView): void {
+    const mesh = view.object === this.state.selected ? (this.ghostProvider?.(view.object) ?? null) : null;
+    if (!mesh) {
+      if (view.ghost) view.ghost.visible = false;
+      return;
+    }
+    if (!view.ghost || view.ghostDirty) {
+      const tri = mesh.triangulate();
+      const geometry = surfaceGeometry(mesh, tri, this.shadingAngle);
+      if (view.ghost) {
+        view.ghost.geometry.dispose();
+        view.ghost.geometry = geometry;
+      } else {
+        view.ghost = new ThreeMesh(geometry, MAT.ghost);
+        // ローの面より後に描く（薄いものを上に重ねる）
+        view.ghost.renderOrder = 2;
+        view.group.add(view.ghost);
+      }
+      view.ghostDirty = false;
+    }
+    view.ghost.visible = true;
+  }
 
   /**
    * 筆の円を出す（`33` の T3。`34` で画面に正対させた）。

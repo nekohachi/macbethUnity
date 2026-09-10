@@ -290,6 +290,10 @@ export interface ObjectView {
   bvh?: Bvh;
   /** 頂点 → 描画バッファの位置（`29` の B-T6）。動いた分だけ書き換えるのに使う。 */
   slots?: VertexSlots;
+  /** ハイを重ねて見せる面（`43` の T4）。要るときだけ作る。 */
+  ghost?: ThreeMesh;
+  /** 重ねた面を作り直す必要があるか。ローが動いたら立てる。 */
+  ghostDirty?: boolean;
 }
 
 /**
@@ -374,39 +378,12 @@ export function refreshSurfaceNormals(
   const { surfaceOffsets, surfaceSlots } = slots;
   const cosA = Math.cos((angleDeg * Math.PI) / 180) - 1e-4;
 
-  // 面法線は `mesh.faceNormal` と同じ式（Newell）。**ここに書き写してある**のは、
-  // 戻り値の配列を面ごとに作らないため（1 コマで 1 万面を越える）
-  const p = mesh.positions;
-  const { faceOffsets, faceCorners } = mesh;
+  // 面法線は `mesh.faceNormalInto`（配列を返さない口。`43` の T1）。
+  // 式を写して持たない（2 か所に分かれると必ずずれる）
   const ensureFace = (f: number): void => {
     if (faceGen[f] === stamp) return;
     faceGen[f] = stamp;
-    const s0 = faceOffsets[f];
-    const cnt = faceOffsets[f + 1] - s0;
-    let nx = 0,
-      ny = 0,
-      nz = 0;
-    let a = faceCorners[s0 + cnt - 1];
-    let ax = p[a * 3],
-      ay = p[a * 3 + 1],
-      az = p[a * 3 + 2];
-    for (let i = 0; i < cnt; i++) {
-      const b = faceCorners[s0 + i];
-      const bx = p[b * 3],
-        by = p[b * 3 + 1],
-        bz = p[b * 3 + 2];
-      nx += (ay - by) * (az + bz);
-      ny += (az - bz) * (ax + bx);
-      nz += (ax - bx) * (ay + by);
-      a = b;
-      ax = bx;
-      ay = by;
-      az = bz;
-    }
-    const len = Math.hypot(nx, ny, nz) || 1;
-    faceNor[f * 3] = nx / len;
-    faceNor[f * 3 + 1] = ny / len;
-    faceNor[f * 3 + 2] = nz / len;
+    mesh.faceNormalInto(f, faceNor, f * 3);
   };
 
   // 1. 動いた頂点を含む面。法線を作り直す面はこれだけ

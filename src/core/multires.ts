@@ -30,23 +30,49 @@ export type Frames = Float32Array;
  */
 export class FramePlan {
   readonly vertexCount: number;
-  private readonly vertexFaces: number[][] = [];
-  private readonly faceVerts: number[][] = [];
+  /**
+   * 頂点 → 接する面（CSR。`43` の T1）。
+   *
+   * 前は `number[][]` で、**頂点ごとに JS の配列を 1 本**持っていた。
+   * 25 万四角形のレベル 2（23 万頂点）でそれが 23 万本あり、`SubdivPlan` の分と
+   * 合わせてヒープの主因になっていた（`32` の T5。実データ 19MB に対し 165MB）。
+   */
+  private readonly vfOffsets: Uint32Array;
+  private readonly vfFaces: Uint32Array;
   /** 参照接線の相手（番号が最小の隣接頂点）。無ければ -1。 */
   private readonly reference: Int32Array;
   private readonly scratch = new Float32Array(3);
 
   constructor(mesh: Mesh) {
-    this.vertexCount = mesh.vertexCount;
-    for (let f = 0; f < mesh.faceCount; f++) this.faceVerts.push(mesh.faceVerts(f));
-    const vf = mesh.vertexFaces();
-    const nb = mesh.vertexNeighbors();
-    this.reference = new Int32Array(this.vertexCount).fill(-1);
-    for (let v = 0; v < this.vertexCount; v++) {
-      this.vertexFaces.push(vf.get(v) ?? []);
-      let ref = -1;
-      for (const u of nb.get(v) ?? []) if (ref < 0 || u < ref) ref = u;
-      this.reference[v] = ref;
+    const n = (this.vertexCount = mesh.vertexCount);
+    const corners = mesh.faceCorners;
+    const offsets = mesh.faceOffsets;
+
+    // 頂点 → 面。コーナーを 2 周する（数えてから詰める）
+    this.vfOffsets = new Uint32Array(n + 1);
+    for (let f = 0; f < mesh.faceCount; f++) {
+      for (let i = offsets[f]; i < offsets[f + 1]; i++) this.vfOffsets[corners[i] + 1]++;
+    }
+    for (let v = 0; v < n; v++) this.vfOffsets[v + 1] += this.vfOffsets[v];
+    this.vfFaces = new Uint32Array(this.vfOffsets[n]);
+    const cursor = Uint32Array.from(this.vfOffsets.subarray(0, n));
+    for (let f = 0; f < mesh.faceCount; f++) {
+      for (let i = offsets[f]; i < offsets[f + 1]; i++) this.vfFaces[cursor[corners[i]]++] = f;
+    }
+
+    // 参照接線の相手。**面の辺をなめて最小の番号を取る**（`vertexNeighbors` の
+    // `Map` を作らない。同じ結果になる）
+    this.reference = new Int32Array(n).fill(-1);
+    for (let f = 0; f < mesh.faceCount; f++) {
+      const s = offsets[f];
+      const count = offsets[f + 1] - s;
+      for (let i = 0; i < count; i++) {
+        const a = corners[s + i];
+        const b = corners[s + ((i + 1) % count)];
+        if (a === b) continue;
+        if (this.reference[a] < 0 || b < this.reference[a]) this.reference[a] = b;
+        if (this.reference[b] < 0 || a < this.reference[b]) this.reference[b] = a;
+      }
     }
   }
 
@@ -55,15 +81,17 @@ export class FramePlan {
    * 法線は接する面から、参照接線は隣接頂点から作るので、
    * 「動いた頂点と面を共有する頂点」まで広がる。
    */
-  affected(moved: Iterable<number>): Set<number> {
+  affected(moved: Iterable<number>, mesh: Mesh): Set<number> {
     const faces = new Set<number>();
     const out = new Set<number>();
     for (const v of moved) {
       if (v < 0 || v >= this.vertexCount) continue;
       out.add(v);
-      for (const f of this.vertexFaces[v]) faces.add(f);
+      for (let i = this.vfOffsets[v]; i < this.vfOffsets[v + 1]; i++) faces.add(this.vfFaces[i]);
     }
-    for (const f of faces) for (const v of this.faceVerts[f]) out.add(v);
+    for (const f of faces) {
+      for (let i = mesh.faceOffsets[f]; i < mesh.faceOffsets[f + 1]; i++) out.add(mesh.faceCorners[i]);
+    }
     return out;
   }
 
@@ -73,18 +101,16 @@ export class FramePlan {
 
     // 法線は接する面の法線の和。全頂点まとめて作るときと同じ順序・同じ精度で足す
     const acc = this.scratch;
-    acc[0] = 0;
-    acc[1] = 0;
-    acc[2] = 0;
-    for (const f of this.vertexFaces[v]) {
-      const fn = smooth.faceNormal(f);
-      acc[0] += fn[0];
-      acc[1] += fn[1];
-      acc[2] += fn[2];
+    let nx = 0;
+    let ny = 0;
+    let nz = 0;
+    for (let i = this.vfOffsets[v]; i < this.vfOffsets[v + 1]; i++) {
+      // **配列を返させない**（`43` の T1）。面の数だけ作ると効いてくる
+      smooth.faceNormalInto(this.vfFaces[i], acc, 0);
+      nx += acc[0];
+      ny += acc[1];
+      nz += acc[2];
     }
-    let nx = acc[0];
-    let ny = acc[1];
-    let nz = acc[2];
     const nl = Math.hypot(nx, ny, nz);
     if (nl < 1e-12) {
       nx = 0;
@@ -352,7 +378,7 @@ export class Multires {
       const delta = this.deltas[i];
       if (delta && level.frames) {
         // 基底は「面を共有する頂点」まで変わるので、そのぶん広げてから乗せ直す
-        const wide = level.framePlan.affected(sub);
+        const wide = level.framePlan.affected(sub, level.smooth);
         for (const v of wide) level.framePlan.write(level.smooth, v, level.frames);
         writeDetail(level.mesh, level.smooth, level.frames, delta, wide);
         changed = wide;
@@ -581,23 +607,29 @@ function maxDeltaLength(deltas: Array<Float32Array | null>): number {
 /**
  * レベル 1 つぶんの推定メモリ（バイト。`32` の T3、`03` の 3.3）。
  *
- * 四角形 1 つあたり **560B**。内訳の見当は:
+ * **`43` の T3 で 560B → 240B に下げた。** `FramePlan` と `SubdivPlan` の
+ * `number[][]` と文字列キーの `Map` を CSR の typed array に直した（`43` の T1・T2）ので、
+ * 積み上げに入っていなかったぶんが実際に消えた。
+ *
+ * CI・25 万四角形をレベル 2 まで組んだときのヒープの増分は **+105MB → +46MB**。
+ * 段 1 + 段 2 の四角形は 288,000 なので **160B/四角形**。
+ * ここは**少なく見積もると落ちる**ので、その 1.5 倍を採る（端末差と測りのぶれの余裕）。
+ *
+ * 四角形 1 つあたりの内訳の見当は:
  *   `Mesh`        座標 12B/頂点（頂点 ≈ 面数）+ コーナー 4B × 4 + UV 8B × 4 ≒ 68B
  *   滑らかな面    同じものをもう 1 枚（S(L)。デルタを乗せる前）        ≒ 68B
  *   デルタと基底  デルタ 12B/頂点 + 接空間の基底 36B/頂点              ≒ 48B
  *   描画          三角形の索引・法線・ワイヤの頂点                     ≒ 84B
- *   `FramePlan`   頂点ごとの隣接を JS の配列で持つぶん（1 つずつが重い）
+ *   隣接の表      `FramePlan` と `SubdivPlan` の CSR（typed array）        ≒ 30B
  *
  * 最初は積み上げで 208B と置いたが、**ベンチの実測はその 2〜2.5 倍**だった
- * （`32` の T5。25 万四角形をレベル 2 まで組んで 128MB、100 万で 654MB）。
- * 積み上げに入れていなかった `FramePlan` の `number[][]` が効いている。
- *
- * **少なく見積もると落ちる**ので、実測に合わせて 560B にしてある
- * （この値で 25 万・100 万のどちらも実測の 0.9〜1.1 倍に収まる）。
+ * （`32` の T5）。積み上げに入れていなかった `FramePlan` と `SubdivPlan` の
+ * `number[][]` が効いていたので、560B に上げてしのいでいた。
+ * **`43` でそれを typed array に直した**ので、積み上げに近い所まで戻った。
  * 測り方を変えたら、ベンチの「レベル 2 までの推定メモリ」の行と照らして直すこと。
  *
  * **レベルを 1 つ上げると 4 倍になる。** ここを見せずに上げさせると落ちる。
  */
 export function estimateLevelBytes(faceCount: number): number {
-  return faceCount * 560;
+  return faceCount * 240;
 }

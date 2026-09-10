@@ -5,6 +5,7 @@
 import {
   type CanvasTexture,
   DoubleSide,
+  FrontSide,
   LineBasicMaterial,
   MeshBasicMaterial,
   MeshPhongMaterial,
@@ -58,6 +59,19 @@ export function checkerMaterial(cells: number, pattern: CheckerPattern): MeshPho
 
 export const MAT = {
   surf: new MeshPhongMaterial({ color: 0x9aa4ad, specular: 0x2a3138, shininess: 24, side: DoubleSide }),
+  /**
+   * ハイを重ねて見せるときの面（`43` の T4）。薄く、深度を書かない。
+   * 深度を書くとローのワイヤーが隠れて「どこを直しているか」が見えなくなる。
+   */
+  ghost: new MeshPhongMaterial({
+    color: 0x6ea8d8,
+    specular: 0x223044,
+    shininess: 16,
+    side: FrontSide,
+    transparent: true,
+    opacity: 0.25,
+    depthWrite: false,
+  }),
   wire: new LineBasicMaterial({ color: 0x141a1f, transparent: true, opacity: 0.9 }),
   /** オブジェクトモードで選択中。 */
   wireSel: new LineBasicMaterial({ color: 0x4dff4d }),

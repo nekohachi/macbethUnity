@@ -256,6 +256,37 @@ export class Mesh {
   }
 
   /** Newell の方法。n-gon でも凹面でも安定する。 */
+  /**
+   * 面法線を `out[at..at+2]` に書く（`43` の T1）。**配列を返さない。**
+   *
+   * `faceNormal` は面ごとに 3 要素の配列を作る。頂点法線や接空間の基底を
+   * まとめて作るときは面の数だけ呼ぶので、そこで作る配列がヒープを押し上げる。
+   */
+  faceNormalInto(f: number, out: Float32Array | Float64Array | number[], at = 0): void {
+    const s = this.faceOffsets[f];
+    const n = this.faceOffsets[f + 1] - s;
+    let nx = 0,
+      ny = 0,
+      nz = 0;
+    for (let i = 0; i < n; i++) {
+      const a = this.faceCorners[s + i];
+      const b = this.faceCorners[s + ((i + 1) % n)];
+      const ax = this.positions[a * 3],
+        ay = this.positions[a * 3 + 1],
+        az = this.positions[a * 3 + 2];
+      const bx = this.positions[b * 3],
+        by = this.positions[b * 3 + 1],
+        bz = this.positions[b * 3 + 2];
+      nx += (ay - by) * (az + bz);
+      ny += (az - bz) * (ax + bx);
+      nz += (ax - bx) * (ay + by);
+    }
+    const len = Math.hypot(nx, ny, nz) || 1;
+    out[at] = nx / len;
+    out[at + 1] = ny / len;
+    out[at + 2] = nz / len;
+  }
+
   faceNormal(f: number): [number, number, number] {
     const s = this.faceOffsets[f];
     const n = this.faceOffsets[f + 1] - s;

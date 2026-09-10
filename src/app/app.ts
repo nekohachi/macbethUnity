@@ -633,6 +633,11 @@ export class App {
     // ソフト選択の影響範囲をオーバーレイに出すため、重みの求め方を渡しておく
     // 切れ目は 3D にも出す（どこで切れているか分かるように）
     this.viewport.seamProvider = () => this.state.selected?.uv?.seams ?? null;
+    // ハイを重ねて見せる（`43` の T4）。スカルプト中と段が無いときは出さない
+    this.viewport.ghostProvider = (o) => {
+      if (!this.state.ui.ghostHigh || this.state.mode === "sculpt" || !o.multires.length) return null;
+      return levelsOf(o).level(o.multires.length);
+    };
     this.viewport.softWeightsProvider = () => {
       const o = this.state.selected;
       if (!o) return new Map();
@@ -5677,6 +5682,12 @@ export class App {
       this.state.ui.hints = v;
       this.rememberUi();
       this.hud.defaultHint();
+    });
+    item("ハイを重ねる", this.state.ui.ghostHigh, (v) => {
+      this.state.ui.ghostHigh = v;
+      this.rememberUi();
+      this.viewport.applyDisplayAll();
+      this.hud.toast(v ? "ハイを重ねます（モデリング中）" : "ハイを重ねません");
     });
     item("指はカメラだけ", this.state.ui.fingerCamera, (v) => {
       this.state.ui.fingerCamera = v;

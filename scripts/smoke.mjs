@@ -6149,9 +6149,10 @@ const viewMenu = await page.evaluate(async () => {
 });
 check(
   "表示メニュー: ヒントとポリゴンカウントを消せる、左利きで鏡映し",
-  // 「指はカメラだけ」が増えて 5 つ（`36` の T5）
-  viewMenu.labels.length === 5 &&
+  // 「指はカメラだけ」（`36` の T5）と「ハイを重ねる」（`43` の T4）が増えて 6 つ
+  viewMenu.labels.length === 6 &&
     viewMenu.labels.some((l) => l.includes("指はカメラだけ")) &&
+    viewMenu.labels.some((l) => l.includes("ハイを重ねる")) &&
     viewMenu.hintEmpty &&
     viewMenu.toastShown &&
     viewMenu.statsHidden &&
@@ -8478,6 +8479,81 @@ check(
   `レイヤーの変位 ${sculptLayers.inLayer.toFixed(4)}・素のデルタ ${sculptLayers.inBase.toExponential(1)} / ` +
     `重み 0 で素の形へ ${sculptLayers.offGap.toExponential(1)} · 0.5 でちょうど半分 ${sculptLayers.halfErr.toExponential(1)} / ` +
     `統合してもずれない ${sculptLayers.mergeGap.toExponential(1)}（残り ${sculptLayers.layersLeft} 枚）`,
+);
+
+/* 43a. ハイを重ねて表示（`43` の T4） */
+const ghost = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const core = window.macbethCore;
+  const keep = [...app.state.doc.objects];
+  const keepSel = app.state.selected;
+  const camBefore = app.viewport.saveLayout();
+  const ghostBefore = app.state.ui.ghostHigh;
+  app.setMode("model");
+  app.state.doc.objects.length = 0;
+  const o = app.state.doc.addMesh(core.PRIMITIVES.cube.build(core.defaultParams("cube")), "Ghost");
+  app.viewport.syncAll();
+  app.state.select(o);
+  app.setMode("sculpt");
+  await app.levelForTest("add");
+  await app.levelForTest("add");
+  app.setMode("model");
+  app.refresh();
+
+  const ghostOf = () => {
+    const view = app.viewport.viewOf(o);
+    const g = view?.ghost;
+    return g && g.visible ? g : null;
+  };
+  const offAtFirst = !ghostOf();
+
+  // 「表示」から入れる
+  app.state.ui.ghostHigh = true;
+  app.viewport.applyDisplayAll();
+  const on = ghostOf();
+  const verts = on ? on.geometry.getAttribute("position").count : 0;
+  // 重ねた面はいちばん上の段の三角形の数と合う
+  const top = window.macbethLevels.levelsOf(o).level(2);
+  const want = top.triangulate().tri.length;
+
+  // ローの頂点を動かすと、重ねた面も付いてくる
+  const before = on ? on.geometry.getAttribute("position").getY(0) : 0;
+  for (let v = 0; v < o.mesh.vertexCount; v++) o.mesh.positions[v * 3 + 1] += 0.5;
+  o.invalidateLevels();
+  app.viewport.refreshPositions(o);
+  app.viewport.applyDisplayAll();
+  const after = ghostOf()?.geometry.getAttribute("position").getY(0) ?? before;
+
+  // スカルプトに入ると消える
+  app.setMode("sculpt");
+  app.refresh();
+  const hiddenInSculpt = !ghostOf();
+  app.setMode("model");
+  app.refresh();
+  // 切ると消える
+  app.state.ui.ghostHigh = false;
+  app.viewport.applyDisplayAll();
+  const offAtEnd = !ghostOf();
+
+  app.state.ui.ghostHigh = ghostBefore;
+  app.state.doc.objects.length = 0;
+  app.state.doc.objects.push(...keep);
+  app.viewport.syncAll();
+  if (keepSel) app.state.select(keepSel);
+  app.viewport.restoreLayout(camBefore);
+  app.history.clear();
+  app.refresh();
+  return { offAtFirst, verts, want, moved: after - before, hiddenInSculpt, offAtEnd };
+});
+check(
+  "ハイを重ねて表示: モデリングで薄く重なり、ローを動かすと付いてくる",
+  ghost.offAtFirst &&
+    ghost.verts === ghost.want &&
+    Math.abs(ghost.moved - 0.5) < 1e-4 &&
+    ghost.hiddenInSculpt &&
+    ghost.offAtEnd,
+  `切ってあれば出ない ${ghost.offAtFirst} / 重ねた面 ${ghost.verts} 頂点（段 2 の三角形 ${ghost.want}）/ ` +
+    `ローを 0.5 上げると ${ghost.moved.toFixed(3)} 追う / スカルプトでは出ない ${ghost.hiddenInSculpt} · 切ると消える ${ghost.offAtEnd}`,
 );
 
 /* 43z-28. ベンチ画面が出て数字が入る（`30` の T1） */
