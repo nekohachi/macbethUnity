@@ -6,16 +6,19 @@
  * モデリングのソフト選択が動く（実際そうなっていた）。
  */
 import { describe, expect, it } from "vitest";
-import { AppState, GAUGES, brushAt, type BrushState } from "../src/app/state.js";
+import { AppState, GAUGES, brushAt, gaugeRatio, gaugeValue, type BrushState } from "../src/app/state.js";
+import { PRIMITIVES, defaultParams } from "../src/core/index.js";
+import { objectDiagonal } from "../src/app/levels.js";
 
 describe("ブラシとソフト選択は別物", () => {
   it("スカルプトのゲージはブラシを書き、ソフト選択に触らない", () => {
     const s = new AppState();
     const before = { ...s.soft };
     GAUGES.sculpt.g1.kind === "absolute" && GAUGES.sculpt.g1.set(s, 0.9);
-    GAUGES.sculpt.g2.kind === "absolute" && GAUGES.sculpt.g2.set(s, 2.5);
+    // サイズのゲージが書くのは**割合**（`41` の T2）。半径はそこからの派生
+    GAUGES.sculpt.g2.kind === "absolute" && GAUGES.sculpt.g2.set(s, 0.2);
     expect(s.brush.strength).toBe(0.9);
-    expect(s.brush.radius).toBe(2.5);
+    expect(s.brush.sizeRatio).toBe(0.2);
     expect(s.soft).toEqual(before);
   });
 
@@ -32,9 +35,48 @@ describe("ブラシとソフト選択は別物", () => {
   it("読むほうも別々", () => {
     const s = new AppState();
     s.soft.radius = 1.5;
-    s.brush.radius = 4;
+    s.brush.sizeRatio = 0.04;
     expect(GAUGES.model.g2.kind === "absolute" && GAUGES.model.g2.get(s)).toBe(1.5);
-    expect(GAUGES.sculpt.g2.kind === "absolute" && GAUGES.sculpt.g2.get(s)).toBe(4);
+    expect(GAUGES.sculpt.g2.kind === "absolute" && GAUGES.sculpt.g2.get(s)).toBe(0.04);
+  });
+});
+
+describe("筆の太さは対象の割合（`41` の T2）", () => {
+  const g2 = GAUGES.sculpt.g2;
+  if (g2.kind !== "absolute") throw new Error("サイズは絶対値のゲージ");
+
+  it("つまみの端から端で 0.5%〜50%、2 乗のカーブ", () => {
+    expect(gaugeValue(g2, 0)).toBeCloseTo(0.005, 6);
+    expect(gaugeValue(g2, 1)).toBeCloseTo(0.5, 6);
+    // 真ん中で 12.9%（線形なら 25% になる所）
+    expect(gaugeValue(g2, 0.5)).toBeCloseTo(0.005 + 0.25 * 0.495, 6);
+    // 行って戻る
+    for (const t of [0, 0.2, 0.35, 0.7, 1]) {
+      expect(gaugeRatio(g2, gaugeValue(g2, t))).toBeCloseTo(t, 6);
+    }
+  });
+
+  it("既定の 6.6% は、つまみの下から 3 分の 1 あたりに来る", () => {
+    const t = gaugeRatio(g2, 0.066);
+    expect(t).toBeGreaterThan(0.25);
+    expect(t).toBeLessThan(0.45);
+  });
+
+  it("半径は「対象の対角 × 割合」。選び直しても割合は変わらない", () => {
+    const s = new AppState();
+    const small = s.doc.addMesh(PRIMITIVES.sphere.build(defaultParams("sphere")), "S");
+    const bigMesh = PRIMITIVES.cube.build(defaultParams("cube"));
+    for (let i = 0; i < bigMesh.positions.length; i++) bigMesh.positions[i] *= 6;
+    const big = s.doc.addMesh(bigMesh, "B");
+    s.select(small);
+    g2.set(s, 0.1);
+    expect(s.brush.radius).toBeCloseTo(objectDiagonal(small) * 0.1, 6);
+    // 大きいほうへ移ると半径は増えるが、ゲージの読みは同じ
+    s.select(big);
+    g2.set(s, s.brush.sizeRatio);
+    expect(g2.get(s)).toBeCloseTo(0.1, 6);
+    expect(s.brush.radius).toBeCloseTo(objectDiagonal(big) * 0.1, 6);
+    expect(objectDiagonal(big)).toBeGreaterThan(objectDiagonal(small));
   });
 });
 
@@ -43,6 +85,7 @@ describe("ブラシの筆圧", () => {
     kind: "standard",
     strength: 1,
     radius: 1,
+    sizeRatio: 0.066,
     pressureSize: true,
     pressureSizePow: 1,
     pressureStrengthPow: 2,
@@ -88,6 +131,7 @@ describe("筆圧のカーブ", () => {
     kind: "standard",
     strength: 1,
     radius: 1,
+    sizeRatio: 0.066,
     pressureSize: true,
     pressureSizePow: 1,
     pressureStrengthPow: 2,

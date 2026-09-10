@@ -1227,7 +1227,7 @@ export class Viewport {
    * ついでに、いちばん近い頂点を総なめしていた `nearestNormal` が要らなくなる。
    * あれは 1 コマごとに**全頂点**を見ていた（23 万頂点で毎回）。
    */
-  showBrushCursor(o: SceneObject, at: readonly [number, number, number], radius: number): void {
+  showBrushCursor(o: SceneObject, at: readonly [number, number, number], radius: number, mirror = false): void {
     const view = this.views.get(o.id);
     if (!view) return;
     view.group.updateMatrixWorld();
@@ -1251,22 +1251,40 @@ export class Viewport {
       const s = Math.sin(a) * radius;
       pts.push(at[0] + ux * c + vx * s, at[1] + uy * c + vy * s, at[2] + uz * c + vz * s);
     }
-    if (!this.brushCursor) {
-      this.brushCursor = new Line(positionGeometry(pts), MAT.brush);
-      this.brushCursor.renderOrder = 6;
-      this.overlay.add(this.brushCursor);
-    } else {
-      this.brushCursor.geometry.dispose();
-      this.brushCursor.geometry = positionGeometry(pts);
-      if (!this.brushCursor.parent) this.overlay.add(this.brushCursor);
+    this.brushCursor = this.paintRing(this.brushCursor, pts, o);
+
+    // 対称のときは反対側にも輪を出す（`41` の T1b。ZBrush の 2 つ目のサークル）。
+    // **同じ点を X で折り返すだけ。** 相手の面の上に乗るとは限らないが、
+    // 「どこへ効くか」は伝わるし、面を引き直すより桁で軽い
+    if (mirror) {
+      const flipped = pts.slice();
+      for (let i = 0; i < flipped.length; i += 3) flipped[i] = -flipped[i];
+      this.brushCursorMirror = this.paintRing(this.brushCursorMirror, flipped, o);
+    } else if (this.brushCursorMirror) {
+      this.brushCursorMirror.visible = false;
     }
-    applyTransform(this.brushCursor, o.transform);
-    this.brushCursor.visible = true;
+  }
+
+  /** 輪を 1 本描く（無ければ作る）。`showBrushCursor` から 2 度呼ばれる。 */
+  private paintRing(line: Line | null, pts: number[], o: SceneObject): Line {
+    if (!line) {
+      line = new Line(positionGeometry(pts), MAT.brush);
+      line.renderOrder = 6;
+      this.overlay.add(line);
+    } else {
+      line.geometry.dispose();
+      line.geometry = positionGeometry(pts);
+      if (!line.parent) this.overlay.add(line);
+    }
+    applyTransform(line, o.transform);
+    line.visible = true;
+    return line;
   }
 
   /** 筆の円を消す。 */
   hideBrushCursor(): void {
     if (this.brushCursor) this.brushCursor.visible = false;
+    if (this.brushCursorMirror) this.brushCursorMirror.visible = false;
   }
 
   /**
@@ -1275,29 +1293,45 @@ export class Viewport {
    * 「丸く見えるか」は画面に落とさないと分からない。ワールドの点を見ても、
    * 楕円に**見えている**かどうかは判定できない。
    */
-  brushCursorForTest(): { visible: boolean; screen: Array<[number, number]> } | null {
+  brushCursorForTest(): {
+    visible: boolean;
+    screen: Array<[number, number]>;
+    /** 対称の 2 本目（`41` の T1b）。出ていなければ空。 */
+    mirror: Array<[number, number]>;
+  } | null {
     const c = this.brushCursor;
     if (!c) return null;
-    c.updateMatrixWorld();
+    const m = this.brushCursorMirror;
+    return {
+      visible: c.visible,
+      screen: this.ringScreen(c),
+      mirror: m?.visible ? this.ringScreen(m) : [],
+    };
+  }
+
+  /** 輪の点を画面の座標にして返す。 */
+  private ringScreen(line: Line): Array<[number, number]> {
+    line.updateMatrixWorld();
     const camera = this.camera;
     camera.updateMatrixWorld();
     const rect = this.paneRect(this.inputPane);
-    const p = c.geometry.getAttribute("position") as BufferAttribute;
+    const p = line.geometry.getAttribute("position") as BufferAttribute;
     const screen: Array<[number, number]> = [];
     const v = new Vector3();
     for (let i = 0; i < p.count; i++) {
-      v.fromBufferAttribute(p, i).applyMatrix4(c.matrixWorld).project(camera);
+      v.fromBufferAttribute(p, i).applyMatrix4(line.matrixWorld).project(camera);
       screen.push([rect.x + ((v.x + 1) / 2) * rect.w, rect.y + ((1 - v.y) / 2) * rect.h]);
     }
-    return { visible: c.visible, screen };
+    return screen;
   }
 
   private brushCursor: Line | null = null;
+  private brushCursorMirror: Line | null = null;
 
   rebuildOverlay(): void {
     for (const c of this.overlay.children.slice()) {
       // 筆の円は毎コマ作り直さない。ここでは外すだけで捨てない
-      if (c === this.brushCursor) {
+      if (c === this.brushCursor || c === this.brushCursorMirror) {
         this.overlay.remove(c);
         continue;
       }
@@ -1305,6 +1339,7 @@ export class Viewport {
       disposeObject3D(c);
     }
     if (this.brushCursor?.visible) this.overlay.add(this.brushCursor);
+    if (this.brushCursorMirror?.visible) this.overlay.add(this.brushCursorMirror);
     const o = this.state.selected;
     const view = o ? this.views.get(o.id) : undefined;
     if (!o || !view) return;

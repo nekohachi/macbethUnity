@@ -5,7 +5,7 @@
  * モデリングの第 2 ゲージだけは、ソフト選択を切っていると「拡張」になる
  * （`24` の T3）。拡張は相対値なので、**離すと中央へ戻るバネ式**で動かす。
  */
-import type { AppState } from "../state.js";
+import { gaugeRatio, gaugeValue, type AppState } from "../state.js";
 import { byId } from "./dom.js";
 
 export class Gauge {
@@ -52,11 +52,11 @@ export class Gauge {
     }
 
     const v = d.get(this.state);
-    const t = (v - d.min) / (d.max - d.min);
+    const t = gaugeRatio(d, v);
     this.fill.style.bottom = "0";
     this.fill.style.height = `${t * 100}%`;
     this.knob.style.bottom = `calc(${t * 100}% - 1px)`;
-    byId(this.valueId).textContent = v.toFixed(2);
+    byId(this.valueId).textContent = d.format ? d.format(v) : v.toFixed(2);
     // 強度 0 は「効いていない」ので薄く見せる
     this.root.dataset.off = this.which === "g1" && v <= 0 ? "true" : "false";
     this.root.dataset.spring = "false";
@@ -80,7 +80,8 @@ export class Gauge {
       this.paint();
       return;
     }
-    const raw = d.min + t * (d.max - d.min);
+    // つまみの位置から値へ。筆の太さは 2 乗のカーブ（`41` の T2）
+    const raw = gaugeValue(d, t);
     d.set(this.state, Math.round(raw / d.step) * d.step);
     this.paint();
     this.onInput();

@@ -52,6 +52,9 @@ let open: {
   rows: Row[];
   cx: number;
   cy: number;
+  /** 押した点（`41` の T3）。**向きはここから測る。** */
+  px: number;
+  py: number;
   selected: number;
   /** 一覧の選択。方位とは排他。 */
   selectedRow: number;
@@ -92,20 +95,18 @@ export function openRadial(
   closeRadial();
   // 一覧がある分だけ下の余白も見る
   const below = list.length ? ROW_GAP + list.length * ROW_HEIGHT : 0;
-  // **中心は指のところから動かさない**（動かせるのは、指が画面の外に近すぎて
-  // 中心の丸ごと見えなくなるときだけ）。
+  // **輪は丸ごと見える所へ寄せる。向きは押した点から測る**（`41` の T3）。
   //
-  // 以前は輪が丸ごと収まるように寄せていた（`RING_OUTER + 16`）。だが
-  // ツール列は画面の左端にあるので、中心が指から 100px も右へずれる。
-  // すると**指は押した瞬間から「西」の区画に居る**ことになり、
-  // 上へ引いたつもりでも北にならない。段のメニューは項目が「足す」1 つ
-  // （北）だけのことが多く、そのとき何も選ばれずに離すことになって、
-  // 「段が足せない」になっていた（実機の報告）。
+  // 前は中心を指からほとんど動かさなかった。`33` の実機報告「左端のツール列で
+  // 段が足せない」を、**寄せたせい**だと読んだためだが、本当の原因は
+  // **向きを輪の中心から測っていた**ことだった。寄せると指は押した瞬間から
+  // 「西」の区画に居るので、上へ引いても北にならない。
   //
-  // 輪が端で少し切れても、**引いた向きと選ばれるものが合っている**ほうが大事。
-  const edge = RING_INNER + 24;
-  const cx = Math.max(edge, Math.min(window.innerWidth - edge, clientX));
-  const cy = Math.max(edge, Math.min(window.innerHeight - edge - below, clientY));
+  // 向きを押した点から測れば、寄せても引いた向きと選ばれるものは一致する。
+  // それで「輪の西半分が画面の外」（実機の声）も直る。
+  const edge = RING_OUTER + 12;
+  const cx = Math.max(edge, Math.min(Math.max(edge, window.innerWidth - edge), clientX));
+  const cy = Math.max(edge, Math.min(Math.max(edge, window.innerHeight - edge - below), clientY));
 
   const host = document.createElement("div");
   host.className = "radial";
@@ -150,6 +151,25 @@ export function openRadial(
     slices.push({ path, icon: g, item, index: i });
   }
 
+  // 押した点と輪を細い線でつなぐ。「ここから引く」が見える（`41` の T3）
+  if (Math.hypot(cx - clientX, cy - clientY) > 1) {
+    const link = document.createElementNS(NS, "line");
+    link.setAttribute("x1", String(clientX));
+    link.setAttribute("y1", String(clientY));
+    link.setAttribute("x2", String(cx));
+    link.setAttribute("y2", String(cy));
+    link.setAttribute("stroke", "#4f9fd1");
+    link.setAttribute("stroke-width", "1");
+    link.setAttribute("opacity", ".5");
+    svg.appendChild(link);
+    const dot = document.createElementNS(NS, "circle");
+    dot.setAttribute("cx", String(clientX));
+    dot.setAttribute("cy", String(clientY));
+    dot.setAttribute("r", "4");
+    dot.setAttribute("fill", "#4f9fd1");
+    svg.appendChild(dot);
+  }
+
   const hub = document.createElementNS(NS, "circle");
   hub.setAttribute("cx", String(cx));
   hub.setAttribute("cy", String(cy));
@@ -179,7 +199,7 @@ export function openRadial(
     rows.push({ rect, label, item, top });
   });
 
-  open = { host, slices, rows, cx, cy, selected: -1, selectedRow: -1 };
+  open = { host, slices, rows, cx, cy, px: clientX, py: clientY, selected: -1, selectedRow: -1 };
   window.addEventListener("pointermove", onMove);
   window.addEventListener("pointerup", onUp);
   window.addEventListener("pointercancel", onUp);
@@ -187,13 +207,16 @@ export function openRadial(
 
 function onMove(e: PointerEvent): void {
   if (!open) return;
-  const dx = e.clientX - open.cx;
-  const dy = e.clientY - open.cy;
+  // **指の動きで測る**（`41` の T3）。輪を寄せてあっても、押した点から上へ引けば北
+  const dx = e.clientX - open.px;
+  const dy = e.clientY - open.py;
+  // 一覧は輪の下に描いてあるので、指を輪の分だけ平行移動した点で当てる
+  const atY = e.clientY + (open.cy - open.py);
 
   // 一覧の上に居るならそちらが優先。方位の選択は外す
   let row = -1;
   if (Math.abs(dx) <= ROW_WIDTH / 2) {
-    row = open.rows.findIndex((r) => e.clientY >= r.top && e.clientY < r.top + ROW_HEIGHT);
+    row = open.rows.findIndex((r) => atY >= r.top && atY < r.top + ROW_HEIGHT);
   }
   if (row !== open.selectedRow) {
     open.rows.forEach((r, i) => r.rect.setAttribute("fill", i === row ? "#2f5f7d" : "#2c3238"));
@@ -220,10 +243,13 @@ function onMove(e: PointerEvent): void {
   if (sel >= 0) navigator.vibrate?.(6);
 }
 
-function onUp(): void {
+function onUp(e?: PointerEvent): void {
   if (!open) return;
   const { selected, selectedRow, slices, rows } = open;
   closeRadial();
+  // **`pointercancel` では決めない**（`41` の T4）。一覧のスクロールにさらわれた
+  // ときなどに飛んでくるので、選んでいたものを実行すると誤爆になる
+  if (e?.type === "pointercancel") return;
   if (selectedRow >= 0) rows[selectedRow]?.item.run();
   else if (selected >= 0) slices[selected]?.item.run();
 }

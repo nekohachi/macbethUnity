@@ -20,6 +20,7 @@ export * from "./selection.js";
 export * from "./subdivide.js";
 export * from "./stamps.js";
 export * from "./sculpt.js";
+export * from "./symmetry.js";
 export * from "./mask.js";
 export * from "./multires.js";
 export * from "./document.js";

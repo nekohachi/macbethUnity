@@ -1336,8 +1336,8 @@ function attachAttrDock(grip: HTMLElement, host: PanelHost): void {
  * ポップと購読はそれに巻き込まれない（つまみの並び替えと同じ考え方）。
  */
 function attachEyeOpacity(eye: HTMLElement, o: SceneObject, host: PanelHost, primary: boolean): void {
-  const HOLD_MS = 420;
-  const MOVE_PX = 12;
+  const HOLD_MS = HOLD_MS_ROW;
+  const MOVE_PX = MOVE_PX_ROW;
   /** 端から端まで動かすのに要る距離。指 1 本ぶんの往復で 0〜1 になる。 */
   const SPAN_PX = 160;
   let timer: ReturnType<typeof setTimeout> | null = null;
@@ -1424,6 +1424,15 @@ function attachEyeOpacity(eye: HTMLElement, o: SceneObject, host: PanelHost, pri
   };
 
   eye.addEventListener("contextmenu", (e) => e.preventDefault());
+  // 長押しを待っている間と、スライダーを出している間はスクロールに渡さない
+  // （`41` の T4。渡すと `pointercancel` が飛んできて途中で切れる）
+  eye.addEventListener(
+    "touchmove",
+    (e) => {
+      if (timer !== null || pop) e.preventDefault();
+    },
+    { passive: false },
+  );
   eye.addEventListener("pointerdown", (e) => {
     // 行の選択・長押しメニューには渡さない
     e.stopPropagation();
@@ -1458,8 +1467,8 @@ function attachEyeOpacity(eye: HTMLElement, o: SceneObject, host: PanelHost, pri
  * 並び替え待ちを兼ねていて、指が数 px 動くだけでメニューまで届かなかった。
  */
 function attachOutlinerRow(row: HTMLElement, o: SceneObject, host: PanelHost): void {
-  const HOLD_MS = 420;
-  const MOVE_PX = 12;
+  const HOLD_MS = HOLD_MS_ROW;
+  const MOVE_PX = MOVE_PX_ROW;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let sx = 0;
   let sy = 0;
@@ -1538,6 +1547,21 @@ function attachOutlinerRow(row: HTMLElement, o: SceneObject, host: PanelHost): v
   };
 
   row.addEventListener("contextmenu", (e) => e.preventDefault());
+  // **長押しを待っている間と、輪が出ている間はスクロールに渡さない**（`41` の T4）。
+  //
+  // 一覧は `touch-action: pan-y` なので、輪を出したあとに指を動かすとブラウザが
+  // 縦スクロールを始め、`pointercancel` が飛んで輪がその場（中心 = キャンセル）で
+  // 閉じていた。実機の「長押しがキャンセル誤爆する」はこれ。
+  //
+  // 止められるのは**スクロールが始まる前**だけなので、待っている間から止める。
+  // 待ちが `MOVE_PX` で消えたら止めるのもやめるので、指を滑らせればスクロールになる
+  row.addEventListener(
+    "touchmove",
+    (e) => {
+      if (timer !== null || opened || sweeping) e.preventDefault();
+    },
+    { passive: false },
+  );
   row.addEventListener("pointerdown", (e) => {
     // つまみ・目・ロック・「>」の上なら、行の操作は始めない
     if ((e.target as HTMLElement).closest("button")) return;
@@ -1567,6 +1591,16 @@ function attachOutlinerRow(row: HTMLElement, o: SceneObject, host: PanelHost): v
     }, HOLD_MS);
   });
 }
+
+/**
+ * アウトライナの行を長押しと見なすまで（`41` の T4）。
+ *
+ * 420ms は長すぎて、待っている間に指が 12px 動いて消えることが多かった。
+ * ツール列の 200ms と、名前の変更に使うダブルタップの 400ms の間に置く。
+ */
+const HOLD_MS_ROW = 320;
+/** その間に動いてよい距離。タブレットの指は 12px では足りなかった。 */
+const MOVE_PX_ROW = 20;
 
 /** 一覧の中の行を、上から順に。 */
 function rowsOf(list: HTMLElement | null): HTMLElement[] {

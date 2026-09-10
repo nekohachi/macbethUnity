@@ -111,44 +111,44 @@ const tapGroup = (id) =>
 
 /** グループを長押しして、サークルメニューの方位を選ぶ。 */
 const pickFromGroup = async (id, direction) => {
-  await page.evaluate((gid) => {
+  const at = await page.evaluate((gid) => {
     const b = document.querySelector(`#dockLeft .ibtn[data-group="${gid}"]`);
     if (!b) throw new Error(`グループが無い: ${gid}`);
     const r = b.getBoundingClientRect();
+    const x = r.x + r.width / 2;
+    const y = r.y + r.height / 2;
     b.dispatchEvent(
       new PointerEvent("pointerdown", {
         pointerId: 8,
         pointerType: "mouse",
         bubbles: true,
         cancelable: true,
-        clientX: r.x + r.width / 2,
-        clientY: r.y + r.height / 2,
+        clientX: x,
+        clientY: y,
       }),
     );
+    return { x, y };
   }, id);
   await page.waitForTimeout(260); // 長押しは 200ms
-  await page.evaluate((dir) => {
-    // 輪の中心から方位へ引いて離す。北を 0 として時計回り
-    const order = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
-    const i = order.indexOf(dir);
-    const svg = document.querySelector(".radial svg");
-    if (!svg) throw new Error("サークルメニューが出ていない");
-    // 中心の丸を探す。アイコンにも circle があるので、いちばん大きいものを取る
-    const hub = [...svg.querySelectorAll("circle")].reduce((best, c) =>
-      Number(c.getAttribute("r")) > Number(best.getAttribute("r")) ? c : best,
-    );
-    const cx = Number(hub.getAttribute("cx"));
-    const cy = Number(hub.getAttribute("cy"));
-    const a = ((i * 45 - 90) * Math.PI) / 180;
-    const x = cx + Math.cos(a) * 110;
-    const y = cy + Math.sin(a) * 110;
-    const fire = (type) =>
-      window.dispatchEvent(
-        new PointerEvent(type, { pointerId: 8, pointerType: "mouse", bubbles: true, clientX: x, clientY: y }),
-      );
-    fire("pointermove");
-    fire("pointerup");
-  }, direction);
+  await page.evaluate(
+    ({ dir, bx, by }) => {
+      // **押した点から**方位へ引いて離す（`41` の T3。輪は見える所へ寄っていて、
+      // 中心は指と別。人がやるとおり、指を置いた所から引く）。北を 0 として時計回り
+      const order = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
+      const i = order.indexOf(dir);
+      if (!document.querySelector(".radial svg")) throw new Error("サークルメニューが出ていない");
+      const a = ((i * 45 - 90) * Math.PI) / 180;
+      const x = bx + Math.cos(a) * 110;
+      const y = by + Math.sin(a) * 110;
+      const fire = (type) =>
+        window.dispatchEvent(
+          new PointerEvent(type, { pointerId: 8, pointerType: "mouse", bubbles: true, clientX: x, clientY: y }),
+        );
+      fire("pointermove");
+      fire("pointerup");
+    },
+    { dir: direction, bx: at.x, by: at.y },
+  );
   await page.waitForTimeout(60);
 };
 
@@ -527,12 +527,15 @@ const addByHold = await page.evaluate(async () => {
   const hub = svg && [...svg.querySelectorAll("circle")].reduce((b, c) => (Number(c.getAttribute("r")) > Number(b.getAttribute("r")) ? c : b));
   // 輪の中心が指からどれだけずれているか。ずれていると向きが合わない
   const off = hub ? Math.hypot(bx - Number(hub.getAttribute("cx")), by - Number(hub.getAttribute("cy"))) : -1;
+  // 輪は丸ごと画面の中に寄っている（`41` の T3）。指からはずれてよいが、切れてはいけない
+  const paths = svg ? [...svg.querySelectorAll("path")] : [];
+  const minX = paths.length ? Math.min(...paths.map((p) => p.getBoundingClientRect().left)) : -1;
   // 押した場所から**まっすぐ上**へ引いて離す（人がやるとおり）
   window.dispatchEvent(ev("pointermove", bx, by - 110));
   await new Promise((r2) => setTimeout(r2, 60));
   window.dispatchEvent(ev("pointerup", bx, by - 110));
   await new Promise((r2) => setTimeout(r2, 400));
-  const out = { off, levels: cube.multires.length, active: cube.activeLevel, faces: cube.shown(app.state.shownLevel(cube)).faceCount };
+  const out = { off, minX, levels: cube.multires.length, active: cube.activeLevel, faces: cube.shown(app.state.shownLevel(cube)).faceCount };
   app.setMode("model");
   app.state.doc.objects.length = 0;
   app.state.doc.objects.push(...keep);
@@ -545,9 +548,11 @@ const addByHold = await page.evaluate(async () => {
   return out;
 });
 check(
-  "長押しからまっすぐ上へ引くと段が足せる",
-  addByHold.off >= 0 && addByHold.off < 8 && addByHold.levels === 1 && addByHold.active === 1 && addByHold.faces === 24,
-  `輪の中心のずれ ${addByHold.off.toFixed(0)}px / 段 ${addByHold.levels} · 表示レベル ${addByHold.active} · ${addByHold.faces} 面`,
+  "長押しからまっすぐ上へ引くと段が足せる（輪は画面の中）",
+  // 輪は指からずれてよい（`41` の T3）。**向きは押した点から測る**ので上へ引けば北。
+  // 代わりに輪が切れていないこと（左端でも西半分が見える）を見る
+  addByHold.minX >= 0 && addByHold.levels === 1 && addByHold.active === 1 && addByHold.faces === 24,
+  `輪の中心のずれ ${addByHold.off.toFixed(0)}px · 左端 ${addByHold.minX.toFixed(0)}px / 段 ${addByHold.levels} · 表示レベル ${addByHold.active} · ${addByHold.faces} 面`,
 );
 
 /* 17d. 予算を越えると足せない（`03` の 3.3） */
@@ -650,20 +655,26 @@ const brushSplit = await page.evaluate(() => {
   app.state.soft.strength = 0.2;
   app.state.soft.radius = 1.5;
   app.setMode("sculpt");
-  // スカルプトのゲージ（強度・サイズ）を動かす。state.gauge が今のモードのものを返す
+  // スカルプトのゲージ（強度・サイズ）を動かす。state.gauge が今のモードのものを返す。
+  // サイズが書くのは**対象に対する割合**（`41` の T2）
   app.state.gauge("g1").set(app.state, 0.9);
-  app.state.gauge("g2").set(app.state, 2.5);
+  app.state.gauge("g2").set(app.state, 0.25);
   const afterSculpt = { soft: { ...app.state.soft }, brush: { ...app.state.brush } };
   // 逆にモデリングのソフト選択を動かす
   app.setMode("model");
   app.state.gauge("g1").set(app.state, 0.4);
   const afterModel = { soft: { ...app.state.soft }, brush: { ...app.state.brush } };
+  // **あとの項目に持ち越さない。** 太さを既定へ戻す。
+  // `state.gauge("g2")` は今のモードのものなので、スカルプトへ戻してから書く
+  app.setMode("sculpt");
+  app.state.gauge("g2").set(app.state, 0.066);
+  app.setMode("model");
   return { afterSculpt, afterModel };
 });
 check(
   "ブラシの強度とソフト選択の強度は別物",
   brushSplit.afterSculpt.brush.strength === 0.9 &&
-    brushSplit.afterSculpt.brush.radius === 2.5 &&
+    brushSplit.afterSculpt.brush.sizeRatio === 0.25 &&
     brushSplit.afterSculpt.soft.strength === 0.2 &&
     brushSplit.afterSculpt.soft.radius === 1.5 &&
     brushSplit.afterModel.soft.strength === 0.4 &&
@@ -1409,6 +1420,11 @@ const maskRest = await page.evaluate(async () => {
   app.viewport.setView("front");
   app.refresh();
   await new Promise((r) => setTimeout(r, 80));
+  // **対称は切って測る**（`41` の T1）。球の真ん中を掴んで横へ引くと、対称の
+  // 2 つの筆が X で打ち消し合って 1 ミリも動かない（それが正しい）。ここで見たいのは
+  // 裏面マスクなので、対称は外す
+  const symBeforeBack = app.state.brush.symmetryX;
+  app.state.brush.symmetryX = false;
   const backTest = async (on) => {
     app.state.brush.backfaceMask = on;
     app.state.brush.kind = "move";
@@ -1437,6 +1453,7 @@ const maskRest = await page.evaluate(async () => {
   const backOn = await backTest(true);
   const backOff = await backTest(false);
   app.state.brush.radius = radiusBefore;
+  app.state.brush.symmetryX = symBeforeBack;
 
   /* --- 9 の後半: トポロジを変えたときの言葉 --- */
   o.mask = { level: o.activeLevel, values: new Float32Array(o.stack.level(o.activeLevel).vertexCount).fill(1) };
@@ -2325,6 +2342,7 @@ await page.keyboard.press("F10"); // エッジモード
 await page.waitForTimeout(500);
 await page.mouse.click(ON_MESH.x, ON_MESH.y); // 手前の面のどこかのエッジ
 const bevelReady = await page.evaluate(() => window.macbeth.state.comp.size);
+
 await pickFromGroup("edit", "E"); // 編集 → ベベル
 await closeCutin();
 const bf0 = await page.evaluate(() => window.macbeth.state.selected.mesh.faceCount);
@@ -5887,17 +5905,10 @@ const outlinerMenu = await page.evaluate(async () => {
   await new Promise((r) => setTimeout(r, 500));
   const svg = document.querySelector(".radial svg");
   const labels = svg ? [...svg.querySelectorAll("text")].map((t) => t.textContent) : [];
-  // 北（名前変更）へ引いて離す
-  const hub = svg
-    ? [...svg.querySelectorAll("circle")].reduce((best, c) =>
-        Number(c.getAttribute("r")) > Number(best.getAttribute("r")) ? c : best,
-      )
-    : null;
-  const cx = hub ? Number(hub.getAttribute("cx")) : 0;
-  const cy = hub ? Number(hub.getAttribute("cy")) : 0;
+  // 北（名前変更）へ引いて離す。**押した点から**（`41` の T3。輪は見える所へ寄っている）
   for (const type of ["pointermove", "pointerup"]) {
     window.dispatchEvent(
-      new PointerEvent(type, { pointerId: 31, pointerType: "touch", bubbles: true, clientX: cx, clientY: cy - 110 }),
+      new PointerEvent(type, { pointerId: 31, pointerType: "touch", bubbles: true, clientX: at.clientX, clientY: at.clientY - 110 }),
     );
   }
   await new Promise((r) => setTimeout(r, 120));
@@ -7133,6 +7144,89 @@ check(
   `ロック ${camLock.locked} / 動かない ${camLock.held} / HUD の鍵 ${camLock.hudLock} / アイコンの鍵 ${camLock.iconLock} / 外すと動く ${camLock.freed}`,
 );
 
+/* 17y. アウトライナの長押しがスクロールに取られない（`41` の T4） */
+const rowHold = await page.evaluate(async () => {
+  const app = window.macbeth;
+  // 場面と引き出しを自分で整える（項目の順に依らないように）
+  const core = window.macbethCore;
+  if (!app.state.doc.objects.length) {
+    const o = app.state.doc.addMesh(core.PRIMITIVES.cube.build(core.defaultParams("cube")), "Row");
+    app.viewport.syncAll();
+    app.state.select(o);
+  }
+  let opener = false;
+  if (!document.querySelector(".drawer.open")) {
+    document.getElementById("btnPanels").click();
+    await new Promise((r) => setTimeout(r, 250));
+    opener = true;
+  }
+  app.refresh();
+  await new Promise((r) => setTimeout(r, 150));
+  const row = document.querySelector(".drawer.open .lyrow") ?? document.querySelector(".lyrow");
+  if (!row) return { row: false, opener, drawer: !!document.querySelector(".drawer.open"), objects: app.state.doc.objects.length };
+  // 行の長押しは、その行のものを選ぶ。あとの項目のために控えておく
+  const keepSel = app.state.selected;
+  const keepName = keepSel?.name;
+  const r = row.getBoundingClientRect();
+  const sx = r.left + r.width / 2;
+  const sy = r.top + r.height / 2;
+  const ev = (t, x, y) =>
+    new PointerEvent(t, { pointerId: 84, pointerType: "touch", bubbles: true, cancelable: true, clientX: x, clientY: y, isPrimary: true });
+  const touch = () =>
+    new TouchEvent("touchmove", { bubbles: true, cancelable: true, touches: [], targetTouches: [], changedTouches: [] });
+
+  // 押した直後（長押しを待っている間）はスクロールに渡さない
+  row.dispatchEvent(ev("pointerdown", sx, sy));
+  const holdEv = touch();
+  row.dispatchEvent(holdEv);
+  const blockedWhileWaiting = holdEv.defaultPrevented;
+  await new Promise((r2) => setTimeout(r2, 400));
+  const opened = !!document.querySelector(".radial");
+  // 輪が出たあとに指を動かしても、閉じない（前はここで pointercancel が来ていた）
+  window.dispatchEvent(ev("pointermove", sx, sy + 30));
+  const openEv = touch();
+  row.dispatchEvent(openEv);
+  const blockedWhileOpen = openEv.defaultPrevented;
+  const stillOpen = !!document.querySelector(".radial");
+  // 北（名前変更）へ引いて離す
+  window.dispatchEvent(ev("pointermove", sx, sy - 120));
+  await new Promise((r2) => setTimeout(r2, 40));
+  window.dispatchEvent(ev("pointerup", sx, sy - 120));
+  await new Promise((r2) => setTimeout(r2, 120));
+  const renaming = !!document.querySelector(".olinput");
+  if (renaming) document.querySelector(".olinput").blur();
+  await new Promise((r2) => setTimeout(r2, 60));
+
+  // pointercancel では何も起きない
+  row.dispatchEvent(ev("pointerdown", sx, sy));
+  await new Promise((r2) => setTimeout(r2, 400));
+  window.dispatchEvent(ev("pointermove", sx, sy - 120));
+  window.dispatchEvent(new PointerEvent("pointercancel", { pointerId: 84, pointerType: "touch", bubbles: true, clientX: sx, clientY: sy - 120 }));
+  await new Promise((r2) => setTimeout(r2, 120));
+  const afterCancel = { open: !!document.querySelector(".radial"), renaming: !!document.querySelector(".olinput") };
+  if (keepSel) {
+    keepSel.name = keepName;
+    app.state.select(keepSel);
+  }
+  if (opener) document.getElementById("btnPanels")?.click();
+  app.refresh();
+  return { row: true, blockedWhileWaiting, opened, blockedWhileOpen, stillOpen, renaming, afterCancel };
+});
+check(
+  "アウトライナの長押し: スクロールに取られず、動かしても閉じない",
+  !!rowHold.row &&
+    rowHold.blockedWhileWaiting &&
+    rowHold.opened &&
+    rowHold.blockedWhileOpen &&
+    rowHold.stillOpen &&
+    rowHold.renaming &&
+    !rowHold.afterCancel.open &&
+    !rowHold.afterCancel.renaming,
+  `行 ${rowHold.row}（引き出し ${rowHold.drawer ?? true}・オブジェクト ${rowHold.objects ?? "?"}）/ ` +
+    `待ち中に止める ${rowHold.blockedWhileWaiting} / 開く ${rowHold.opened} → 30px 動かしても ${rowHold.stillOpen} / ` +
+    `北で名前変更 ${rowHold.renaming} / キャンセルでは閉じるだけ ${!rowHold.afterCancel?.open}・${!rowHold.afterCancel?.renaming}`,
+);
+
 /* 43z-17. ビューポートを 2 / 4 に分割できる（`25` の T6） */
 const quad = await page.evaluate(async () => {
   const app = window.macbeth;
@@ -7152,15 +7246,11 @@ const quad = await page.evaluate(async () => {
   await new Promise((t) => setTimeout(t, 320));
   const svg = document.querySelector(".radial svg");
   const labels = svg ? [...svg.querySelectorAll("text")].map((t) => t.textContent) : [];
-  const hub = svg
-    ? [...svg.querySelectorAll("circle")].reduce((best, c) =>
-        Number(c.getAttribute("r")) > Number(best.getAttribute("r")) ? c : best,
-      )
-    : null;
-  const cx = hub ? Number(hub.getAttribute("cx")) : 0;
-  const cy = hub ? Number(hub.getAttribute("cy")) : 0;
+  // 南（4 画面）へ。**押した点から**引く（`41` の T3）
   for (const type of ["pointermove", "pointerup"]) {
-    window.dispatchEvent(new PointerEvent(type, { pointerId: 71, pointerType: "touch", bubbles: true, clientX: cx, clientY: cy + 110 }));
+    window.dispatchEvent(
+      new PointerEvent(type, { pointerId: 71, pointerType: "touch", bubbles: true, clientX: at.clientX, clientY: at.clientY + 110 }),
+    );
   }
   await new Promise((t) => setTimeout(t, 200));
   const names = vp.panes.map((p) => p.viewName);
@@ -7902,6 +7992,225 @@ check(
   `${heavy.tris} 三角形 / レイ 200 回 ${heavy.pick.toFixed(0)}ms · ホバー 60 回 ${heavy.hover.toFixed(0)}ms · ` +
     `ツイーク 30 コマ ${heavy.tweak.toFixed(0)}ms · フレーム ${heavy.frame.toFixed(0)}ms · 取り消し ${heavy.undo.toFixed(0)}ms / ` +
     `履歴 ${heavy.entry?.kind} ${heavy.entry?.bytes}B`,
+);
+
+/* ---- `41` の 4 項目。**いちばん後ろに置く。** 場面を作り替えるので、
+   前の項目の当たり位置に影響を出さないため ---- */
+
+/* 17v. X 対称を厳密に（`41` の T1）: 左右差・継ぎ目・反対側の輪 */
+//
+// **板を真上から**見て彫る。球だと変位の向きが場所で変わるので、継ぎ目（中心線の
+// 溝）が高さで測れない。板なら Y の動きがそのまま高さになる。
+const symmetry = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const core = window.macbethCore;
+  const keep = [...app.state.doc.objects];
+  const keepSel = app.state.selected;
+  const camBefore = app.viewport.saveLayout();
+  const symBefore = app.state.brush.symmetryX;
+  app.setMode("model");
+  app.state.doc.objects.length = 0;
+  const o = app.state.doc.addMesh(
+    core.PRIMITIVES.plane.build({ ...core.defaultParams("plane"), sdW: 24, sdH: 24 }),
+    "Sym",
+  );
+  app.viewport.syncAll();
+  app.state.select(o);
+  app.setMode("sculpt");
+  await app.levelForTest("add");
+  app.viewport.setView("top");
+  app.viewport.frameSelected();
+  app.state.brush.kind = "standard";
+  app.state.brush.symmetryX = true;
+  app.refresh();
+  app.history.clear();
+  await new Promise((r) => setTimeout(r, 120));
+
+  // **彫る前**に対応表を作る（アプリと同じ。彫ったあとの座標から引くと相手が見つからない）
+  const mesh = app.viewport.meshOf(o);
+  const map = core.buildMirrorMap(mesh.positions, mesh.vertexCount, core.boundsDiagonal(mesh.positions) * 1e-4);
+  const rest = mesh.positions.slice();
+
+  const pane = document.getElementById("pane3d").getBoundingClientRect();
+  const gl = document.getElementById("gl");
+  const cx = pane.left + pane.width / 2;
+  const cy = pane.top + pane.height / 2;
+  const ev = (type, x, y, buttons = 1) =>
+    new PointerEvent(type, {
+      pointerId: 81, pointerType: "pen", bubbles: true, cancelable: true,
+      clientX: x, clientY: y, pressure: 0.9, buttons: type === "pointerup" ? 0 : buttons,
+    });
+
+  // 中心線をまたいでなぞる
+  gl.dispatchEvent(ev("pointerdown", cx - 60, cy));
+  for (let i = 1; i <= 24; i++) gl.dispatchEvent(ev("pointermove", cx - 60 + i * 5, cy));
+  gl.dispatchEvent(ev("pointerup", cx + 60, cy));
+  await new Promise((r) => setTimeout(r, 60));
+
+  const p = mesh.positions;
+  // 1. 左右差（対になっている頂点だけ見る）
+  let worst = 0;
+  for (let v = 0; v < mesh.vertexCount; v++) {
+    const m = map.mirror[v];
+    if (m < 0 || m === v) continue;
+    worst = Math.max(worst, Math.abs(p[v * 3] + p[m * 3]), Math.abs(p[v * 3 + 1] - p[m * 3 + 1]), Math.abs(p[v * 3 + 2] - p[m * 3 + 2]));
+  }
+  // 2. 継ぎ目: z がいちばん 0 に近い列を x の順に並べ、中心の高さが両隣から
+  //    落ち込んでいないかを見る。前は中心だけ 1 回ぶんで、溝になっていた
+  let bestZ = Infinity;
+  for (let v = 0; v < mesh.vertexCount; v++) bestZ = Math.min(bestZ, Math.abs(rest[v * 3 + 2]));
+  const line = [];
+  for (let v = 0; v < mesh.vertexCount; v++) {
+    if (Math.abs(Math.abs(rest[v * 3 + 2]) - bestZ) > 1e-6) continue;
+    line.push({ x: rest[v * 3], dy: p[v * 3 + 1] - rest[v * 3 + 1] });
+  }
+  line.sort((a, b) => a.x - b.x);
+  let mid = 0;
+  for (let i = 0; i < line.length; i++) if (Math.abs(line[i].x) < Math.abs(line[mid].x)) mid = i;
+  const center = line[mid]?.dy ?? 0;
+  const around = ((line[mid - 1]?.dy ?? 0) + (line[mid + 1]?.dy ?? 0)) / 2;
+
+  // 3. 反対側の輪（`41` の T1b）。ホバーの本物の道で出す
+  gl.dispatchEvent(ev("pointermove", cx + 20, cy, 0));
+  await new Promise((r) => setTimeout(r, 40));
+  const ringsOn = app.viewport.brushCursorForTest();
+  app.state.brush.symmetryX = false;
+  app.refresh();
+  gl.dispatchEvent(ev("pointermove", cx + 22, cy, 0));
+  await new Promise((r) => setTimeout(r, 40));
+  const ringsOff = app.viewport.brushCursorForTest();
+
+  app.state.brush.symmetryX = symBefore;
+  app.setMode("model");
+  app.state.doc.objects.length = 0;
+  app.state.doc.objects.push(...keep);
+  app.viewport.syncAll();
+  if (keepSel) app.state.select(keepSel);
+  app.viewport.restoreLayout(camBefore);
+  app.history.clear();
+  app.refresh();
+  return {
+    paired: map.paired, verts: mesh.vertexCount, worst, center, around, samples: line.length,
+    ringOn: ringsOn?.mirror.length ?? 0, ringOff: ringsOff?.mirror.length ?? 0,
+  };
+});
+check(
+  "X 対称: 左右がぴったり、中心線に継ぎ目が出ない、反対側にも輪",
+  symmetry.paired === symmetry.verts &&
+    symmetry.worst < 1e-6 &&
+    symmetry.center > 0 &&
+    // 中心が両隣より落ち込んでいない（前は 1 回ぶんしか乗らず、溝になっていた）
+    symmetry.center >= symmetry.around * 0.9 &&
+    symmetry.ringOn > 0 &&
+    symmetry.ringOff === 0,
+  `対 ${symmetry.paired}/${symmetry.verts} / 左右差 ${symmetry.worst.toExponential(1)} / ` +
+    `中心の高さ ${symmetry.center.toFixed(4)} vs 両隣 ${symmetry.around.toFixed(4)}（${symmetry.samples} 点の列）/ ` +
+    `輪 対称オン ${symmetry.ringOn} 点・オフ ${symmetry.ringOff} 点`,
+);
+
+/* 17w. 筆の太さは対象の割合（`41` の T2） */
+const sizeGauge = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const core = window.macbethCore;
+  const keep = [...app.state.doc.objects];
+  const keepSel = app.state.selected;
+  const ratioBefore = app.state.brush.sizeRatio;
+  app.setMode("model");
+  app.state.doc.objects.length = 0;
+  const small = app.state.doc.addMesh(core.PRIMITIVES.sphere.build(core.defaultParams("sphere")), "Small");
+  const bigMesh = core.PRIMITIVES.cube.build(core.defaultParams("cube"));
+  for (let i = 0; i < bigMesh.positions.length; i++) bigMesh.positions[i] *= 6;
+  const big = app.state.doc.addMesh(bigMesh, "Big");
+  app.viewport.syncAll();
+  app.state.select(small);
+  app.setMode("sculpt");
+  app.refresh();
+  const onSmall = { text: document.getElementById("g2val").textContent, radius: app.state.brush.radius, ratio: app.state.brush.sizeRatio };
+  app.state.select(big);
+  app.refresh();
+  const onBig = { text: document.getElementById("g2val").textContent, radius: app.state.brush.radius, ratio: app.state.brush.sizeRatio };
+  // ゲージのつまみを下から 35% に置くと、既定の 6.6% 前後になる
+  const g = document.getElementById("gauge2");
+  const r = g.getBoundingClientRect();
+  const ev = (t, y) => new PointerEvent(t, { pointerId: 82, pointerType: "touch", bubbles: true, cancelable: true, clientX: r.left + r.width / 2, clientY: y });
+  g.dispatchEvent(ev("pointerdown", r.bottom - r.height * 0.35));
+  g.dispatchEvent(ev("pointerup", r.bottom - r.height * 0.35));
+  const atThird = app.state.brush.sizeRatio;
+  // 上端いっぱいで対象の半分
+  g.dispatchEvent(ev("pointerdown", r.top));
+  g.dispatchEvent(ev("pointerup", r.top));
+  const atTop = app.state.brush.sizeRatio;
+
+  app.state.brush.sizeRatio = ratioBefore;
+  app.setMode("model");
+  app.state.doc.objects.length = 0;
+  app.state.doc.objects.push(...keep);
+  app.viewport.syncAll();
+  if (keepSel) app.state.select(keepSel);
+  app.refresh();
+  return { onSmall, onBig, atThird, atTop };
+});
+check(
+  "筆の太さ: ゲージは % で、選び直しても割合は同じ",
+  sizeGauge.onSmall.text.endsWith("%") &&
+    sizeGauge.onSmall.text === sizeGauge.onBig.text &&
+    Math.abs(sizeGauge.onSmall.ratio - sizeGauge.onBig.ratio) < 1e-9 &&
+    sizeGauge.onBig.radius > sizeGauge.onSmall.radius * 2 &&
+    sizeGauge.atThird > 0.04 && sizeGauge.atThird < 0.1 &&
+    sizeGauge.atTop > 0.45,
+  `小さい球「${sizeGauge.onSmall.text}」半径 ${sizeGauge.onSmall.radius.toFixed(2)} → 大きい立方体「${sizeGauge.onBig.text}」半径 ${sizeGauge.onBig.radius.toFixed(2)} / ` +
+    `つまみ 35% で ${(sizeGauge.atThird * 100).toFixed(1)}% · 上端で ${(sizeGauge.atTop * 100).toFixed(0)}%`,
+);
+
+/* 17x. 輪は画面の中、向きは押した点から（`41` の T3） */
+const ring = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const core = window.macbethCore;
+  const keep = [...app.state.doc.objects];
+  const keepSel = app.state.selected;
+  const kindBefore = app.state.brush.kind;
+  app.setMode("model");
+  app.state.doc.objects.length = 0;
+  const o = app.state.doc.addMesh(core.PRIMITIVES.sphere.build(core.defaultParams("sphere")), "Ring");
+  app.viewport.syncAll();
+  app.state.select(o);
+  app.setMode("sculpt");
+  app.state.brush.kind = "clay";
+  app.refresh();
+  await new Promise((r) => setTimeout(r, 120));
+
+  const btn = document.querySelector('#dockLeft [data-group="brush"]');
+  const r = btn.getBoundingClientRect();
+  const bx = r.left + r.width / 2;
+  const by = r.top + r.height / 2;
+  const ev = (t, x, y) =>
+    new PointerEvent(t, { pointerId: 83, pointerType: "touch", bubbles: true, cancelable: true, clientX: x, clientY: y, isPrimary: true });
+  btn.dispatchEvent(ev("pointerdown", bx, by));
+  await new Promise((r2) => setTimeout(r2, 400));
+  const svg = document.querySelector(".radial svg");
+  const paths = svg ? [...svg.querySelectorAll("path")] : [];
+  const minX = paths.length ? Math.min(...paths.map((p) => p.getBoundingClientRect().left)) : -1;
+  const maxX = paths.length ? Math.max(...paths.map((p) => p.getBoundingClientRect().right)) : -1;
+  // 押した点から**まっすぐ上**へ。輪が右へ寄っていても北（スタンダード）が選ばれる
+  window.dispatchEvent(ev("pointermove", bx, by - 120));
+  await new Promise((r2) => setTimeout(r2, 40));
+  window.dispatchEvent(ev("pointerup", bx, by - 120));
+  await new Promise((r2) => setTimeout(r2, 200));
+  const picked = app.state.brush.kind;
+
+  app.state.brush.kind = kindBefore;
+  app.setMode("model");
+  app.state.doc.objects.length = 0;
+  app.state.doc.objects.push(...keep);
+  app.viewport.syncAll();
+  if (keepSel) app.state.select(keepSel);
+  app.refresh();
+  return { minX, maxX, width: window.innerWidth, picked };
+});
+check(
+  "筆の輪: 左端で押しても全部見えて、上へ引けば北が選ばれる",
+  ring.minX >= 0 && ring.maxX <= ring.width && ring.picked === "standard",
+  `輪の左端 ${ring.minX.toFixed(0)}px · 右端 ${ring.maxX.toFixed(0)}/${ring.width}px / 選ばれた筆 ${ring.picked}`,
 );
 
 /* 43z-28. ベンチ画面が出て数字が入る（`30` の T1） */

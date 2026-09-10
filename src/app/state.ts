@@ -6,6 +6,7 @@
  */
 import { Document, type BrushKind, type CameraBookmark, type SampleSpace, type SceneObject } from "../core/index.js";
 import type { CheckerPattern } from "./render/checker.js";
+import { DEFAULT_SIZE_RATIO, radiusFor } from "./levels.js";
 
 export type Mode = "model" | "uv" | "sculpt" | "material";
 export type CompMode = "object" | "vertex" | "edge" | "face";
@@ -68,8 +69,31 @@ export interface AbsoluteGauge {
   min: number;
   max: number;
   step: number;
+  /**
+   * つまみの位置と値の対応（`41` の T2）。既定は線形。
+   *
+   * `"square"` は `値 = min + (max − min) × t²`。**下のほうに幅が出る。**
+   * 筆の太さは 0.5%〜50% で、ふだん使うのは 5% 前後。線形だとゲージの下 1 割に
+   * 全部が詰まって、指で選び分けられなかった（実機の声）。
+   */
+  curve?: "square";
+  /** 値の見せ方（`41` の T2。筆の太さは「6.6%」と出す）。既定は小数 2 桁。 */
+  format?(v: number): string;
   get(s: AppState): number;
   set(s: AppState, v: number): void;
+}
+
+/** つまみの位置（0〜1）から値。 */
+export function gaugeValue(d: AbsoluteGauge, t: number): number {
+  const shaped = d.curve === "square" ? t * t : t;
+  return d.min + shaped * (d.max - d.min);
+}
+
+/** 値からつまみの位置（0〜1）。`gaugeValue` の逆。 */
+export function gaugeRatio(d: AbsoluteGauge, v: number): number {
+  const t = (v - d.min) / (d.max - d.min);
+  const clamped = Math.max(0, Math.min(1, t));
+  return d.curve === "square" ? Math.sqrt(clamped) : clamped;
 }
 
 /**
@@ -101,8 +125,19 @@ export interface BrushState {
   kind: BrushKind;
   /** 0〜1。 */
   strength: number;
-  /** ワールド単位。画面の px ではない。 */
+  /**
+   * ワールド単位。画面の px ではない。**`sizeRatio` からの派生値**（`41` の T2）。
+   * 実際に彫るのはこちらを見る（`brushAt`、カーソル、`strokeFootprint`）。
+   */
   radius: number;
+  /**
+   * 対象の大きさ（境界箱の対角）に対する筆の太さの割合（`41` の T2）。
+   *
+   * **ゲージが読み書きするのはこちら。** オブジェクトを選び直したら、割合は
+   * そのままで `radius` を計算し直す。大きい模型でも小さい模型でも、
+   * 同じつまみの位置で同じ「見た目の太さ」になる。
+   */
+  sizeRatio: number;
   /** 筆圧を半径に効かせる。 */
   pressureSize: boolean;
   /** 筆圧を強度に効かせる。 */
@@ -158,7 +193,23 @@ export const GAUGES: Record<Mode, { g1: GaugeDef; g2: GaugeDef }> = {
   },
   sculpt: {
     g1: gauge("強度", "ブラシ強度", 0, 1, 0.01, "strength", "brush"),
-    g2: gauge("サイズ", "ブラシサイズ", 0.01, 10, 0.01, "radius", "brush"),
+    // 筆の太さは**対象の大きさに対する割合**（`41` の T2）。0.5%〜50%、2 乗のカーブ。
+    // 既定の 6.6% はつまみの 35% あたりに来る
+    g2: {
+      kind: "absolute",
+      label: "サイズ",
+      full: "ブラシサイズ（対象の大きさに対する割合）",
+      min: 0.005,
+      max: 0.5,
+      step: 0.001,
+      curve: "square",
+      format: (v) => `${(v * 100).toFixed(1)}%`,
+      get: (s) => s.brush.sizeRatio,
+      set: (s, v) => {
+        s.brush.sizeRatio = v;
+        s.brush.radius = radiusFor(s.selected, v);
+      },
+    },
   },
   material: {
     g1: gauge("不透明", "不透明度", 0, 1, 0.01, "strength", "brush"),
@@ -288,6 +339,7 @@ export class AppState {
     // 67 にあたる。0.25（ZBrush の既定）は控えめすぎるとのことだった
     strength: 0.67,
     radius: 0.4,
+    sizeRatio: DEFAULT_SIZE_RATIO,
     backfaceMask: true,
     pressureSize: true,
     pressureSizePow: 1,

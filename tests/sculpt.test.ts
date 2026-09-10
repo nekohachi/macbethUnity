@@ -295,7 +295,12 @@ describe("段への取り込み（sculptAt）", () => {
   });
 });
 
-describe("対称の中心線（`33` の T4）", () => {
+/**
+ * `excludeNearX` は core の口として残っている（`41` の T1 でアプリからは渡さなくなった）。
+ * 中心線をよけると継ぎ目（溝）が出るので、対称は `tests/symmetry.test.ts` の
+ * 「押した側を相手へ写す」でやる。ここでは口そのものの働きだけ見る。
+ */
+describe("中心線をよける口（`33` の T4）", () => {
   it("excludeNearX を渡すと中心近くの頂点を触らない", () => {
     const mesh = plane();
     const before = mesh.positions.slice();
@@ -314,25 +319,6 @@ describe("対称の中心線（`33` の T4）", () => {
     }
     expect(nearMoved).toBe(0);
     expect(farMoved).toBeGreaterThan(0);
-  });
-
-  it("鏡映して 2 回当てても、中心線が二重に動かない", () => {
-    // 1 回目（右）と 2 回目（左・中心線よけ）を当て、
-    // 中心線の頂点が「1 回ぶん」しか動いていないことを見る
-    const twice = plane();
-    const once = plane();
-    const at: [number, number, number] = [0.15, 0, 0];
-    stroke(twice, { ...base, kind: "standard", point: at });
-    stroke(twice, { ...base, kind: "standard", point: [-at[0], at[1], at[2]], excludeNearX: base.radius * 0.01 });
-    stroke(once, { ...base, kind: "standard", point: at });
-
-    // X = 0 の頂点は、1 回だけ当てたものと同じだけ動いている
-    for (let v = 0; v < once.vertexCount; v++) {
-      if (Math.abs(plane().positions[v * 3]) > 1e-6) continue;
-      const a = Math.abs(twice.positions[v * 3 + 1] - plane().positions[v * 3 + 1]);
-      const b = Math.abs(once.positions[v * 3 + 1] - plane().positions[v * 3 + 1]);
-      expect(a).toBeCloseTo(b, 6);
-    }
   });
 });
 

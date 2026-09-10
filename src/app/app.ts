@@ -63,7 +63,7 @@ import {
 } from "./input/gestures.js";
 import { Picker, type ScreenPoint } from "./render/picking.js";
 import { StrokeDriver, strokeHint } from "./stroke.js";
-import { asMb, canAddLevel, estimateBytes, facesAt, fitBrushRadius, levelCount, levelsOf, moveMaskTo, warmUpLevels } from "./levels.js";
+import { asMb, canAddLevel, estimateBytes, facesAt, levelCount, levelsOf, moveMaskTo, radiusFor, warmUpLevels } from "./levels.js";
 import { pressureOf } from "./input/gestures.js";
 import { forgetStamps, stampsFor } from "./stamps.js";
 import { STANDARD_VIEWS, Viewport, type LayoutKind, type ViewName } from "./render/viewport.js";
@@ -445,7 +445,8 @@ export class App {
       return;
     }
     const { radius } = brushAt(this.state.brush, 1);
-    this.viewport.showBrushCursor(o, at, radius);
+    // 対称なら反対側にも輪を出す（`41` の T1b）
+    this.viewport.showBrushCursor(o, at, radius, this.state.brush.symmetryX);
   }
 
   /**
@@ -459,7 +460,8 @@ export class App {
     const o = this.state.selected;
     if (!o || this.brushFittedFor === o.id) return;
     this.brushFittedFor = o.id;
-    this.state.brush.radius = fitBrushRadius(o);
+    // **割合は保つ**（`41` の T2）。選び直しても「6.6%」のまま、半径だけ合わせ直す
+    this.state.brush.radius = radiusFor(o, this.state.brush.sizeRatio);
     for (const g of this.gauges) g.paint();
   }
 
@@ -5130,6 +5132,10 @@ export class App {
     try {
       const bp = JSON.parse(read("brushPressure") ?? "null") as Partial<AppState["brush"]> | null;
       if (bp) this.state.brush = { ...this.state.brush, ...bp };
+      // 壊れた保存で筆が消えたり画面を覆ったりしないように、割合は範囲に収める
+      const r = this.state.brush.sizeRatio;
+      if (!Number.isFinite(r) || r <= 0) this.state.brush.sizeRatio = 0.066;
+      else this.state.brush.sizeRatio = Math.max(0.005, Math.min(0.5, r));
     } catch {
       /* 保存が壊れていても既定で始める */
     }
@@ -5550,6 +5556,7 @@ export class App {
     this.remember(
       "brushPressure",
       JSON.stringify({
+        sizeRatio: b.sizeRatio,
         pressureSize: b.pressureSize,
         pressureStrength: b.pressureStrength,
         pressureSizePow: b.pressureSizePow,

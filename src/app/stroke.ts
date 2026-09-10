@@ -18,13 +18,14 @@ import {
   type Footprint,
   type MaskInput,
   type Mesh,
+  type MirrorMap,
   type SceneObject,
   type StrokeInput,
 } from "../core/index.js";
 import type { Viewport } from "./render/viewport.js";
 import type { Picker, ScreenPoint } from "./render/picking.js";
 import type { History } from "./history.js";
-import { levelsOf } from "./levels.js";
+import { levelsOf, mirrorMapOf } from "./levels.js";
 import { brushAt, type AppState } from "./state.js";
 import { Matrix4, Plane, Raycaster, Vector3 } from "three";
 
@@ -51,6 +52,16 @@ interface Live {
   invert: boolean;
   /** ムーブの掴み（`39` の T5）。ムーブ以外は null。 */
   grab: Grab | null;
+  /**
+   * X 対称の対応表（`41` の T1）。対称が切ってあるか、対にならないメッシュなら null。
+   * **押した瞬間に決めて、離すまで変えない。**
+   */
+  mirror: MirrorMap | null;
+  /**
+   * どちら側を「押した側」とするか（+1 / −1）。押した点の x の符号。
+   * この側の座標を相手へ写すので、左右が浮動小数の丸めまで一致する。
+   */
+  primarySign: 1 | -1;
   /**
    * 視線の向き（オブジェクト空間、カメラから面へ）。裏面マスクに使う。
    * **押したときに 1 回作る**（ストロークの間はカメラが動かない）。
@@ -192,6 +203,8 @@ export class StrokeDriver {
       erase: role === "mask" && alt,
       invert: role === "sculpt" && alt,
       grab: null,
+      mirror: this.state.brush.symmetryX ? mirrorMapOf(o, o.activeLevel, this.viewport.meshOf(o)) : null,
+      primarySign: at[0] < 0 ? -1 : 1,
       viewDir: role === "sculpt" && this.state.brush.backfaceMask ? this.viewDirOf(o) : null,
       last: at,
       touched: new Set(),
@@ -236,7 +249,8 @@ export class StrokeDriver {
     if (this.state.brush.symmetryX) {
       const mp: [number, number, number] = [-at[0], at[1], at[2]];
       const mfp = strokeFootprint(mesh, bvh, view.tri, mp, radius);
-      mirror = { fp: mfp, weights: grabWeights(mesh, mfp, view.tri, { ...base, point: mp, excludeNearX: radius * 0.01 }).weights };
+      // 中心線は避けない（`41` の T1）。左右は `flush` の写しで厳密に合わせる
+      mirror = { fp: mfp, weights: grabWeights(mesh, mfp, view.tri, { ...base, point: mp }).weights };
     }
 
     view.group.updateMatrixWorld();
@@ -454,12 +468,9 @@ export class StrokeDriver {
       const input: MaskInput = { point, radius, strength, erase: live.erase };
       let any = this.paint(live, input);
       if (b.symmetryX) {
-        any =
-          this.paint(live, {
-            ...input,
-            point: [-point[0], point[1], point[2]],
-            excludeNearX: radius * 0.01,
-          }) || any;
+        // **中心線を避けない**（`41` の T1）。2 つの筆はどちらも中心線に届くので、
+        // そこだけ 1 回にすると濃さが半分になって筋が出る
+        any = this.paint(live, { ...input, point: [-point[0], point[1], point[2]] }) || any;
       }
       if (any) live.hits++;
       return;
@@ -477,14 +488,16 @@ export class StrokeDriver {
     };
     let any = this.hit(live, input);
     if (b.symmetryX) {
-      // ローカル X = 0 で鏡映。頂点の対応表は作らないので、
-      // トポロジが左右対称でなくても効く
+      // ローカル X = 0 で鏡映。**中心線を避けない**（`41` の T1）。
+      // 中心線の隣の頂点は 2 つの筆の両方から減衰ぶんを受けるのに、中心線だけ
+      // 1 回にすると、そこだけ半分になって溝（継ぎ目）になっていた。
+      //
+      // 左右をぴったり合わせるのはこの 2 度打ちではなく、`flush` の写し。
+      // 2 度打ちは**対応表に載らない頂点**（左右非対称なトポロジ）のために残す
       const mirrored: StrokeInput = {
         ...input,
         point: [-point[0], point[1], point[2]],
         move: move ? [-move[0], move[1], move[2]] : undefined,
-        // 中心線の頂点は 1 回目で動かしてある。2 度動かすと筋が出る
-        excludeNearX: radius * 0.01,
       };
       any = this.hit(live, mirrored) || any;
     }
@@ -564,6 +577,67 @@ export class StrokeDriver {
   }
 
   /**
+   * 対称のとき、**押した側の座標を相手へ写す**（`41` の T1）。
+   *
+   * 鏡映した点でもう 1 回当てるだけでは、2 回目が 1 回目の動かしたあとの面から
+   * 法線と平面を取るので、中心線の近くで左右がずれる。ここで写せば、差は
+   * 浮動小数の丸めだけになる。
+   *
+   * 相手の居ない頂点（左右非対称なトポロジ）は素通り。2 度打ちのぶんだけ動く。
+   */
+  private mirrorPending(live: Live): void {
+    const map = live.mirror;
+    if (!map) return;
+    const o = live.object;
+    const mesh: Mesh = this.viewport.meshOf(o);
+    const { mirror, side } = map;
+    if (mirror.length !== mesh.vertexCount) return;
+
+    // 写す先。**先に集めてから書く**（`pending` を回しながら足すと、足した分を
+    // もう一度見に行くことになる）
+    const targets: number[] = [];
+    const sources: number[] = [];
+    for (const v of live.pending) {
+      const m = mirror[v];
+      if (m < 0 || m === v) continue;
+      if (side[v] !== live.primarySign) continue;
+      sources.push(v);
+      targets.push(m);
+    }
+
+    if (live.role === "mask") {
+      const values = live.object.mask?.values;
+      if (!values || values.length !== mesh.vertexCount) return;
+      // 書き換える前の値を控える（2 度打ちの範囲から外れていることがある）
+      this.history.trackMask(targets, values);
+      for (let i = 0; i < targets.length; i++) values[targets[i]] = values[sources[i]];
+      for (const m of targets) {
+        live.touched.add(m);
+        live.pending.add(m);
+      }
+      return;
+    }
+
+    const delta = levelsOf(o).deltas[live.level - 1];
+    if (delta) this.history.trackSculpt(targets, delta);
+    const p = mesh.positions;
+    for (let i = 0; i < targets.length; i++) {
+      const v = sources[i];
+      const m = targets[i];
+      p[m * 3] = -p[v * 3];
+      p[m * 3 + 1] = p[v * 3 + 1];
+      p[m * 3 + 2] = p[v * 3 + 2];
+      live.touched.add(m);
+      live.pending.add(m);
+    }
+    // 中心線の頂点は、2 つの筆から同じだけ受けているので x は 0 のはず。
+    // 丸めで浮くぶんをここで落とす（ここが浮くと、次の段でその筋だけ非対称になる）
+    for (const v of live.pending) {
+      if (mirror[v] === v) p[v * 3] = 0;
+    }
+  }
+
+  /**
    * ここまでに動かした頂点を、段と描画に 1 度だけ反映する。
    *
    * 打つたびにやらず、**1 イベントにまとめる**。太い筆ほど効く。
@@ -577,6 +651,8 @@ export class StrokeDriver {
    */
   private flush(live: Live): void {
     if (!live.pending.size) return;
+    // 対称は「押した側を相手へ写す」で厳密にする（`41` の T1）。**段へ入れる前に。**
+    this.mirrorPending(live);
     const verts = Uint32Array.from(live.pending);
     live.pending.clear();
     if (live.role === "mask") {

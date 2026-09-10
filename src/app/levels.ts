@@ -11,12 +11,15 @@
  */
 import {
   Multires,
+  boundsDiagonal,
+  buildMirrorMap,
   catmullClark,
   estimateLevelBytes,
   maskDown,
   maskIsEmpty,
   maskUp,
   type Mesh,
+  type MirrorMap,
   type SceneObject,
 } from "../core/index.js";
 import { buildFromGeometry, loadWasm, subdivGeometry, type WasmModule } from "./wasm/index.js";
@@ -170,22 +173,43 @@ export function asMb(bytes: number): string {
  * ここを変えたらベンチの B6 を測り直すこと。
  */
 export function fitBrushRadius(o: SceneObject): number {
-  const p = o.mesh.positions;
-  if (!p.length) return 0.4;
-  let minX = Infinity,
-    minY = Infinity,
-    minZ = Infinity,
-    maxX = -Infinity,
-    maxY = -Infinity,
-    maxZ = -Infinity;
-  for (let v = 0; v < p.length; v += 3) {
-    if (p[v] < minX) minX = p[v];
-    if (p[v] > maxX) maxX = p[v];
-    if (p[v + 1] < minY) minY = p[v + 1];
-    if (p[v + 1] > maxY) maxY = p[v + 1];
-    if (p[v + 2] < minZ) minZ = p[v + 2];
-    if (p[v + 2] > maxZ) maxZ = p[v + 2];
-  }
-  const diagonal = Math.hypot(maxX - minX, maxY - minY, maxZ - minZ);
-  return Math.max(0.01, Math.min(10, diagonal * 0.066));
+  return radiusFor(o, DEFAULT_SIZE_RATIO);
+}
+
+/** 既定の筆の太さ（対象の対角に対する割合）。`33` で実機を見て決めた 6.6%。 */
+export const DEFAULT_SIZE_RATIO = 0.066;
+
+/**
+ * そのオブジェクトの大きさ（境界箱の対角）。**レベル 0 で測る。**
+ *
+ * 段を上げても外形はほとんど変わらないので、段ごとに測り直さない
+ * （25 万頂点をなめる必要が無い）。
+ */
+export function objectDiagonal(o: SceneObject): number {
+  const d = boundsDiagonal(o.mesh.positions);
+  return d > 0 ? d : 1;
+}
+
+/** 割合から筆の半径（ワールド単位）。ゲージが書くのは割合のほう（`41` の T2）。 */
+export function radiusFor(o: SceneObject | null, ratio: number): number {
+  const diagonal = o ? objectDiagonal(o) : 1;
+  return Math.max(0.01, Math.min(10, diagonal * ratio));
+}
+
+/**
+ * X 対称の対応表（`41` の T1）。段ごとに作って控える。
+ *
+ * **一度作ったら持ち続ける**（`SceneObject.mirrorMaps`）。左右非対称に彫った
+ * あとの座標から引き直すと相手が見つからなくなるが、対応そのものはトポロジの
+ * 話なので彫っても変わらない。トポロジを変えたときは `markTopologyChanged` が捨てる。
+ *
+ * 対になる頂点が 1 つも無ければ `null`（対称に使えないメッシュ）。
+ * 呼ぶ側は今までどおり「鏡映した点でもう 1 回当てる」だけで進む。
+ */
+export function mirrorMapOf(o: SceneObject, level: number, mesh: Mesh): MirrorMap | null {
+  const cached = o.mirrorMaps.get(level);
+  if (cached && cached.mirror.length === mesh.vertexCount) return cached.paired ? cached : null;
+  const built = buildMirrorMap(mesh.positions, mesh.vertexCount, Math.max(objectDiagonal(o) * 1e-4, 1e-9));
+  o.mirrorMaps.set(level, built);
+  return built.paired ? built : null;
 }

@@ -14,6 +14,7 @@
 import { Mesh } from "./mesh.js";
 import { PRIMITIVES, defaultParams, type PrimitiveParams } from "./primitives.js";
 import type { Multires } from "./multires.js";
+import type { MirrorMap } from "./symmetry.js";
 import { topologyHash } from "./io/hash.js";
 import { reconcile, type UvRecipe } from "./uv/recipe.js";
 
@@ -129,6 +130,14 @@ export class SceneObject {
    * トポロジが変わったときと履歴を戻したときは `invalidateLevels()` で捨てる。
    */
   stack: Multires | null = null;
+  /**
+   * X 対称の対応表（`41` の T1）。段ごと。**`.mbz` にも履歴にも入れない**控え。
+   *
+   * 一度作ったら**トポロジが変わるまで持ち続ける**。作り直さないのは、
+   * 左右非対称に彫ったあとの座標から引き直すと相手が見つからなくなるため。
+   * 対応そのものはトポロジの話なので、彫っても変わらない。
+   */
+  mirrorMaps = new Map<number, MirrorMap>();
 
   constructor(kind: string, id: string, name?: string) {
     this.id = id;
@@ -179,6 +188,8 @@ export class SceneObject {
     const droppedLayers = this.sculptLayers.length;
     // マスクは頂点ごとに持っているので、頂点の数が変われば対応が取れない
     const droppedMask = this.mask !== null;
+    // 対応表は頂点の番号で持っているので、頂点の数が変われば引き直す（`41` の T1）
+    this.mirrorMaps.clear();
     this.parametric = false;
     this.multires = [];
     this.sculptLayers = [];

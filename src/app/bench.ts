@@ -21,6 +21,8 @@ import {
   defaultParams,
   estimateLevelBytes,
   applyStroke,
+  boundsDiagonal,
+  buildMirrorMap,
   strokeFootprint,
   refitBvh,
   Multires,
@@ -304,6 +306,21 @@ export async function runBench(app: App, quick: boolean, size?: number): Promise
     });
     const b3refit = timeIt(3, () => refitBvh(bvh, heavy.positions, tris));
     await add({ key: "B3b", label: "BVH を取り直す（全部）", value: b3refit, unit: "ms", note: "座標だけ変えたとき" });
+
+    /* B8 — 鏡映の対応表（`41` の T1）。対称を入れた最初の 1 打ちで 1 回だけ払う */
+    const tol = boundsDiagonal(heavy.positions) * 1e-4;
+    let pairs = 0;
+    const b8 = timeIt(3, () => {
+      pairs = buildMirrorMap(heavy.positions, heavy.vertexCount, tol).paired;
+    });
+    await add({
+      key: "B8",
+      label: `鏡映の対応表（${heavy.vertexCount} 頂点）`,
+      value: b8,
+      unit: "ms",
+      target: 200,
+      note: `対になった ${pairs} · 段ごとに 1 回だけ`,
+    });
 
     /* B4 — 描画 1 フレーム */
     app.state.doc.objects.length = 0;
