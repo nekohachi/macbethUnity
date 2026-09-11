@@ -34,7 +34,8 @@ import {
 } from "three";
 import { buildBvh, refitBvh, refitBvhPartial, type Bvh, type Mesh, type PaneLayout, type SceneObject } from "../../core/index.js";
 import { defaultCamOpts, type AppState, type PaneLike } from "../state.js";
-import { MAT, checkerMaterial, heatMaterial, maskMaterial } from "./materials.js";
+import { MAT, checkerMaterial, heatMaterial, maskMaterial, materialPreview } from "./materials.js";
+import { bakeTextures, pruneBakeTextures } from "./bakeTexture.js";
 import {
   applyTransform,
   buildObjectView,
@@ -849,6 +850,8 @@ export class Viewport {
   /** ドキュメントの中身と描画をそろえる。増減にも対応する。 */
   syncAll(): void {
     const alive = new Set(this.state.doc.objects.map((o) => o.id));
+    // 焼いた絵のテクスチャも一緒に片づける（`49` の T1）
+    pruneBakeTextures(alive);
     for (const [id, view] of this.views) {
       if (!alive.has(id)) {
         this.root.remove(view.group);
@@ -1079,6 +1082,8 @@ export class Viewport {
     // 不透明度が 1 未満なら、そのオブジェクトだけの材質にする（`25` の T4）。
     // 共有の MAT.surf を透明にすると全部が透けるので、複製を 1 つ持つ。
     const opacity = view.object.opacity;
+    // 焼いた絵を貼って見る（`49` の T2）。焼いていなければ素の材質のまま
+    const material = d === "material" ? this.applyBakedMaps(view) : null;
     const mat =
       d === "checker"
         ? (view.checker ??= checkerMaterial(this.state.checker.cells, this.state.checker.pattern))
@@ -1086,11 +1091,13 @@ export class Viewport {
           ? (view.heat ??= heatMaterial())
           : d === "poles"
             ? (view.poles ??= heatMaterial())
-            : showMask
-              ? (view.masked ??= maskMaterial())
-              : opacity < 1
-                ? (view.faded ??= MAT.surf.clone())
-                : MAT.surf;
+            : material
+              ? material
+              : showMask
+                ? (view.masked ??= maskMaterial())
+                : opacity < 1
+                  ? (view.faded ??= MAT.surf.clone())
+                  : MAT.surf;
     if (mat !== MAT.surf) {
       // 裏の面が先に描かれて手前が消えるのを避けるため、透けているあいだは深度を書かない
       mat.transparent = opacity < 1;
@@ -1114,6 +1121,26 @@ export class Viewport {
         : MAT.wireComp;
     view.points.visible = selected && this.state.compMode === "vertex";
     view.group.visible = view.object.visible;
+  }
+
+  /**
+   * 焼いた絵を材質に貼る（`49` の T2）。焼いていなければ null（素の材質に任せる）。
+   *
+   * **法線マップはローだけ。** 段を上げているときは形の側に既に入っているので、
+   * 重ねると二重にかかる。AO は形に入っていないので、どの段でも貼る。
+   */
+  private applyBakedMaps(view: ObjectView): MeshPhongMaterial | null {
+    const textures = bakeTextures(view.object);
+    if (!textures) return null;
+    const m = (view.material ??= materialPreview());
+    const low = this.state.shownLevel(view.object) === 0;
+    const normal = low ? textures.normal : null;
+    if (m.normalMap !== normal || m.aoMap !== textures.ao) {
+      m.normalMap = normal;
+      m.aoMap = textures.ao;
+      m.needsUpdate = true;
+    }
+    return m;
   }
 
   /**

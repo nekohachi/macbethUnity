@@ -10,7 +10,7 @@ import { DEFAULT_SIZE_RATIO, radiusFor } from "./levels.js";
 
 export type Mode = "model" | "uv" | "sculpt" | "material";
 export type CompMode = "object" | "vertex" | "edge" | "face";
-export type Display = "wire" | "shaded" | "shadedWire" | "smooth" | "checker" | "heat" | "poles";
+export type Display = "wire" | "shaded" | "shadedWire" | "smooth" | "checker" | "heat" | "poles" | "material";
 export type Manip = "all" | "move" | "rotate" | "scale";
 /** マニピュレータの軸の向き（`45` の T2）。Maya の「軸の向き」と同じ 4 つ。 */
 export type ManipSpace = "object" | "local" | "world" | "normal";

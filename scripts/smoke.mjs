@@ -10325,6 +10325,115 @@ check(
     `トースト「${exportSet.staleNote}」/ 焼いていないもの「${exportSet.refused}」`,
 );
 
+/* 49a. マテリアル表示（`49`）: 焼いた絵を貼って見る */
+const materialView = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const core = window.macbethCore;
+  const keep = [...app.state.doc.objects];
+  const keepSel = app.state.selected;
+  const displayBefore = app.state.display;
+  const camBefore = app.viewport.saveLayout();
+  app.setMode("model");
+  app.state.doc.objects.length = 0;
+  const o = app.state.doc.addMesh(
+    core.PRIMITIVES.sphere.build({ ...core.defaultParams("sphere"), sdAxis: 12, sdHeight: 8 }),
+    "Mat49",
+  );
+  const bare = app.state.doc.addMesh(core.PRIMITIVES.cube.build(core.defaultParams("cube")), "Bare49");
+  app.viewport.syncAll();
+  app.state.select(o);
+  app.setMode("sculpt");
+  await app.levelForTest("add");
+  app.viewport.frameSelected();
+  app.refresh();
+  app.history.clear();
+  await new Promise((r) => setTimeout(r, 100));
+
+  await app.bakeForTest("size", 256);
+  await app.bakeForTest("map", "ao", true);
+  await app.bakeForTest("samples", 4);
+  await app.bakeForTest("bake");
+  const result = o.bakeResult;
+
+  // 段 0（ロー）で見る
+  app.setMode("model");
+  app.setDisplay("material");
+  const viewOf = (obj) => app.viewport.viewOf(obj);
+  const matOf = (obj) => viewOf(obj).surface.material;
+  const low = matOf(o);
+  const lowInfo = {
+    hasNormal: !!low.normalMap,
+    hasAo: !!low.aoMap,
+    // **焼いた配列そのもの**を貼っている（写していない）
+    sameNormal: low.normalMap?.image.data === result.normal,
+    sameAo: low.aoMap?.image.data === result.ao,
+    width: low.normalMap?.image.width ?? 0,
+    flipY: low.normalMap?.flipY,
+    hud: document.getElementById("hudMode").textContent,
+  };
+  // 焼いていないオブジェクトは素のまま
+  const bareInfo = { hasNormal: !!matOf(bare).normalMap, hasAo: !!matOf(bare).aoMap };
+
+  // 段を上げると法線マップは外れ、AO は残る
+  app.setMode("sculpt");
+  await app.levelForTest("up");
+  app.viewport.applyDisplayAll();
+  const high = matOf(o);
+  const highInfo = { level: o.activeLevel, hasNormal: !!high.normalMap, hasAo: !!high.aoMap };
+  await app.levelForTest("down");
+  app.setMode("model");
+  app.viewport.applyDisplayAll();
+  const backInfo = { hasNormal: !!matOf(o).normalMap };
+
+  // 焼き直すと同じテクスチャのまま送り直される
+  const before = matOf(o).normalMap;
+  await app.bakeForTest("bake");
+  const after = matOf(o).normalMap;
+  const reused = before === after;
+
+  // 別の表示へ移ると素の材質に戻る
+  app.setDisplay("shadedWire");
+  const offInfo = { hasNormal: !!matOf(o).normalMap };
+
+  app.setDisplay(displayBefore);
+  o.bakeResult = null;
+  o.bake = null;
+  app.state.doc.objects.length = 0;
+  app.state.doc.objects.push(...keep);
+  app.viewport.syncAll();
+  if (keepSel) app.state.select(keepSel);
+  app.viewport.restoreLayout(camBefore);
+  app.history.clear();
+  app.refresh();
+  return { lowInfo, bareInfo, highInfo, backInfo, reused, offInfo };
+});
+check(
+  "マテリアル表示: ローに焼いた法線と AO が貼られる（焼いた配列そのもの・縦は返さない）",
+  materialView.lowInfo.hasNormal &&
+    materialView.lowInfo.hasAo &&
+    materialView.lowInfo.sameNormal &&
+    materialView.lowInfo.sameAo &&
+    materialView.lowInfo.width === 256 &&
+    materialView.lowInfo.flipY === false &&
+    materialView.lowInfo.hud.includes("MATERIAL") &&
+    !materialView.bareInfo.hasNormal &&
+    !materialView.bareInfo.hasAo,
+  `法線 ${materialView.lowInfo.hasNormal}・AO ${materialView.lowInfo.hasAo}（同じ配列 ${materialView.lowInfo.sameNormal} / ${materialView.lowInfo.sameAo}）・` +
+    `${materialView.lowInfo.width}px・flipY ${materialView.lowInfo.flipY} / 焼いていないもの 法線 ${materialView.bareInfo.hasNormal}`,
+);
+check(
+  "マテリアル表示: 段を上げると法線マップが外れ（二重にかからない）、AO は残る",
+  materialView.highInfo.level === 1 &&
+    !materialView.highInfo.hasNormal &&
+    materialView.highInfo.hasAo &&
+    materialView.backInfo.hasNormal &&
+    materialView.reused &&
+    !materialView.offInfo.hasNormal,
+  `段 ${materialView.highInfo.level} で 法線 ${materialView.highInfo.hasNormal}・AO ${materialView.highInfo.hasAo} / ` +
+    `段 0 に戻すと 法線 ${materialView.backInfo.hasNormal} / 焼き直しても同じテクスチャ ${materialView.reused} / ` +
+    `別の表示にすると ${materialView.offInfo.hasNormal}`,
+);
+
 /* 43. 例外が出ていない */
 check("例外なし", errors.length === 0, errors.join(" / "));
 

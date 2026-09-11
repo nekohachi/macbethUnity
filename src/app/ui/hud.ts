@@ -20,6 +20,7 @@ const DISPLAY_NAME: Record<Display, string> = {
   checker: "CHECKER",
   heat: "HEAT",
   poles: "POLES",
+  material: "MATERIAL",
 };
 
 export class Hud {

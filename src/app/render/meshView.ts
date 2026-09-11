@@ -260,6 +260,8 @@ export interface ObjectView {
   poles?: MeshBasicMaterial;
   /** マスク表示の材質（`34` の T3）。`MAT.surf` の複製に頂点色を立てたもの。 */
   masked?: MeshPhongMaterial;
+  /** マテリアル表示の材質（`49` の T2）。焼いた法線と AO を貼る。 */
+  material?: MeshPhongMaterial;
   /**
    * いま `color` 属性に入っているものの種類（`34` の T3）。
    *
@@ -483,9 +485,10 @@ export function disposeViewMaterials(view: ObjectView): void {
   view.heat?.dispose();
   view.poles?.dispose();
   view.masked?.dispose();
+  view.material?.dispose();
   view.faded?.dispose();
   view.backMaterial?.dispose();
-  view.checker = view.heat = view.poles = view.faded = view.masked = undefined;
+  view.checker = view.heat = view.poles = view.faded = view.masked = view.material = undefined;
   view.polesStamp = view.colorKind = undefined;
   view.backMaterial = view.backSource = view.back = undefined;
 }

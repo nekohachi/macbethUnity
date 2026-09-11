@@ -57,6 +57,19 @@ export function checkerMaterial(cells: number, pattern: CheckerPattern): MeshPho
   });
 }
 
+/**
+ * 焼いた絵を貼って見るための材質（`49` の T2）。
+ *
+ * `MAT.surf` の複製に `normalMap` と `aoMap` を足せる形にしただけ。
+ * 地の色は少し明るくしてある（AO が掛かると暗くなるので、素の灰色のままだと沈む）。
+ */
+export function materialPreview(): MeshPhongMaterial {
+  const m = MAT.surf.clone();
+  m.color.setHex(0xb4bcc4);
+  m.shininess = 18;
+  return m;
+}
+
 export const MAT = {
   surf: new MeshPhongMaterial({ color: 0x9aa4ad, specular: 0x2a3138, shininess: 24, side: DoubleSide }),
   /**

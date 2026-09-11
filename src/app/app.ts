@@ -102,6 +102,7 @@ import {
   type BakeMapKind,
   type BakeState,
 } from "./bake.js";
+import { refreshBakeTextures } from "./render/bakeTexture.js";
 import { pressureOf } from "./input/gestures.js";
 import { forgetStamps, stampsFor } from "./stamps.js";
 import { STANDARD_VIEWS, Viewport, type LayoutKind, type ViewName } from "./render/viewport.js";
@@ -231,6 +232,8 @@ const DISPLAY_KEYS: Record<string, Display> = {
   "8": "checker",
   "9": "heat",
   "0": "poles",
+  m: "material",
+  M: "material",
 };
 
 const MODE_LABELS: Record<Mode, string> = {
@@ -416,6 +419,7 @@ const DISPLAY_ICONS: Record<Display, string> = {
   checker: ICONS.mUV,
   heat: ICONS.heat,
   poles: ICONS.poles,
+  material: ICONS.bake,
 };
 
 /** カット / ソーのグループのアイコン（`24` の T5）。 */
@@ -2731,6 +2735,7 @@ export class App {
         checker: "チェッカー（UV の確認）",
         heat: "ヒートマップ（UV の歪み）",
         poles: "極（価数。橙 = 三角形の痕 · 青 = n 角形の痕）",
+        material: "マテリアル（焼いた法線と AO）",
       }[display],
     );
     this.uv?.rebuild();
@@ -3054,9 +3059,11 @@ export class App {
     this.state.mode = mode;
     // スカルプトの既定の表示はワイヤー無しのシェード（`40` の T4）。
     // ワイヤーだけで 1 フレームが 1.85 倍になる。入る前の表示を控えて、戻すときに戻す
+    // **「マテリアル」はそのまま持ち込む**（`49` の T2。`31` の 6 章の
+    // 「スカルプト中にマテリアルの表示を重ねられる」）。自分で選んだ表示なので勝手に外さない
     if (mode === "sculpt") {
       this.state.displayBeforeSculpt = this.state.display;
-      if (this.state.display !== "smooth") this.setDisplay("smooth");
+      if (this.state.display !== "smooth" && this.state.display !== "material") this.setDisplay("smooth");
     } else if (wasSculpt && this.state.displayBeforeSculpt) {
       const back = this.state.displayBeforeSculpt;
       this.state.displayBeforeSculpt = null;
@@ -3610,6 +3617,8 @@ export class App {
       NW: { label: "チェッカー", sub: "8", icon: ICONS.mUV, run: () => this.setDisplay("checker") },
       NE: { label: "ヒートマップ", sub: "9", icon: ICONS.heat, run: () => this.setDisplay("heat") },
       SE: { label: "極（価数）", sub: "0", icon: ICONS.poles, run: () => this.setDisplay("poles") },
+      // 焼いた絵を貼って見る（`49` の T2）。焼いていなければ素のまま
+      SW: { label: "マテリアル", sub: "M", icon: ICONS.bake, run: () => this.setDisplay("material") },
     };
   }
 
@@ -4756,6 +4765,9 @@ export class App {
             : "焼けませんでした";
       return this.hud.toast(why);
     }
+    // 焼いた絵を貼り直す（`49` の T3）。差分焼きは同じ配列なので送り直すだけ
+    refreshBakeTextures(o);
+    this.viewport.applyDisplayAll();
     const r = report.result!;
     const filled = r.size * r.size;
     const where = report.tiles ? `触った ${report.tiles} 升目` : `${Math.round((r.covered / filled) * 100)}%`;
