@@ -29,6 +29,11 @@ const DEAD_RADIUS = 42;
 const MOVE_MIN = 14;
 /** ボタンからこれだけ引いたら、長押しを待たずに輪を開く。 */
 const OPEN_DRAG = 24;
+/**
+ * 画面の端で輪を縮めるときの下限（`52`）。
+ * これより小さくすると区画の文字が入らない。
+ */
+const MIN_SCALE = 0.62;
 
 
 interface Slice {
@@ -57,11 +62,24 @@ let open: {
   passive: boolean;
   slices: Array<Slice | null>;
   rows: Row[];
+  /** 輪の中心。**向きはここから測る**（`52`）。 */
   cx: number;
   cy: number;
-  /** 押した点（`41` の T3）。**向きはここから測る。** */
+  /** 押した点。「指が動いたか」だけをここで測る。 */
   px: number;
   py: number;
+  /** 縮めたあとの寸法（`52`）。端では 1 倍より小さい。 */
+  outer: number;
+  dead: number;
+  rowWidth: number;
+  /**
+   * 開いた時点で**指がもう乗っていた区画**（`52`）。寄せた輪で起きる。
+   * ここから一度出るまでは何も選ばない。指を置いたまま離しただけで
+   * 「オブジェクトを削除」が走る、を防ぐ。
+   */
+  parked: number;
+  /** 一度 `parked` から出たか。出たあとはふつうに選べる。 */
+  armed: boolean;
   selected: number;
   /** 一覧の選択。方位とは排他。 */
   selectedRow: number;
@@ -111,18 +129,29 @@ export function openRadial(
   opts: RadialOptions = {},
 ): void {
   closeRadial();
+  // **縮めてから寄せる**（`52`）。
+  //
+  // `50` では横の寄せをやめていた。輪を丸ごと画面へ入れようと 150px も横へ寄せると、
+  // 押した点と中心が離れ、「見えている区画」と「引いた向き」が食い違ったからだ。
+  // ただし寄せをやめると、左のツール列で押したとき**輪の左半分が画面の外**へ出て、
+  // そこは指で押せない。実機ではこちらが痛かった。
+  //
+  // そこで、まず輪を画面に入る大きさまで**縮める**。縮めても足りない分だけ寄せる。
+  // 残る寄せは 70px ほどで済み、しかも**向きは常に中心から読む**（下の `onMove`）ので、
+  // 見えている通りに選べる。ビューポートの指のジェスチャは画面の真ん中で開くから
+  // 寄せは 0、つまり中心 = 押した点で、見ないで振り抜く使い方はそのまま効く。
+  const room = Math.min(clientX, window.innerWidth - clientX) - 10;
+  const scale = Math.max(MIN_SCALE, Math.min(1, room / RING_OUTER));
+  const outer = RING_OUTER * scale;
+  const inner = RING_INNER * scale;
+  const dead = DEAD_RADIUS * scale;
+  const rowWidth = Math.min(ROW_WIDTH, window.innerWidth - 16);
   // 一覧がある分だけ下の余白も見る
   const below = list.length ? ROW_GAP + list.length * ROW_HEIGHT : 0;
-  // **横には寄せない**（`50` の直し）。輪を丸ごと画面へ入れようとして横へ寄せると、
-  // 押した点と中心が 100px 近く離れ、「見えている区画」と「引いた向き」が食い違う。
-  // 画面の端（ツール列）で押すのはまさにその場面で、目で見た所を押しても選べなかった。
-  //
-  // 中心は**押した点のまま**にして、画面から出そうな**文字だけ**を内側へ寄せる
-  // （下の `clampText`）。こうすると 2 つの読み方が常に一致する。
-  // 縦だけは一覧が画面に収まるよう寄せる（縦のずれは北と南の読みを変えない）。
-  const edge = RING_OUTER + 12;
-  const cx = clientX;
-  const cy = Math.max(edge, Math.min(Math.max(edge, window.innerHeight - edge - below), clientY));
+  const edgeX = outer + 6;
+  const edgeY = outer + 12;
+  const cx = Math.max(edgeX, Math.min(Math.max(edgeX, window.innerWidth - edgeX), clientX));
+  const cy = Math.max(edgeY, Math.min(Math.max(edgeY, window.innerHeight - edgeY - below), clientY));
   /** 文字が画面から出ないよう、x を内側へ寄せる。返すのは寄せたぶん。 */
   const clampText = (t: SVGTextElement, x: number): number => {
     const half = (t.getComputedTextLength?.() ?? 0) / 2 + 6;
@@ -147,7 +176,7 @@ export function openRadial(
     const a0 = ((i * 45 - 22.5 - 90) * Math.PI) / 180;
     const a1 = ((i * 45 + 22.5 - 90) * Math.PI) / 180;
     const path = document.createElementNS(NS, "path");
-    path.setAttribute("d", arcPath(cx, cy, RING_INNER, RING_OUTER, a0, a1));
+    path.setAttribute("d", arcPath(cx, cy, inner, outer, a0, a1));
     path.setAttribute("fill", item ? "#2c3238" : "#23272c");
     path.setAttribute("stroke", "#171a1e");
     path.setAttribute("stroke-width", "1");
@@ -158,7 +187,7 @@ export function openRadial(
       continue;
     }
     const mid = (a0 + a1) / 2;
-    const tr = (RING_INNER + RING_OUTER) / 2;
+    const tr = (inner + outer) / 2;
     const tx = cx + Math.cos(mid) * tr;
     const ty = cy + Math.sin(mid) * tr;
 
@@ -204,7 +233,7 @@ export function openRadial(
   const hub = document.createElementNS(NS, "circle");
   hub.setAttribute("cx", String(cx));
   hub.setAttribute("cy", String(cy));
-  hub.setAttribute("r", String(RING_INNER - 2));
+  hub.setAttribute("r", String(inner - 2));
   hub.setAttribute("fill", "#20242a");
   hub.setAttribute("stroke", "#3d454e");
   svg.appendChild(hub);
@@ -212,13 +241,13 @@ export function openRadial(
 
   // 輪の下の一覧
   const rows: Row[] = [];
-  const listTop = cy + RING_OUTER + ROW_GAP;
+  const listTop = cy + outer + ROW_GAP;
   list.forEach((item, i) => {
     const top = listTop + i * ROW_HEIGHT;
     const rect = document.createElementNS(NS, "rect");
-    rect.setAttribute("x", String(cx - ROW_WIDTH / 2));
+    rect.setAttribute("x", String(cx - rowWidth / 2));
     rect.setAttribute("y", String(top));
-    rect.setAttribute("width", String(ROW_WIDTH));
+    rect.setAttribute("width", String(rowWidth));
     rect.setAttribute("height", String(ROW_HEIGHT));
     rect.setAttribute("fill", "#2c3238");
     rect.setAttribute("stroke", "#171a1e");
@@ -230,7 +259,30 @@ export function openRadial(
     rows.push({ rect, label, item, top });
   });
 
-  open = { host, passive: !!opts.passive, slices, rows, cx, cy, px: clientX, py: clientY, selected: -1, selectedRow: -1 };
+  open = {
+    host,
+    passive: !!opts.passive,
+    slices,
+    rows,
+    cx,
+    cy,
+    px: clientX,
+    py: clientY,
+    outer,
+    dead,
+    rowWidth,
+    parked: -1,
+    armed: true,
+    selected: -1,
+    selectedRow: -1,
+  };
+  // 開いた時点で指が区画の上に居るか（寄せた輪でだけ起きる）
+  const ox = clientX - cx;
+  const oy = clientY - cy;
+  if (Math.hypot(ox, oy) >= dead) {
+    open.parked = sliceAt(ox, oy);
+    open.armed = open.parked < 0;
+  }
   if (opts.passive) return;
   window.addEventListener("pointermove", onMove);
   window.addEventListener("pointerup", onUp);
@@ -268,44 +320,30 @@ function sliceAt(dx: number, dy: number): number {
 }
 
 /**
- * 指の位置から選ぶものを決める（`50` の直し）。
+ * 指の位置から選ぶものを決める（`52` で 1 本にした）。
  *
- * 輪は画面に収まるよう寄せてあるので、**押した点と輪の中心が別の場所にある**。
- * 使い方は 2 つあって、どちらも成り立たせたい:
+ * **向きは輪の中心から測る。それだけ**。描いてあるものと読み方が必ず一致する。
  *
- *   1. **見て選ぶ**: 出てきた輪の区画に指を乗せる（タブレットではこれが自然）
- *   2. **見ないで引く**: 押した点から方位へ振り抜く（`41` の T3。慣れた人の使い方）
+ * `50` は「押した点から測る」と「輪の帯の上なら中心から測る」の 2 本立てだった。
+ * 輪を 150px も横へ寄せていたので、どちらか一方では必ず食い違ったからだ。
+ * `52` で**縮めてから寄せる**ようにして寄せが小さくなり、2 本立てが要らなくなった。
  *
- * どちらで測るかは「**指がいま、輪と押した点のどちらに近いか**」で決める。
- * 輪に寄っていけば見て選ぶ側、押した点のまわりで振れば引く側になる。
+ * 見ないで振り抜く使い方（`41` の T3）はそのまま効く。ビューポートの指の
+ * ジェスチャは画面の真ん中で開くので寄せが 0 で、中心 = 押した点になる。
  */
 function onMove(e: PointerEvent): void {
   if (!open) return;
-  const dx = e.clientX - open.px;
-  const dy = e.clientY - open.py;
   const ax = e.clientX - open.cx;
   const ay = e.clientY - open.cy;
-  const toPress = Math.hypot(dx, dy);
   const toRing = Math.hypot(ax, ay);
-  // 押した点から輪の中心までの隔たり。画面の端で押したときだけ 0 より大きい
-  const gap = Math.hypot(open.cx - open.px, open.cy - open.py);
-  // **指が輪の帯の上に乗っていれば、見たままを選ぶ。**
-  // 輪の外（短く振った・大きく振り抜いた）なら、押した点から引いた向きで選ぶ
-  const onAnnulus = toRing >= (gap < 1 ? DEAD_RADIUS : RING_INNER) && toRing <= RING_OUTER;
   // 押した点から少しでも動くまでは何も選ばない。寄せた輪では、押した瞬間の指が
   // 既にどこかの区画の上に居るので、動いていないうちに当てると誤爆する（`41` の T3）
-  const moved = toPress > MOVE_MIN;
-  // 一覧は輪の下に描いてあるので、指を輪の分だけ平行移動した点で当てる
-  const atY = e.clientY + (open.cy - open.py);
+  const moved = Math.hypot(e.clientX - open.px, e.clientY - open.py) > MOVE_MIN;
 
   // 一覧の上に居るならそちらが優先。方位の選択は外す
   let row = -1;
-  if (moved && Math.abs(ax) <= ROW_WIDTH / 2) {
-    // **見えている行に指が乗った**（寄せた輪でも、行を直に押せる）
+  if (moved && Math.abs(ax) <= open.rowWidth / 2) {
     row = open.rows.findIndex((r) => e.clientY >= r.top && e.clientY < r.top + ROW_HEIGHT);
-  }
-  if (row < 0 && Math.abs(dx) <= ROW_WIDTH / 2) {
-    row = open.rows.findIndex((r) => atY >= r.top && atY < r.top + ROW_HEIGHT);
   }
   if (row !== open.selectedRow) {
     open.rows.forEach((r, i) => r.rect.setAttribute("fill", i === row ? "#2f5f7d" : "#2c3238"));
@@ -313,14 +351,14 @@ function onMove(e: PointerEvent): void {
     if (row >= 0) navigator.vibrate?.(6);
   }
 
-  let sel = -1;
-  if (row < 0 && moved) {
-    const inner = gap < 1 ? DEAD_RADIUS : RING_INNER;
-    if (onAnnulus) sel = sliceAt(ax, ay);
-    // 輪の真ん中（ハブ）に指が乗っている = キャンセル。見たままの意味にする
-    else if (toRing < inner) sel = -1;
-    else if (toPress >= DEAD_RADIUS) sel = sliceAt(dx, dy);
-  }
+  // 輪の真ん中（ハブ）に指が乗っている = キャンセル。見たままの意味にする。
+  // 外へ振り抜いた先は、輪の外でもその方位のまま（マーキングメニュー）
+  const here = toRing >= open.dead ? sliceAt(ax, ay) : -1;
+  // 開いた時に指が乗っていた区画からは、一度出るまで何も選ばない（`52`）。
+  // 寄せた輪では指が最初からどこかの区画の上に居るので、置いたまま離しただけで
+  // そこが走ってしまう。削除の輪では取り返しがつかない
+  if (!open.armed && here !== open.parked) open.armed = true;
+  const sel = row < 0 && moved && open.armed ? here : -1;
   if (sel === open.selected) return;
   paintSlices(sel);
   if (sel >= 0) navigator.vibrate?.(6);

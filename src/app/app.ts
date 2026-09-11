@@ -715,6 +715,11 @@ export class App {
   pushSelectionToUvForTest(): void {
     this.pushSelectionToUv();
   }
+
+  /** 選んでいるオブジェクトを 1 つに結合する（`52` の確認で使う）。 */
+  combineForTest(): void {
+    this.doCombine();
+  }
   private uvSplit: UvSplit = "both";
   /**
    * 3 本指のジェスチャ中に固定しておくカメラ由来の値と枠（`47` の T2）。
@@ -1944,43 +1949,47 @@ export class App {
         run: () => this.hintTargetWeld(),
       },
       W: { label: "スケール", sub: "Scale  R", icon: ICONS.scale, run: () => this.setManip("scale") },
+      // マージは**輪の区画に置く**（`52`）。一覧にしか無いと、長押ししても
+      // マージが出せることに気づけない（実機の声）
       NW: {
-        label: "初期設定に戻す",
-        sub: "Reset",
-        icon: ICONS.xform,
-        run: () => {
-          this.state.pivotEdit = false;
-          this.state.pivotOverride = null;
-          this.uv?.resetPivot();
-          this.setManip("all");
-          this.setManipSize(1);
-          this.syncToggleButtons();
-          this.hud.toast("マニピュレータを初期設定に戻した");
-        },
+        label: "距離でマージ",
+        sub: `Merge  ${this.state.vertexOpts.mergeDist.toFixed(3)}`,
+        icon: ICONS.vVert,
+        run: () => this.doMergeByDistance(),
       },
     };
   }
 
+  /** マニピュレータの決めごとを初期設定へ戻す。 */
+  private resetManipulator(): void {
+    this.state.pivotEdit = false;
+    this.state.pivotOverride = null;
+    this.uv?.resetPivot();
+    this.setManip("all");
+    this.setManipSize(1);
+    this.syncToggleButtons();
+    this.hud.toast("マニピュレータを初期設定に戻した");
+  }
+
   /**
-   * 変形の輪の下の一覧（`45` の T3）。**マージはここに集めた。**
+   * 変形の輪の下の一覧（`45` の T3、`52` で作り直し）。
    *
-   * 頂点モードでないときは出さない（オブジェクトを「中心にマージ」しても
-   * 意味が無い）。
+   * **モードで切らない**（`52`）。前は頂点モードでないと空にしていたので、
+   * オブジェクトモードで長押しするとマージがどこにも出てこなかった。
    */
   private manipulatorItems(): RadialItem[] {
-    if (this.state.compMode !== "vertex") return [];
     return [
-      {
-        label: "距離でマージ",
-        sub: `Merge  ${this.state.vertexOpts.mergeDist.toFixed(3)} 以内`,
-        icon: ICONS.vVert,
-        run: () => this.doMergeByDistance(),
-      },
       {
         label: "中心にマージ",
         sub: "To Center",
         icon: ICONS.vObj,
         run: () => this.doMergeVertices(),
+      },
+      {
+        label: "初期設定に戻す",
+        sub: "Reset",
+        icon: ICONS.xform,
+        run: () => this.resetManipulator(),
       },
     ];
   }
@@ -3942,9 +3951,16 @@ export class App {
   /** 距離でマージ。選択が 2 つ以上なら選択の中だけ、1 つ以下ならメッシュ全体。 */
   private doMergeByDistance(): void {
     const o = this.state.selected;
-    if (!o || this.state.compMode !== "vertex") {
-      this.hud.toast("頂点モードで実行してください");
+    if (!o) {
+      this.hud.toast("オブジェクトを選んでください");
       return;
+    }
+    // **頂点モードでなくても実行する**（`52`）。変形の輪から直に呼べるように
+    // したので、ここで断ると「押したのに何も起きない」になる。
+    // 選択が無ければメッシュ全体が対象（Maya の Mesh > Merge と同じ）
+    if (this.state.compMode !== "vertex") {
+      this.state.comp.clear();
+      this.setCompMode("vertex");
     }
     const threshold = this.state.vertexOpts.mergeDist;
     // 選択の中だけをマージするときは、鏡側も入れる（`47` の T3）

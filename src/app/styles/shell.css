@@ -15,7 +15,8 @@
   --sel:#4dff4d;          /* Maya の選択グリーン */
   --comp:#ff9e00;         /* Maya のコンポーネントオレンジ */
   --warn:#e08a4c;
-  --rail:64px;
+  /* 左レール。ゲージを指で掴める幅にした（`52`） */
+  --rail:74px;
   --radius:3px;
 }
 *{box-sizing:border-box}
@@ -81,7 +82,8 @@ button{font-family:inherit; font-size:inherit; color:inherit; background:none; b
 .glabel{font-size:9px; white-space:nowrap; letter-spacing:.06em; text-transform:uppercase; color:var(--text-faint); text-align:center; line-height:1.3}
 .gval{font-family:"IBM Plex Mono",monospace; font-size:10px; color:var(--text); font-variant-numeric:tabular-nums}
 .gauge{
-  position:relative; width:36px; flex:1 1 0; min-height:60px;
+  /* 指で上下に掴む所。46px あれば親指でも外さない（`52`） */
+  position:relative; width:46px; flex:1 1 0; min-height:60px;
   background:var(--panel-lo); border:1px solid var(--line); border-radius:var(--radius);
   overflow:hidden; touch-action:none; cursor:ns-resize;
 }
@@ -93,7 +95,7 @@ button{font-family:inherit; font-size:inherit; color:inherit; background:none; b
   height:1px; background:var(--line); opacity:.9}
 .slider.spring{accent-color:var(--accent)}
 .hbtns{display:flex; flex-direction:column; gap:5px; width:100%; align-items:center; flex:0 0 auto}
-.bigbtn{width:52px; height:44px; display:grid; place-items:center; background:var(--panel);
+.bigbtn{width:58px; height:48px; display:grid; place-items:center; background:var(--panel);
   border:1px solid var(--line); border-radius:var(--radius); color:var(--text-dim)}
 .bigbtn:hover{background:var(--panel-hi); color:var(--text)}
 .bigbtn:disabled{opacity:.3}
@@ -132,8 +134,8 @@ button{font-family:inherit; font-size:inherit; color:inherit; background:none; b
 .dockgrip.horizontal{height:6px; cursor:row-resize; left:0; right:0}
 .dockcol .dock:first-child{flex:1 1 62%; border-bottom:1px solid var(--line)}
 .dockcol .dock:last-child{flex:1 1 38%}
-.dock.narrow{width:63px; min-width:63px}          /* ツール列を含むドック */
-.panel[data-panel="tools"] .pbody{padding:5px; width:52px; min-width:52px}
+.dock.narrow{width:71px; min-width:71px}          /* ツール列を含むドック（`52` で広げた） */
+.panel[data-panel="tools"] .pbody{padding:5px; width:60px; min-width:60px}
 
 .panel{display:flex; flex-direction:column; min-height:0; flex:1}
 .phead{display:flex; align-items:center; gap:5px; padding:6px 7px; background:var(--panel-lo);
@@ -146,7 +148,7 @@ button{font-family:inherit; font-size:inherit; color:inherit; background:none; b
 .pbody{overflow:auto; padding:8px; flex:1; min-height:0; -webkit-overflow-scrolling:touch; touch-action:pan-y}
 .panel.floating{position:absolute; z-index:20; max-height:70%; border:1px solid var(--line);
   border-radius:var(--radius); box-shadow:0 12px 32px rgba(0,0,0,.5); background:var(--panel)}
-.panel.floating[data-panel="tools"]{width:63px}
+.panel.floating[data-panel="tools"]{width:71px}
 .panel.floating:not([data-panel="tools"]){width:250px}
 
 /* ツール列から横に出てくる縦ゲージ（マニピュレータの大きさ）。
@@ -162,10 +164,13 @@ button{font-family:inherit; font-size:inherit; color:inherit; background:none; b
 .cutin.wide .sect:last-child{margin-bottom:0}
 
 /* ---------- icon tool column ---------- */
-.toolcol{display:flex; flex-direction:column; gap:3px; align-items:center}
-.ibtn{width:40px; height:36px; display:grid; place-items:center; position:relative;
+.toolcol{display:flex; flex-direction:column; gap:6px; align-items:center}
+.ibtn{width:46px; height:42px; display:grid; place-items:center; position:relative;
   background:var(--panel-lo); border:1px solid var(--line); border-radius:var(--radius);
   color:var(--text-dim); touch-action:none}
+/* 見た目より広い当たり（`52`）。指の腹はボタンの外に半分かかるので、
+   透明な板を回りに敷いて 56×48 まで広げる。角の印は ::after を使っている */
+.ibtn::before{content:""; position:absolute; inset:-3px -5px; border-radius:6px}
 .ibtn:hover{background:var(--panel-hi); color:var(--text)}
 .ibtn[aria-pressed="true"]{background:var(--accent-dim); border-color:var(--accent); color:#eaf4fb}
 .ibtn[data-radial]::after{content:""; position:absolute; right:2px; bottom:2px;
@@ -173,8 +178,8 @@ button{font-family:inherit; font-size:inherit; color:inherit; background:none; b
 /* アイコンの隅の小さな印（カメラのロック。25 の T5） */
 .ibtn .badge{position:absolute; left:2px; top:1px; font-size:9px; line-height:1; font-style:normal;
   pointer-events:none}
-.tool-sep{width:30px; height:1px; background:var(--line-soft); margin:4px 0}
-.igrid{display:flex; flex-direction:column; gap:3px; align-items:center}
+.tool-sep{width:34px; height:1px; background:var(--line-soft); margin:4px 0}
+.igrid{display:flex; flex-direction:column; gap:6px; align-items:center}
 .minilbl{font-size:8px; letter-spacing:.06em; text-transform:uppercase; color:var(--text-faint); margin:8px 0 4px; text-align:center}
 
 /* ---------- options ---------- */
@@ -313,7 +318,7 @@ button{font-family:inherit; font-size:inherit; color:inherit; background:none; b
    置き場所は左下（既定）か、ツール列の横（.vp[data-cluster="side"]）の 2 つ。
    地は少し透かしてある（押している状態だけ不透明）。 */
 .cluster{position:absolute; left:12px; bottom:calc(12px + env(safe-area-inset-bottom, 0px));
-  display:flex; flex-direction:column; gap:6px; z-index:8}
+  display:flex; flex-direction:column; gap:8px; z-index:8}
 .vp[data-cluster="side"] .cluster{left:8px; bottom:auto; top:50%; transform:translateY(-50%)}
 .cmod{width:66px; height:58px; border-radius:8px; font-weight:600; font-size:11px; letter-spacing:.04em;
   background:rgba(37,42,48,.7); border:1px solid var(--line); color:var(--text-dim); backdrop-filter:blur(4px)}
