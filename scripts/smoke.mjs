@@ -8097,13 +8097,14 @@ const symmetry = await page.evaluate(async () => {
   const center = line[mid]?.dy ?? 0;
   const around = ((line[mid - 1]?.dy ?? 0) + (line[mid + 1]?.dy ?? 0)) / 2;
 
-  // 3. 反対側の輪（`41` の T1b）。ホバーの本物の道で出す
-  gl.dispatchEvent(ev("pointermove", cx + 20, cy, 0));
+  // 3. 反対側の輪（`41` の T1b）。ホバーの本物の道で出す。
+  // **中心から離れた所で見る**（中心の近くは 1 つの輪になる。`51`）
+  gl.dispatchEvent(ev("pointermove", cx + 100, cy, 0));
   await new Promise((r) => setTimeout(r, 40));
   const ringsOn = app.viewport.brushCursorForTest();
   app.state.symX = false;
   app.refresh();
-  gl.dispatchEvent(ev("pointermove", cx + 22, cy, 0));
+  gl.dispatchEvent(ev("pointermove", cx + 102, cy, 0));
   await new Promise((r) => setTimeout(r, 40));
   const ringsOff = app.viewport.brushCursorForTest();
 
@@ -8586,7 +8587,8 @@ check(
 {
   const bench = await browser.newPage({ viewport: { width: 1280, height: 800 } });
   await bench.goto(`http://localhost:${PORT}${BASE}${ENTRY}?bench=1&quick=1`, { waitUntil: "load" });
-  await bench.waitForSelector(".bench[data-done='true']", { timeout: 60000 });
+  // ベンチは全部で 1 分を越えることがある（AO の光線が重い）。待ちに余裕を持たせる
+  await bench.waitForSelector(".bench[data-done='true']", { timeout: 240000 });
   const table = await bench.evaluate(() => {
     const rows = [...document.querySelectorAll(".bench-row")].map((r) => ({
       label: r.querySelector("i")?.textContent ?? "",
@@ -10661,6 +10663,196 @@ check(
     delButton.afterClean.entry.includes("エッジと頂点"),
   `タップで ${delButton.facesBefore} → ${delButton.afterTap.faces} 面 / 輪「${delButton.labels.filter((t) => t && !t.includes("・")).slice(0, 4).join(" · ")}」/ ` +
     `コントロール削除で ${delButton.afterClean.faces} 面・頂点 ${delButton.vertsBefore} → ${delButton.afterClean.verts}（履歴「${delButton.afterClean.entry}」）`,
+);
+
+/* 51a. 実機の声（`51`）: ペンで修飾が消えない・対称の輪は中心で 1 つ・ムーブは指について来る */
+const penHold = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const btn = document.getElementById("modShift");
+  const r = btn.getBoundingClientRect();
+  const x = r.x + r.width / 2;
+  const y = r.y + r.height / 2;
+  const fire = (type) =>
+    btn.dispatchEvent(
+      new PointerEvent(type, { pointerId: 90, pointerType: "touch", bubbles: true, cancelable: true, clientX: x, clientY: y }),
+    );
+  app.state.mods.shift = "off";
+  app.state.heldMod = null;
+
+  // 指で長押し → ペンが近づいて touch の合図が取り消される（iPad の挙動）
+  fire("pointerdown");
+  await wait(300);
+  const during = app.state.modOn("shift");
+  fire("pointercancel");
+  await wait(60);
+  const after = { on: app.state.modOn("shift"), latch: app.state.mods.shift, state: btn.dataset.state };
+  const note = document.getElementById("hudHint").textContent;
+  // タップで消せる
+  btn.dispatchEvent(new PointerEvent("pointerdown", { pointerId: 91, pointerType: "touch", bubbles: true, cancelable: true, clientX: x, clientY: y }));
+  await wait(50);
+  btn.dispatchEvent(new PointerEvent("pointerup", { pointerId: 91, pointerType: "touch", bubbles: true, clientX: x, clientY: y }));
+  await wait(60);
+  const cleared = app.state.modOn("shift");
+  app.state.mods.shift = "off";
+  app.state.heldMod = null;
+  return { during, after, note, cleared };
+});
+check(
+  "修飾ボタン: ペンが近づいて指の合図が切れても消えない（ロックとして残る）",
+  penHold.during &&
+    penHold.after.on &&
+    penHold.after.latch === "on" &&
+    penHold.note.includes("ロック") &&
+    !penHold.cleared,
+  `長押し中 ${penHold.during} → 取り消し後 ${penHold.after.on}（${penHold.after.latch}）/ ` +
+    `トースト「${penHold.note}」/ タップで消える ${!penHold.cleared}`,
+);
+
+/* 51b. 対称の筆カーソル: 中心の近くでは 1 つの輪 */
+const symCursor = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const core = window.macbethCore;
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const keep = [...app.state.doc.objects];
+  const keepSel = app.state.selected;
+  app.setMode("model");
+  app.state.doc.objects.length = 0;
+  const o = app.state.doc.addMesh(
+    core.PRIMITIVES.sphere.build({ ...core.defaultParams("sphere"), sdAxis: 12, sdHeight: 8 }),
+    "Cur51",
+  );
+  app.viewport.syncAll();
+  app.state.select(o);
+  app.viewport.frameSelected();
+  app.refresh();
+  await wait(60);
+
+  const radius = 0.3;
+  const mirrorVisible = (x) => {
+    app.viewport.showBrushCursor(o, [x, 0, 1], radius, true);
+    return !!app.viewport.brushCursorMirror?.visible;
+  };
+  const far = mirrorVisible(0.5);
+  const near = mirrorVisible(0.05);
+  // 半径の 0.7 倍が境目。0.25 は 0.83 倍なので、まだ 2 つ
+  const edge = mirrorVisible(0.25);
+  const inside = mirrorVisible(0.15);
+  app.viewport.hideBrushCursor();
+
+  app.state.doc.objects.length = 0;
+  app.state.doc.objects.push(...keep);
+  app.viewport.syncAll();
+  if (keepSel) app.state.select(keepSel);
+  app.refresh();
+  return { far, near, edge, inside };
+});
+check(
+  "対称の筆カーソル: 中心の近くでは 1 つの輪になる（離れれば 2 つ）",
+  symCursor.far && symCursor.edge && !symCursor.inside && !symCursor.near,
+  `半径 0.3 で x=0.5 は ${symCursor.far ? "2 つ" : "1 つ"} / x=0.25 は ${symCursor.edge ? "2 つ" : "1 つ"} / ` +
+    `x=0.15 は ${symCursor.inside ? "2 つ" : "1 つ"} / x=0.05 は ${symCursor.near ? "2 つ" : "1 つ"}`,
+);
+
+/* 51c. ムーブ: 筆ごとに強さを覚える。対称の中心線が 2 倍動かない */
+const moveBrush = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const core = window.macbethCore;
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const keep = [...app.state.doc.objects];
+  const keepSel = app.state.selected;
+  const symBefore = app.state.symX;
+  const camBefore = app.viewport.saveLayout();
+  app.setMode("model");
+  app.state.doc.objects.length = 0;
+  // 中心線に頂点が乗る板（幅の分割を偶数に）
+  const o = app.state.doc.addMesh(
+    core.PRIMITIVES.plane.build({ ...core.defaultParams("plane"), width: 2, height: 2, sdW: 8, sdH: 8 }),
+    "Mv51",
+  );
+  app.viewport.syncAll();
+  app.state.select(o);
+  app.setMode("sculpt");
+  app.viewport.setView("top");
+  app.viewport.frameSelected();
+  app.refresh();
+  app.history.clear();
+  await wait(120);
+
+  await app.levelForTest("add");
+  await wait(80);
+
+  // 筆ごとの強さ（`51`）。ムーブは 1.0、彫る筆は自分の値を覚えている
+  const menu = app.brushMenuForTest().menu;
+  menu.NE.run(); // クレイ
+  app.state.brush.strength = 0.4; // この筆の強さを決める
+  menu.E.run(); // ムーブ
+  const moveStrength = app.state.brush.strength;
+  menu.NE.run(); // クレイへ戻る
+  const clayStrength = app.state.brush.strength;
+  menu.E.run();
+  const backToMove = app.state.brush.strength;
+
+  // 対称で中心をまたいで掴んで引く
+  app.state.symX = true;
+  app.state.brush.sizeRatio = 0.25;
+  app.state.brush.radius = window.macbethLevels.radiusFor(o, 0.25);
+  app.refresh();
+  await wait(60);
+
+  const prev = Float32Array.from(app.viewport.meshOf(o).positions);
+  const pane = document.getElementById("pane3d").getBoundingClientRect();
+  const gl = document.getElementById("gl");
+  const cx = pane.left + pane.width / 2;
+  const cy = pane.top + pane.height / 2;
+  const ev = (type, x, y) =>
+    new PointerEvent(type, {
+      pointerId: 95, pointerType: "pen", bubbles: true, cancelable: true,
+      clientX: x, clientY: y, pressure: 1, buttons: type === "pointerup" ? 0 : 1,
+    });
+  gl.dispatchEvent(ev("pointerdown", cx, cy));
+  for (let i = 1; i <= 8; i++) gl.dispatchEvent(ev("pointermove", cx, cy - i * 5));
+  gl.dispatchEvent(ev("pointerup", cx, cy - 40));
+  await wait(120);
+
+  // 中心線の頂点と、その隣（同じ高さ）を比べる
+  const mesh = app.viewport.meshOf(o);
+  const now = mesh.positions;
+  let seam = { v: -1, d: 0 };
+  let side = { v: -1, d: 0, x: Infinity };
+  for (let v = 0; v < mesh.vertexCount; v++) {
+    const x = prev[v * 3];
+    const z = prev[v * 3 + 2];
+    if (Math.abs(z) > 1e-6) continue;
+    const d = Math.hypot(now[v * 3] - prev[v * 3], now[v * 3 + 1] - prev[v * 3 + 1], now[v * 3 + 2] - prev[v * 3 + 2]);
+    if (Math.abs(x) < 1e-6) seam = { v, d };
+    // **中心線のすぐ隣**。減衰はほとんど同じなので、2 倍動いていれば一目で分かる
+    else if (Math.abs(x) < side.x) side = { v, d, x: Math.abs(x) };
+  }
+  const seamX = seam.v >= 0 ? Math.abs(now[seam.v * 3]) : 1;
+
+  app.state.symX = symBefore;
+  app.setMode("model");
+  app.state.doc.objects.length = 0;
+  app.state.doc.objects.push(...keep);
+  app.viewport.syncAll();
+  if (keepSel) app.state.select(keepSel);
+  app.viewport.restoreLayout(camBefore);
+  app.history.clear();
+  app.refresh();
+  return { moveStrength, clayStrength, backToMove, seam: seam.d, side: side.d, seamX };
+});
+check(
+  "ムーブ: 筆ごとに強さを覚える（ムーブは 1.0）。対称の中心線が 2 倍動かない",
+  Math.abs(moveBrush.moveStrength - 1) < 1e-6 &&
+    Math.abs(moveBrush.clayStrength - 0.4) < 1e-6 &&
+    Math.abs(moveBrush.backToMove - 1) < 1e-6 &&
+    moveBrush.seam > 1e-4 &&
+    moveBrush.seam < moveBrush.side * 1.3 &&
+    moveBrush.seam > moveBrush.side * 0.7 &&
+    moveBrush.seamX < 1e-6,
+  `強さ ムーブ ${moveBrush.moveStrength} → クレイ ${moveBrush.clayStrength}（0.4 を覚えている）→ ムーブ ${moveBrush.backToMove} / ` +
+    `中心線が動いた ${moveBrush.seam.toFixed(4)}・隣 ${moveBrush.side.toFixed(4)}（x は ${moveBrush.seamX.toExponential(1)}）`,
 );
 
 /* 43. 例外が出ていない */

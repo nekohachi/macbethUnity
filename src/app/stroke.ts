@@ -254,10 +254,18 @@ export class StrokeDriver {
     const fp = strokeFootprint(mesh, bvh, view.tri, at, radius);
     const g = grabWeights(mesh, fp, view.tri, base);
     let mirror: Grab["mirror"] = null;
-    if (this.state.symX) {
+    // **対応表があるときは 2 つ目の掴みを作らない**（`51` の声）。
+    //
+    // 左右に掴みを 1 つずつ置くと、**重なった範囲が 2 回動く**。中心の近くは
+    // 指の 2 倍進み、外側は 1 倍なので、真ん中だけ伸びた形になる。
+    // 対応表があるなら `flush` の写し（`mirrorPending`）が押した側を相手へ
+    // 丸ごと写すので、2 つ目の掴みはそもそも要らない。中心線の x も
+    // そこで 0 に留まる。
+    //
+    // 対応表が無いメッシュ（左右で割りが違うもの）だけ、今までどおり 2 つ置く。
+    if (this.state.symX && !live.mirror) {
       const mp: [number, number, number] = [-at[0], at[1], at[2]];
       const mfp = strokeFootprint(mesh, bvh, view.tri, mp, radius);
-      // 中心線は避けない（`41` の T1）。左右は `flush` の写しで厳密に合わせる
       mirror = { fp: mfp, weights: grabWeights(mesh, mfp, view.tri, { ...base, point: mp }).weights };
     }
 
@@ -770,3 +778,5 @@ export function strokeHint(state: AppState): string {
   if (state.modOn("shift")) return "スムース（SHF のあいだだけ）";
   return "モデルの上をなぞってください";
 }
+
+

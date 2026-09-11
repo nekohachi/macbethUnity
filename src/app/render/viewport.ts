@@ -132,6 +132,12 @@ const snapDir = new Vector3();
 const snapCand = new Vector3();
 
 /** 筆の輪を組むための控え（1 コマごとに作らないため）。 */
+/**
+ * 対称の 2 つ目の輪を消す近さ（`51`）。半径に対する割合で、
+ * 中心線からこれより近ければ 1 つの輪にする。
+ */
+const CURSOR_MERGE = 0.7;
+
 const brushInv = new Matrix4();
 const brushU = new Vector3();
 const brushV = new Vector3();
@@ -1327,7 +1333,12 @@ export class Viewport {
     // 対称のときは反対側にも輪を出す（`41` の T1b。ZBrush の 2 つ目のサークル）。
     // **同じ点を X で折り返すだけ。** 相手の面の上に乗るとは限らないが、
     // 「どこへ効くか」は伝わるし、面を引き直すより桁で軽い
-    if (mirror) {
+    //
+    // **中心線の近くでは 1 つにする**（`51` の声。ZBrush と同じ）。2 つの輪は
+    // 中心へ寄るほど重なって、輪が二重の目玉のように見え、どこを彫るのか読めなくなる。
+    // 2 つの中心の隔たりは `2|x|` なので、輪の半径より近ければ重なっている
+    const merged = Math.abs(at[0]) < radius * CURSOR_MERGE;
+    if (mirror && !merged) {
       const flipped = pts.slice();
       for (let i = 0; i < flipped.length; i += 3) flipped[i] = -flipped[i];
       this.brushCursorMirror = this.paintRing(this.brushCursorMirror, flipped, o);

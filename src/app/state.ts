@@ -383,6 +383,20 @@ export class AppState {
     pressureStrength: true,
   };
   /**
+   * ブラシごとの強さ（`51` の声。ZBrush と同じ「筆が自分の Z Intensity を覚える」）。
+   *
+   * ムーブだけは **1.0**。ZBrush の Move も既定が 100 で、**掴んだ所が指について
+   * くる**のが手触りの要。0.67 のままだと指より 3 割遅れて、引いても形が付いて
+   * こない（実機の「ムーブが使いにくい」）。
+   * 彫る筆は今までどおり 0.67（`38` で実機を触って決めた値）。
+   */
+  brushStrength: Partial<Record<BrushKind, number>> = { move: 1 };
+
+  /** その筆の強さ。覚えていなければ今の値のまま。 */
+  strengthFor(kind: BrushKind): number {
+    return this.brushStrength[kind] ?? this.brush.strength;
+  }
+  /**
    * いま記録しているスカルプトレイヤーの id（`42` の T3）。null なら素のデルタへ。
    * 段が違うレイヤーが選ばれていたら、`stroke.ts` が素のデルタへ落とす。
    */

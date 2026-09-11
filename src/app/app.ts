@@ -5179,12 +5179,22 @@ export class App {
       label,
       sub,
       icon: BRUSH_ICONS[kind],
-      run: () => {
-        this.state.brush.kind = kind;
-        this.renderToolColumn();
-        this.hud.toast(`${label}ブラシ`);
-      },
+      run: () => this.setBrushKind(kind),
     };
+  }
+
+  /**
+   * 筆を選ぶ（`51`）。**筆ごとに強さを覚える**（ZBrush の Z Intensity と同じ）。
+   * ムーブは 1.0 が既定で、掴んだ所が指についてくる。彫る筆は 0.67 のまま。
+   */
+  private setBrushKind(kind: BrushKind): void {
+    const before = this.state.brush.kind;
+    if (before !== kind) this.state.brushStrength[before] = this.state.brush.strength;
+    this.state.brush.kind = kind;
+    this.state.brush.strength = this.state.strengthFor(kind);
+    this.renderToolColumn();
+    for (const g of this.gauges) g.paint();
+    this.hud.toast(`${BRUSH_NAMES[kind].label}ブラシ · 強さ ${Math.round(this.state.brush.strength * 100)}`);
   }
 
   /* ---- 段（サブディビジョンレベル）。`32` の T3 -------------------------- */
@@ -6350,7 +6360,7 @@ export class App {
       ["ctrl", "modCtrl"],
       ["alt", "modAlt"],
     ] as const) {
-      this.bindHoldButton(byId(id), {
+      this.bindHoldButton(byId(id), { shift: "SHF", ctrl: "CTL", alt: "ALT" }[name], {
         tap: () => {
           this.state.mods[name] = this.state.mods[name] === "off" ? "on" : "off";
         },
@@ -6372,7 +6382,7 @@ export class App {
     attachRadialButton(byId("modDel"), () => this.deleteMenu(), () => this.doDeleteSmart());
 
     // F。押した瞬間から効く（矩形選択とピンチの分岐に使う）ので `hold` は見た目だけ
-    this.bindHoldButton(byId("btnFrame"), {
+    this.bindHoldButton(byId("btnFrame"), "F", {
       down: () => {
         this.fHeld = true;
       },
@@ -6423,6 +6433,7 @@ export class App {
    */
   private bindHoldButton(
     button: HTMLElement,
+    label: string,
     h: {
       down?: () => void;
       tap: () => void;
@@ -6451,8 +6462,19 @@ export class App {
       pointer = -1;
       clearTimer();
       closeRadial();
-      if (!held) h.tap();
-      else h.release(!cancelled && x0 - e.clientX >= MOD_LOCK_PX);
+      if (!held) {
+        // 長押しに届く前の取り消しは、何も無かったことにする（タップにもしない）
+        if (!cancelled) h.tap();
+      } else if (cancelled) {
+        // **指はまだボタンの上にある。** iPad はペンが近づくと、押している指の
+        // 合図を取り消す（`pointercancel`）。ここで消すと、ペンで描こうとした
+        // 瞬間に SHF が外れる（実機の声）。**ロックに変えて残す。**
+        // 離した合図はもう来ないので、消すのは次のタップ
+        h.release(true);
+        this.hud.toast(`${label} はロックにしました（ペンが来て指の合図が切れました。タップで解除）`);
+      } else {
+        h.release(x0 - e.clientX >= MOD_LOCK_PX);
+      }
       held = false;
       sync();
     };
