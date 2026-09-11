@@ -505,13 +505,9 @@ export class GestureRouter {
       const finger = e.pointerType === "touch";
       const onMesh = !(finger && this.fingerCam) && this.h.isOnMesh(p, e);
       if (!onMesh) {
-        // モデリングで SHF を立てて空白を引いたら、タンブルではなく矩形選択（足す。`47` の T4）。
-        // **空白と分かってから**入る。ハンドルの上から引く SHF + 移動 = 押し出しを潰さない
-        if (!this.h.freeDragTumbles() && this.h.shiftOn(e)) {
-          this.gesture = { mode: "tool", moved: false, sx: p.x, sy: p.y };
-          this.h.marqueeStart(p);
-          return;
-        }
+        // **SHF でも指はカメラのまま**（`50` の声）。`47` の T4 でここを矩形選択に
+        // したが、「シフトを押すと指でオービットできない」のが痛かった。
+        // 矩形選択は **F** で出す（`24` の T2。ヒットテストを無視して必ず矩形）
         this.gesture = {
           mode: "tumble",
           live: false,

@@ -109,8 +109,14 @@ const tapGroup = (id) =>
     }
   }, id);
 
-/** グループを長押しして、サークルメニューの方位を選ぶ。 */
-const pickFromGroup = async (id, direction) => {
+/**
+ * グループを長押しして、サークルメニューの方位を選ぶ。
+ *
+ * **人がやるとおり、見えている区画に指を乗せる**（`50` の直し）。輪は画面の中へ
+ * 寄るので、押した点と中心は別の場所にある。`blind` を渡すと、輪を見ずに
+ * 押した点から振り抜く（輪の外まで引く）方の道を通る。
+ */
+const pickFromGroup = async (id, direction, blind = false) => {
   const at = await page.evaluate((gid) => {
     const b = document.querySelector(`#dockLeft .ibtn[data-group="${gid}"]`);
     if (!b) throw new Error(`グループが無い: ${gid}`);
@@ -131,15 +137,18 @@ const pickFromGroup = async (id, direction) => {
   }, id);
   await page.waitForTimeout(260); // 長押しは 200ms
   await page.evaluate(
-    ({ dir, bx, by }) => {
-      // **押した点から**方位へ引いて離す（`41` の T3。輪は見える所へ寄っていて、
-      // 中心は指と別。人がやるとおり、指を置いた所から引く）。北を 0 として時計回り
+    ({ dir, bx, by, blindPick }) => {
       const order = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
       const i = order.indexOf(dir);
-      if (!document.querySelector(".radial svg")) throw new Error("サークルメニューが出ていない");
+      const svg = document.querySelector(".radial svg");
+      if (!svg) throw new Error("サークルメニューが出ていない");
+      const hub = [...svg.querySelectorAll("circle")].find((c) => c.getAttribute("r") === "54");
+      const cx = hub ? +hub.getAttribute("cx") : bx;
+      const cy = hub ? +hub.getAttribute("cy") : by;
       const a = ((i * 45 - 90) * Math.PI) / 180;
-      const x = bx + Math.cos(a) * 110;
-      const y = by + Math.sin(a) * 110;
+      // 見て選ぶ: 輪の帯の真ん中（radius 116）。見ないで引く: 押した点から輪の外まで
+      const x = blindPick ? bx + Math.cos(a) * 320 : cx + Math.cos(a) * 116;
+      const y = blindPick ? by + Math.sin(a) * 320 : cy + Math.sin(a) * 116;
       const fire = (type) =>
         window.dispatchEvent(
           new PointerEvent(type, { pointerId: 8, pointerType: "mouse", bubbles: true, clientX: x, clientY: y }),
@@ -147,7 +156,7 @@ const pickFromGroup = async (id, direction) => {
       fire("pointermove");
       fire("pointerup");
     },
-    { dir: direction, bx: at.x, by: at.y },
+    { dir: direction, bx: at.x, by: at.y, blindPick: blind },
   );
   await page.waitForTimeout(60);
 };
@@ -531,15 +540,18 @@ const addByHold = await page.evaluate(async () => {
   const hub = svg && [...svg.querySelectorAll("circle")].reduce((b, c) => (Number(c.getAttribute("r")) > Number(b.getAttribute("r")) ? c : b));
   // 輪の中心が指からどれだけずれているか。ずれていると向きが合わない
   const off = hub ? Math.hypot(bx - Number(hub.getAttribute("cx")), by - Number(hub.getAttribute("cy"))) : -1;
-  // 輪は丸ごと画面の中に寄っている（`41` の T3）。指からはずれてよいが、切れてはいけない
-  const paths = svg ? [...svg.querySelectorAll("path")] : [];
-  const minX = paths.length ? Math.min(...paths.map((p) => p.getBoundingClientRect().left)) : -1;
+  // **中心は指の上のまま**（`50` の直し）。輪の縁は画面から出てよいが、
+  // **文字は全部読める**所へ寄っていること
+  const labels = svg ? [...svg.querySelectorAll("text")] : [];
+  const minText = labels.length
+    ? Math.min(...labels.filter((t) => t.textContent).map((t) => t.getBoundingClientRect().left))
+    : -1;
   // 押した場所から**まっすぐ上**へ引いて離す（人がやるとおり）
   window.dispatchEvent(ev("pointermove", bx, by - 110));
   await new Promise((r2) => setTimeout(r2, 60));
   window.dispatchEvent(ev("pointerup", bx, by - 110));
   await new Promise((r2) => setTimeout(r2, 400));
-  const out = { off, minX, levels: cube.multires.length, active: cube.activeLevel, faces: cube.shown(app.state.shownLevel(cube)).faceCount };
+  const out = { off, minText, levels: cube.multires.length, active: cube.activeLevel, faces: cube.shown(app.state.shownLevel(cube)).faceCount };
   app.setMode("model");
   app.state.doc.objects.length = 0;
   app.state.doc.objects.push(...keep);
@@ -552,11 +564,16 @@ const addByHold = await page.evaluate(async () => {
   return out;
 });
 check(
-  "長押しからまっすぐ上へ引くと段が足せる（輪は画面の中）",
-  // 輪は指からずれてよい（`41` の T3）。**向きは押した点から測る**ので上へ引けば北。
-  // 代わりに輪が切れていないこと（左端でも西半分が見える）を見る
-  addByHold.minX >= 0 && addByHold.levels === 1 && addByHold.active === 1 && addByHold.faces === 24,
-  `輪の中心のずれ ${addByHold.off.toFixed(0)}px · 左端 ${addByHold.minX.toFixed(0)}px / 段 ${addByHold.levels} · 表示レベル ${addByHold.active} · ${addByHold.faces} 面`,
+  "長押しからまっすぐ上へ引くと段が足せる（輪の中心は指の上・文字は画面の中）",
+  // **中心を指からずらさない**（`50` の直し）。ずらすと「見えている区画」と
+  // 「引いた向き」が食い違って、目で見た所を押しても選べない。
+  // 画面から出そうな文字だけを内側へ寄せる
+  addByHold.off < 1 &&
+    addByHold.minText >= 0 &&
+    addByHold.levels === 1 &&
+    addByHold.active === 1 &&
+    addByHold.faces === 24,
+  `輪の中心のずれ ${addByHold.off.toFixed(0)}px · 文字の左端 ${addByHold.minText.toFixed(0)}px / 段 ${addByHold.levels} · 表示レベル ${addByHold.active} · ${addByHold.faces} 面`,
 );
 
 /* 17d. 予算を越えると足せない（`03` の 3.3） */
@@ -8198,10 +8215,10 @@ const ring = await page.evaluate(async () => {
   btn.dispatchEvent(ev("pointerdown", bx, by));
   await new Promise((r2) => setTimeout(r2, 400));
   const svg = document.querySelector(".radial svg");
-  const paths = svg ? [...svg.querySelectorAll("path")] : [];
-  const minX = paths.length ? Math.min(...paths.map((p) => p.getBoundingClientRect().left)) : -1;
-  const maxX = paths.length ? Math.max(...paths.map((p) => p.getBoundingClientRect().right)) : -1;
-  // 押した点から**まっすぐ上**へ。輪が右へ寄っていても北（スタンダード）が選ばれる
+  const labels = svg ? [...svg.querySelectorAll("text")].filter((t) => t.textContent) : [];
+  const minX = labels.length ? Math.min(...labels.map((p) => p.getBoundingClientRect().left)) : -1;
+  const maxX = labels.length ? Math.max(...labels.map((p) => p.getBoundingClientRect().right)) : -1;
+  // 押した点から**まっすぐ上**へ。北（スタンダード）が選ばれる
   window.dispatchEvent(ev("pointermove", bx, by - 120));
   await new Promise((r2) => setTimeout(r2, 40));
   window.dispatchEvent(ev("pointerup", bx, by - 120));
@@ -8218,9 +8235,9 @@ const ring = await page.evaluate(async () => {
   return { minX, maxX, width: window.innerWidth, picked };
 });
 check(
-  "筆の輪: 左端で押しても全部見えて、上へ引けば北が選ばれる",
+  "筆の輪: 左端で押しても文字が全部読めて、上へ引けば北が選ばれる",
   ring.minX >= 0 && ring.maxX <= ring.width && ring.picked === "standard",
-  `輪の左端 ${ring.minX.toFixed(0)}px · 右端 ${ring.maxX.toFixed(0)}/${ring.width}px / 選ばれた筆 ${ring.picked}`,
+  `文字の左端 ${ring.minX.toFixed(0)}px · 右端 ${ring.maxX.toFixed(0)}/${ring.width}px / 選ばれた筆 ${ring.picked}`,
 );
 
 /* ---- `42` の 3 項目（ローをハイに・再投影・レイヤー）。いちばん後ろに置く ---- */
@@ -10023,8 +10040,8 @@ check(
     `ウェルド ${symTopo.weld.before} → ${symTopo.weld.after} 頂点「${symTopo.weld.note}」`,
 );
 
-/* 47e. SHF の吸着はスカルプトだけ。モデリングで SHF + 空白ドラッグは矩形選択（`47` の T4） */
-const shiftMarquee = await page.evaluate(
+/* 47e. SHF の吸着はスカルプトだけ。**モデリングでは SHF でも指はカメラ**（`50` の声） */
+const shiftDrag = await page.evaluate(
   async ({ empty, far }) => {
     const app = window.macbeth;
     const wait = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -10042,9 +10059,6 @@ const shiftMarquee = await page.evaluate(
     app.viewport.frameSelected();
     app.refresh();
     await wait(60);
-    // 先に 1 つ選んでおく。SHF なので足される
-    app.state.comp.add(0);
-    app.refresh();
 
     const canvas = document.getElementById("gl");
     const touch = (type, x, y) =>
@@ -10060,32 +10074,33 @@ const shiftMarquee = await page.evaluate(
           buttons: type === "pointerup" ? 0 : 1,
         }),
       );
+    const drag = async () => {
+      touch("pointerdown", empty.x, empty.y);
+      for (let i = 1; i <= 8; i++) {
+        touch("pointermove", empty.x + ((far.x - empty.x) * i) / 8, empty.y + ((far.y - empty.y) * i) / 8);
+        await wait(8);
+      }
+      touch("pointerup", far.x, far.y);
+      await wait(40);
+    };
+
+    // SHF を立てて空白を引く → **回る**（矩形にはならない）
     app.state.mods.shift = "on";
-    const thetaBefore = app.viewport.cam.theta;
-    const phiBefore = app.viewport.cam.phi;
-    touch("pointerdown", empty.x, empty.y);
-    for (let i = 1; i <= 8; i++) {
-      touch("pointermove", empty.x + ((far.x - empty.x) * i) / 8, empty.y + ((far.y - empty.y) * i) / 8);
-      await wait(8);
-    }
+    const theta0 = app.viewport.cam.theta;
+    await drag();
+    const tumbledWithShift = Math.abs(app.viewport.cam.theta - theta0) > 1e-4;
     const marqueeShown = document.querySelector(".marquee")?.style.display === "block";
-    touch("pointerup", far.x, far.y);
-    await wait(40);
-    const selected = app.state.comp.size;
-    const camKept = Math.abs(app.viewport.cam.theta - thetaBefore) < 1e-9 && Math.abs(app.viewport.cam.phi - phiBefore) < 1e-9;
+    const selectedWithShift = app.state.comp.size;
+    const snapModel = app.viewport.snappedForTest();
     app.state.mods.shift = "off";
 
-    // SHF なしなら今までどおり回る
-    app.state.comp.clear();
-    touch("pointerdown", empty.x, empty.y);
-    for (let i = 1; i <= 8; i++) {
-      touch("pointermove", empty.x + 10 * i, empty.y);
-      await wait(8);
-    }
-    touch("pointerup", empty.x + 80, empty.y);
-    await wait(40);
-    const tumbled = Math.abs(app.viewport.cam.theta - thetaBefore) > 1e-4;
-    const snapModel = app.viewport.snappedForTest();
+    // F を立てて空白を引く → 矩形選択
+    app.setFrameHeldForTest(true);
+    const theta1 = app.viewport.cam.theta;
+    await drag();
+    app.setFrameHeldForTest(false);
+    const selectedWithF = app.state.comp.size;
+    const camKeptWithF = Math.abs(app.viewport.cam.theta - theta1) < 1e-9;
 
     app.state.comp.clear();
     app.setCompMode("object");
@@ -10096,14 +10111,20 @@ const shiftMarquee = await page.evaluate(
     app.viewport.restoreLayout(camBefore);
     app.history.clear();
     app.refresh();
-    return { marqueeShown, selected, camKept, tumbled, snapModel };
+    return { tumbledWithShift, marqueeShown, selectedWithShift, snapModel, selectedWithF, camKeptWithF };
   },
   { empty: EMPTY, far: at(0.9, 0.9) },
 );
 check(
-  "モデリング: SHF を立てて空白を引くと矩形選択（足す）。カメラは動かない。SHF なしなら回る",
-  shiftMarquee.marqueeShown && shiftMarquee.selected >= 2 && shiftMarquee.camKept && shiftMarquee.tumbled,
-  `矩形 ${shiftMarquee.marqueeShown} → ${shiftMarquee.selected} 頂点（カメラそのまま ${shiftMarquee.camKept}）/ SHF なしで回った ${shiftMarquee.tumbled}`,
+  "モデリング: SHF を立てても指はカメラ（回る）。矩形選択は F で出す",
+  shiftDrag.tumbledWithShift &&
+    !shiftDrag.marqueeShown &&
+    shiftDrag.selectedWithShift === 0 &&
+    !shiftDrag.snapModel &&
+    shiftDrag.selectedWithF > 0 &&
+    shiftDrag.camKeptWithF,
+  `SHF で回った ${shiftDrag.tumbledWithShift}（矩形 ${shiftDrag.marqueeShown}・選んだ ${shiftDrag.selectedWithShift}・吸着 ${shiftDrag.snapModel}）/ ` +
+    `F で矩形 ${shiftDrag.selectedWithF} 頂点（カメラそのまま ${shiftDrag.camKeptWithF}）`,
 );
 
 /* 48a. E 書き出し（`48`）: glTF に焼いた絵を埋める / テクスチャセットを ZIP で出す */
@@ -10432,6 +10453,95 @@ check(
   `段 ${materialView.highInfo.level} で 法線 ${materialView.highInfo.hasNormal}・AO ${materialView.highInfo.hasAo} / ` +
     `段 0 に戻すと 法線 ${materialView.backInfo.hasNormal} / 焼き直しても同じテクスチャ ${materialView.reused} / ` +
     `別の表示にすると ${materialView.offInfo.hasNormal}`,
+);
+
+/* 50a. サークルメニューの選び方（`50`）: 指がぶれても出る・見えている所を押せば選べる */
+const radialPick = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const keep = [...app.state.doc.objects];
+  const keepSel = app.state.selected;
+  app.setMode("model");
+  app.state.doc.objects.length = 0;
+  const o = app.state.doc.addObject("cube");
+  app.viewport.syncAll();
+  app.state.select(o);
+  app.setMode("sculpt");
+  app.refresh();
+  await wait(150);
+
+  const btn = () => document.querySelector('#dockLeft .ibtn[data-group="level"]');
+  const center = () => {
+    const r = btn().getBoundingClientRect();
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+  };
+  let id = 60;
+  const fire = (target, type, x, y) =>
+    target.dispatchEvent(
+      new PointerEvent(type, { pointerId: id, pointerType: "touch", bubbles: true, cancelable: true, clientX: x, clientY: y }),
+    );
+  const ringOf = () => {
+    const hub = [...document.querySelectorAll(".radial circle")].find((c) => c.getAttribute("r") === "54");
+    return hub ? { x: +hub.getAttribute("cx"), y: +hub.getAttribute("cy") } : null;
+  };
+  /** 指でぶれながら長押しして、`to(ring, press)` の点へ引いて離す。 */
+  const hold = async ({ drift = 0, to }) => {
+    id++;
+    const p = center();
+    fire(btn(), "pointerdown", p.x, p.y);
+    for (let i = 1; i <= 4 && drift; i++) {
+      await wait(30);
+      fire(window, "pointermove", p.x + (drift * i) / 4, p.y + (drift * i) / 8);
+    }
+    await wait(320);
+    const opened = !!document.querySelector(".radial svg");
+    const ring = ringOf();
+    const target = to(ring, p);
+    for (let i = 1; i <= 5; i++) {
+      fire(window, "pointermove", p.x + ((target.x - p.x) * i) / 5, p.y + ((target.y - p.y) * i) / 5);
+      await wait(10);
+    }
+    fire(window, "pointerup", target.x, target.y);
+    await wait(320);
+    return { opened, offset: ring ? Math.hypot(ring.x - p.x, ring.y - p.y) : -1 };
+  };
+
+  // 1. 指が 18px ぶれても輪は出る。まっすぐ上へ引けば段が足せる
+  const drift = await hold({ drift: 18, to: (ring, p) => ({ x: p.x, y: p.y - 120 }) });
+  const afterDrift = { ...drift, levels: o.multires.length };
+
+  // 2. 見えている北の区画に指を乗せても足せる
+  const visible = await hold({ to: (ring) => ({ x: ring.x, y: ring.y - 116 }) });
+  const afterVisible = { ...visible, levels: o.multires.length };
+
+  // 3. 輪の下の一覧（レベル 0 の行）に指を乗せると、その段へ移る
+  const row = await hold({ to: (ring) => ({ x: ring.x, y: ring.y + 176 + 14 + 16 }) });
+  const afterRow = { ...row, active: o.activeLevel, levels: o.multires.length };
+
+  // 4. 真ん中（キャンセル）へ戻して離すと何も起きない
+  const before = o.multires.length;
+  await hold({ to: (ring) => ({ x: ring.x, y: ring.y }) });
+  const afterCancel = { added: o.multires.length - before };
+
+  app.setMode("model");
+  app.state.doc.objects.length = 0;
+  app.state.doc.objects.push(...keep);
+  app.viewport.syncAll();
+  if (keepSel) app.state.select(keepSel);
+  app.history.clear();
+  app.refresh();
+  return { afterDrift, afterVisible, afterRow, afterCancel };
+});
+check(
+  "サークルメニュー: 指がぶれても出て、まっすぐ上でも見えている区画でも選べる",
+  radialPick.afterDrift.opened &&
+    radialPick.afterDrift.levels === 1 &&
+    radialPick.afterVisible.levels === 2 &&
+    radialPick.afterDrift.offset < 1 &&
+    radialPick.afterRow.active === 0 &&
+    radialPick.afterCancel.added === 0,
+  `ぶれても開く ${radialPick.afterDrift.opened} → 段 ${radialPick.afterDrift.levels}（中心のずれ ${radialPick.afterDrift.offset.toFixed(0)}px）/ ` +
+    `見えている区画で 段 ${radialPick.afterVisible.levels} / 一覧で レベル ${radialPick.afterRow.active} へ / キャンセルで ${radialPick.afterCancel.added} 増`,
 );
 
 /* 43. 例外が出ていない */

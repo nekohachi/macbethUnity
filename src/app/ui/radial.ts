@@ -25,6 +25,11 @@ const RING_OUTER = 176;
 const RING_INNER = 56;
 /** 中心からこれ以内はキャンセル扱い。 */
 const DEAD_RADIUS = 42;
+/** これだけ動くまでは何も選ばない（寄せた輪での誤爆よけ）。 */
+const MOVE_MIN = 14;
+/** ボタンからこれだけ引いたら、長押しを待たずに輪を開く。 */
+const OPEN_DRAG = 24;
+
 
 interface Slice {
   path: SVGPathElement;
@@ -95,18 +100,23 @@ export function openRadial(
   closeRadial();
   // 一覧がある分だけ下の余白も見る
   const below = list.length ? ROW_GAP + list.length * ROW_HEIGHT : 0;
-  // **輪は丸ごと見える所へ寄せる。向きは押した点から測る**（`41` の T3）。
+  // **横には寄せない**（`50` の直し）。輪を丸ごと画面へ入れようとして横へ寄せると、
+  // 押した点と中心が 100px 近く離れ、「見えている区画」と「引いた向き」が食い違う。
+  // 画面の端（ツール列）で押すのはまさにその場面で、目で見た所を押しても選べなかった。
   //
-  // 前は中心を指からほとんど動かさなかった。`33` の実機報告「左端のツール列で
-  // 段が足せない」を、**寄せたせい**だと読んだためだが、本当の原因は
-  // **向きを輪の中心から測っていた**ことだった。寄せると指は押した瞬間から
-  // 「西」の区画に居るので、上へ引いても北にならない。
-  //
-  // 向きを押した点から測れば、寄せても引いた向きと選ばれるものは一致する。
-  // それで「輪の西半分が画面の外」（実機の声）も直る。
+  // 中心は**押した点のまま**にして、画面から出そうな**文字だけ**を内側へ寄せる
+  // （下の `clampText`）。こうすると 2 つの読み方が常に一致する。
+  // 縦だけは一覧が画面に収まるよう寄せる（縦のずれは北と南の読みを変えない）。
   const edge = RING_OUTER + 12;
-  const cx = Math.max(edge, Math.min(Math.max(edge, window.innerWidth - edge), clientX));
+  const cx = clientX;
   const cy = Math.max(edge, Math.min(Math.max(edge, window.innerHeight - edge - below), clientY));
+  /** 文字が画面から出ないよう、x を内側へ寄せる。返すのは寄せたぶん。 */
+  const clampText = (t: SVGTextElement, x: number): number => {
+    const half = (t.getComputedTextLength?.() ?? 0) / 2 + 6;
+    const at = Math.max(half + 4, Math.min(window.innerWidth - half - 4, x));
+    if (at !== x) t.setAttribute("x", String(at));
+    return at - x;
+  };
 
   const host = document.createElement("div");
   host.className = "radial";
@@ -146,8 +156,14 @@ export function openRadial(
     g.setAttribute("stroke-linejoin", "round");
     g.innerHTML = item.icon ?? "";
     svg.appendChild(g);
-    svg.appendChild(text(null, tx, ty + 12, item.label));
-    svg.appendChild(text("sub", tx, ty + 26, item.sub ?? ""));
+    const label = text(null, tx, ty + 12, item.label);
+    const sub = text("sub", tx, ty + 26, item.sub ?? "");
+    svg.appendChild(label);
+    svg.appendChild(sub);
+    // 画面から出そうな文字は内側へ。アイコンも同じだけ動かして、離れないようにする
+    const shift = clampText(label, tx);
+    clampText(sub, tx);
+    if (shift) g.setAttribute("transform", `translate(${tx - 12 + shift},${ty - 28}) scale(1)`);
     slices.push({ path, icon: g, item, index: i });
   }
 
@@ -205,17 +221,52 @@ export function openRadial(
   window.addEventListener("pointercancel", onUp);
 }
 
+/** その向きの方位（北が 0）。区画が無ければ −1。 */
+function sliceAt(dx: number, dy: number): number {
+  // 北を 0 にして 45° ごとに割る。22.5° 足してから割ると境界が方位の真ん中に来る
+  const deg = ((Math.atan2(dy, dx) * 180) / Math.PI + 90 + 360 + 22.5) % 360;
+  const i = Math.floor(deg / 45);
+  return open?.slices[i] ? i : -1;
+}
+
+/**
+ * 指の位置から選ぶものを決める（`50` の直し）。
+ *
+ * 輪は画面に収まるよう寄せてあるので、**押した点と輪の中心が別の場所にある**。
+ * 使い方は 2 つあって、どちらも成り立たせたい:
+ *
+ *   1. **見て選ぶ**: 出てきた輪の区画に指を乗せる（タブレットではこれが自然）
+ *   2. **見ないで引く**: 押した点から方位へ振り抜く（`41` の T3。慣れた人の使い方）
+ *
+ * どちらで測るかは「**指がいま、輪と押した点のどちらに近いか**」で決める。
+ * 輪に寄っていけば見て選ぶ側、押した点のまわりで振れば引く側になる。
+ */
 function onMove(e: PointerEvent): void {
   if (!open) return;
-  // **指の動きで測る**（`41` の T3）。輪を寄せてあっても、押した点から上へ引けば北
   const dx = e.clientX - open.px;
   const dy = e.clientY - open.py;
+  const ax = e.clientX - open.cx;
+  const ay = e.clientY - open.cy;
+  const toPress = Math.hypot(dx, dy);
+  const toRing = Math.hypot(ax, ay);
+  // 押した点から輪の中心までの隔たり。画面の端で押したときだけ 0 より大きい
+  const gap = Math.hypot(open.cx - open.px, open.cy - open.py);
+  // **指が輪の帯の上に乗っていれば、見たままを選ぶ。**
+  // 輪の外（短く振った・大きく振り抜いた）なら、押した点から引いた向きで選ぶ
+  const onAnnulus = toRing >= (gap < 1 ? DEAD_RADIUS : RING_INNER) && toRing <= RING_OUTER;
+  // 押した点から少しでも動くまでは何も選ばない。寄せた輪では、押した瞬間の指が
+  // 既にどこかの区画の上に居るので、動いていないうちに当てると誤爆する（`41` の T3）
+  const moved = toPress > MOVE_MIN;
   // 一覧は輪の下に描いてあるので、指を輪の分だけ平行移動した点で当てる
   const atY = e.clientY + (open.cy - open.py);
 
   // 一覧の上に居るならそちらが優先。方位の選択は外す
   let row = -1;
-  if (Math.abs(dx) <= ROW_WIDTH / 2) {
+  if (moved && Math.abs(ax) <= ROW_WIDTH / 2) {
+    // **見えている行に指が乗った**（寄せた輪でも、行を直に押せる）
+    row = open.rows.findIndex((r) => e.clientY >= r.top && e.clientY < r.top + ROW_HEIGHT);
+  }
+  if (row < 0 && Math.abs(dx) <= ROW_WIDTH / 2) {
     row = open.rows.findIndex((r) => atY >= r.top && atY < r.top + ROW_HEIGHT);
   }
   if (row !== open.selectedRow) {
@@ -225,11 +276,12 @@ function onMove(e: PointerEvent): void {
   }
 
   let sel = -1;
-  if (row < 0 && Math.hypot(dx, dy) >= DEAD_RADIUS) {
-    // 北を 0 にして 45° ごとに割る。22.5° 足してから割ると境界が方位の真ん中に来る
-    const deg = ((Math.atan2(dy, dx) * 180) / Math.PI + 90 + 360 + 22.5) % 360;
-    const i = Math.floor(deg / 45);
-    if (open.slices[i]) sel = i;
+  if (row < 0 && moved) {
+    const inner = gap < 1 ? DEAD_RADIUS : RING_INNER;
+    if (onAnnulus) sel = sliceAt(ax, ay);
+    // 輪の真ん中（ハブ）に指が乗っている = キャンセル。見たままの意味にする
+    else if (toRing < inner) sel = -1;
+    else if (toPress >= DEAD_RADIUS) sel = sliceAt(dx, dy);
   }
   if (sel === open.selected) return;
   for (const s of open.slices) {
@@ -300,7 +352,17 @@ export function attachRadialButton(
 
   const onMove = (e: PointerEvent) => {
     if (e.pointerId !== pid) return;
-    if (Math.hypot(e.clientX - sx, e.clientY - sy) > 12) cancel();
+    if (opened) return;
+    // **動いても長押しを消さない**（`50` の直し）。ツール列のボタンは
+    // `touch-action: none` でスクロールに使われないので、指のぶれで輪が
+    // 出なくなるほうが痛い（実機の「段が足せない」）。
+    // 大きく引いたら、200ms を待たずにその場で開く（Maya のマーキングメニュー）
+    if (Math.hypot(e.clientX - sx, e.clientY - sy) > OPEN_DRAG) {
+      cancel();
+      opened = true;
+      openRadial(menu(), sx, sy, list?.() ?? []);
+      onMove(e);
+    }
   };
   const onUp = (e: PointerEvent) => {
     if (e.pointerId !== pid) return;
