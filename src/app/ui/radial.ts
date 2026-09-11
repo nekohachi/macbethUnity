@@ -30,10 +30,10 @@ const MOVE_MIN = 14;
 /** ボタンからこれだけ引いたら、長押しを待たずに輪を開く。 */
 const OPEN_DRAG = 24;
 /**
- * 画面の端で輪を縮めるときの下限（`52`）。
- * これより小さくすると区画の文字が入らない。
+ * 開いた時に指が乗っていた区画を解くまでの距離（`53`）。
+ * 長押し中の指のぶれ（10px ほど）では解けず、狙って動かせば解ける。
  */
-const MIN_SCALE = 0.62;
+const PARK_RELEASE = 25;
 
 
 interface Slice {
@@ -129,19 +129,17 @@ export function openRadial(
   opts: RadialOptions = {},
 ): void {
   closeRadial();
-  // **縮めてから寄せる**（`52`）。
+  // **大きさはそのまま、画面に入る所まで寄せる**（`53`）。
   //
-  // `50` では横の寄せをやめていた。輪を丸ごと画面へ入れようと 150px も横へ寄せると、
-  // 押した点と中心が離れ、「見えている区画」と「引いた向き」が食い違ったからだ。
-  // ただし寄せをやめると、左のツール列で押したとき**輪の左半分が画面の外**へ出て、
-  // そこは指で押せない。実機ではこちらが痛かった。
+  // `52` では端で輪を縮めていたが、実機では**小さくて読みにくい**と言われた。
+  // 縮めるのはやめ、寄せだけで画面に入れる（左のツール列なら右へ 70px ほど）。
   //
-  // そこで、まず輪を画面に入る大きさまで**縮める**。縮めても足りない分だけ寄せる。
-  // 残る寄せは 70px ほどで済み、しかも**向きは常に中心から読む**（下の `onMove`）ので、
-  // 見えている通りに選べる。ビューポートの指のジェスチャは画面の真ん中で開くから
-  // 寄せは 0、つまり中心 = 押した点で、見ないで振り抜く使い方はそのまま効く。
-  const room = Math.min(clientX, window.innerWidth - clientX) - 10;
-  const scale = Math.max(MIN_SCALE, Math.min(1, room / RING_OUTER));
+  // 寄せても食い違わないのは、`52` で**向きを輪の中心から読む 1 本立て**にしたから
+  // （下の `onMove`）。見えている通りに選べる。ビューポートの指のジェスチャは
+  // 画面の真ん中で開くので寄せは 0 で、見ないで振り抜く使い方もそのまま効く。
+  //
+  // 縮めるのは、画面そのものが輪より狭いときだけ（縦持ちの細い端末）。
+  const scale = Math.min(1, (window.innerWidth - 12) / (RING_OUTER * 2));
   const outer = RING_OUTER * scale;
   const inner = RING_INNER * scale;
   const dead = DEAD_RADIUS * scale;
@@ -357,7 +355,11 @@ function onMove(e: PointerEvent): void {
   // 開いた時に指が乗っていた区画からは、一度出るまで何も選ばない（`52`）。
   // 寄せた輪では指が最初からどこかの区画の上に居るので、置いたまま離しただけで
   // そこが走ってしまう。削除の輪では取り返しがつかない
-  if (!open.armed && here !== open.parked) open.armed = true;
+  // 別の区画へ移ったか、はっきり動かしたら解ける（`53`）。
+  // 寄せた輪では指の下の区画も選べないと困るので、距離でも解けるようにした
+  if (!open.armed && (here !== open.parked || Math.hypot(e.clientX - open.px, e.clientY - open.py) > PARK_RELEASE)) {
+    open.armed = true;
+  }
   const sel = row < 0 && moved && open.armed ? here : -1;
   if (sel === open.selected) return;
   paintSlices(sel);

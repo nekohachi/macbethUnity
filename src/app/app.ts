@@ -5487,6 +5487,20 @@ export class App {
       S: item("bridge", "Bridge"),
       W: item("extrude", "Extrude"),
       NW: item("connect", "Connect"),
+      // マージは変形の輪にも置いてあるが（`52`）、切った直後に閉じたいのは
+      // 編集の流れの中なので、こちらにも出す（`53`）
+      SE: {
+        label: "距離でマージ",
+        sub: `Merge  ${this.state.vertexOpts.mergeDist.toFixed(3)}`,
+        icon: ICONS.vVert,
+        run: () => this.doMergeByDistance(),
+      },
+      SW: {
+        label: "中心にマージ",
+        sub: "To Center",
+        icon: ICONS.vObj,
+        run: () => this.doMergeVertices(),
+      },
     };
   }
 

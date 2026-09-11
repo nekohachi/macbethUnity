@@ -569,10 +569,14 @@ const addByHold = await page.evaluate(async () => {
   const minText = labels.length
     ? Math.min(...labels.filter((t) => t.textContent).map((t) => t.getBoundingClientRect().left))
     : -1;
-  // 押した場所から**まっすぐ上**へ引いて離す（人がやるとおり）
-  window.dispatchEvent(ev("pointermove", bx, by - 110));
+  // **見えている北の区画**に指を乗せて離す（人がやるとおり）。
+  // 端のボタンでは輪が右へ寄るので、向きは輪の中心から読む（`53`）
+  const ring = window.macbethRing();
+  const tx = ring ? ring.x : bx;
+  const ty = ring ? ring.y - (ring.inner + ring.outer) / 2 : by - 110;
+  window.dispatchEvent(ev("pointermove", tx, ty));
   await new Promise((r2) => setTimeout(r2, 60));
-  window.dispatchEvent(ev("pointerup", bx, by - 110));
+  window.dispatchEvent(ev("pointerup", tx, ty));
   await new Promise((r2) => setTimeout(r2, 400));
   const out = { off, minText, ringLeft, ringRight, width: window.innerWidth, levels: cube.multires.length, active: cube.activeLevel, faces: cube.shown(app.state.shownLevel(cube)).faceCount };
   app.setMode("model");
@@ -587,10 +591,10 @@ const addByHold = await page.evaluate(async () => {
   return out;
 });
 check(
-  "長押しからまっすぐ上へ引くと段が足せる（輪は丸ごと画面の中・中心は指の近く）",
+  "長押しから見えている北の区画へ引くと段が足せる（輪は丸ごと画面の中）",
   // **輪は丸ごと画面の中**（`52`）。端では縮めてから寄せるので、ずれは小さい。
   // ずれが大きいと「見えている区画」と「引いた向き」が食い違う
-  addByHold.off < 40 &&
+  addByHold.off < 90 &&
     addByHold.ringLeft >= 0 &&
     addByHold.ringRight <= addByHold.width &&
     addByHold.minText >= 0 &&
@@ -5957,9 +5961,13 @@ const outlinerMenu = await page.evaluate(async () => {
   const svg = document.querySelector(".radial svg");
   const labels = svg ? [...svg.querySelectorAll("text")].map((t) => t.textContent) : [];
   // 北（名前変更）へ引いて離す。**押した点から**（`41` の T3。輪は見える所へ寄っている）
+  // 見えている北の区画へ（端では輪が寄るので、輪の中心から測る。`53`）
+  const ringN = window.macbethRing();
+  const nx = ringN ? ringN.x : at.clientX;
+  const ny = ringN ? ringN.y - (ringN.inner + ringN.outer) / 2 : at.clientY - 110;
   for (const type of ["pointermove", "pointerup"]) {
     window.dispatchEvent(
-      new PointerEvent(type, { pointerId: 31, pointerType: "touch", bubbles: true, clientX: at.clientX, clientY: at.clientY - 110 }),
+      new PointerEvent(type, { pointerId: 31, pointerType: "touch", bubbles: true, clientX: nx, clientY: ny }),
     );
   }
   await new Promise((r) => setTimeout(r, 120));
@@ -7240,10 +7248,13 @@ const rowHold = await page.evaluate(async () => {
   row.dispatchEvent(openEv);
   const blockedWhileOpen = openEv.defaultPrevented;
   const stillOpen = !!document.querySelector(".radial");
-  // 北（名前変更）へ引いて離す
-  window.dispatchEvent(ev("pointermove", sx, sy - 120));
+  // 見えている北（名前変更）の区画へ引いて離す（`53`）
+  const ringN = window.macbethRing();
+  const nx = ringN ? ringN.x : sx;
+  const ny = ringN ? ringN.y - (ringN.inner + ringN.outer) / 2 : sy - 120;
+  window.dispatchEvent(ev("pointermove", nx, ny));
   await new Promise((r2) => setTimeout(r2, 40));
-  window.dispatchEvent(ev("pointerup", sx, sy - 120));
+  window.dispatchEvent(ev("pointerup", nx, ny));
   await new Promise((r2) => setTimeout(r2, 120));
   const renaming = !!document.querySelector(".olinput");
   if (renaming) document.querySelector(".olinput").blur();
@@ -7298,10 +7309,13 @@ const quad = await page.evaluate(async () => {
   await new Promise((t) => setTimeout(t, 320));
   const svg = document.querySelector(".radial svg");
   const labels = svg ? [...svg.querySelectorAll("text")].map((t) => t.textContent) : [];
-  // 南（4 画面）へ。**押した点から**引く（`41` の T3）
+  // 見えている南（4 画面）の区画へ。輪は端で右へ寄るので中心から測る（`53`）
+  const ringS = window.macbethRing();
+  const sx2 = ringS ? ringS.x : at.clientX;
+  const sy2 = ringS ? ringS.y + (ringS.inner + ringS.outer) / 2 : at.clientY + 110;
   for (const type of ["pointermove", "pointerup"]) {
     window.dispatchEvent(
-      new PointerEvent(type, { pointerId: 71, pointerType: "touch", bubbles: true, clientX: at.clientX, clientY: at.clientY + 110 }),
+      new PointerEvent(type, { pointerId: 71, pointerType: "touch", bubbles: true, clientX: sx2, clientY: sy2 }),
     );
   }
   await new Promise((t) => setTimeout(t, 200));
@@ -8245,10 +8259,13 @@ const ring = await page.evaluate(async () => {
   const parts = svg ? [...svg.querySelectorAll("text")].filter((t) => t.textContent).concat([...svg.querySelectorAll("path")]) : [];
   const minX = parts.length ? Math.min(...parts.map((p) => p.getBoundingClientRect().left)) : -1;
   const maxX = parts.length ? Math.max(...parts.map((p) => p.getBoundingClientRect().right)) : -1;
-  // 押した点から**まっすぐ上**へ。北（スタンダード）が選ばれる
-  window.dispatchEvent(ev("pointermove", bx, by - 120));
+  // 見えている**北の区画**へ。北（スタンダード）が選ばれる（`53`）
+  const ringAt = window.macbethRing();
+  const tx = ringAt ? ringAt.x : bx;
+  const ty = ringAt ? ringAt.y - (ringAt.inner + ringAt.outer) / 2 : by - 120;
+  window.dispatchEvent(ev("pointermove", tx, ty));
   await new Promise((r2) => setTimeout(r2, 40));
-  window.dispatchEvent(ev("pointerup", bx, by - 120));
+  window.dispatchEvent(ev("pointerup", tx, ty));
   await new Promise((r2) => setTimeout(r2, 200));
   const picked = app.state.brush.kind;
 
@@ -8262,7 +8279,7 @@ const ring = await page.evaluate(async () => {
   return { minX, maxX, width: window.innerWidth, picked };
 });
 check(
-  "筆の輪: 左端で押しても輪が丸ごと画面に入り、上へ引けば北が選ばれる",
+  "筆の輪: 左端で押しても輪が丸ごと画面に入り、北の区画で北が選ばれる",
   ring.minX >= 0 && ring.maxX <= ring.width && ring.picked === "standard",
   `輪と文字の左端 ${ring.minX.toFixed(0)}px · 右端 ${ring.maxX.toFixed(0)}/${ring.width}px / 選ばれた筆 ${ring.picked}`,
 );
@@ -9517,21 +9534,25 @@ const mergeObject = await page.evaluate(() => {
   return {
     xform: window.macbeth.radialForTest("xform"),
     xformList: window.macbeth.radialListForTest("xform"),
+    edit: window.macbeth.radialForTest("edit"),
   };
 });
 check(
   // `52`: マージは輪の区画（NW）にも置き、一覧はモードで切らない
-  "マージは変形の輪へ集まり、どのモードでも出せる（編集の輪からは消えた）",
+  // `53`: 編集（マルチカット）の輪にもマージを出す。ターゲットウェルドは変形だけ
+  "マージは変形と編集の両方の輪から出せる（ターゲットウェルドは変形だけ）",
   mergeMoved.xform.SW === "ターゲットウェルド" &&
     mergeMoved.xform.NW === "距離でマージ" &&
     mergeMoved.xformList.join(" / ") === "中心にマージ / 初期設定に戻す" &&
-    !mergeMoved.edit.SW &&
+    mergeMoved.edit.SE === "距離でマージ" &&
+    mergeMoved.edit.SW === "中心にマージ" &&
     !Object.values(mergeMoved.edit).includes("ターゲットウェルド") &&
     mergeObject.xform.NW === "距離でマージ" &&
+    mergeObject.edit.SE === "距離でマージ" &&
     mergeObject.xformList.join(" / ") === "中心にマージ / 初期設定に戻す",
   `変形 SW「${mergeMoved.xform.SW}」· NW「${mergeMoved.xform.NW}」· 一覧 ${mergeMoved.xformList.join(" / ") || "なし"} / ` +
     `編集 ${Object.values(mergeMoved.edit).join(" / ")} / ` +
-    `オブジェクトでも NW「${mergeObject.xform.NW}」· 一覧 ${mergeObject.xformList.join(" / ") || "なし"}`,
+    `オブジェクトでも 変形 NW「${mergeObject.xform.NW}」· 編集 SE「${mergeObject.edit.SE}」`,
 );
 
 /* 47a. 修飾ボタンの長押し（`47` の T1）: 本物の Shift キー。押している間だけ・左でロック・タップで解除 */
@@ -10546,8 +10567,8 @@ const radialPick = await page.evaluate(async () => {
     return { opened, offset: ring ? Math.hypot(ring.x - p.x, ring.y - p.y) : -1 };
   };
 
-  // 1. 指が 18px ぶれても輪は出る。まっすぐ上へ引けば段が足せる
-  const drift = await hold({ drift: 18, to: (ring, p) => ({ x: p.x, y: p.y - 120 }) });
+  // 1. 指が 18px ぶれても輪は出る。見えている北の区画へ引けば段が足せる
+  const drift = await hold({ drift: 18, to: (ring) => ({ x: ring.x, y: ring.y - (ring.inner + ring.outer) / 2 }) });
   const afterDrift = { ...drift, levels: o.multires.length };
 
   // 2. 見えている北の区画に指を乗せても足せる
@@ -10573,12 +10594,12 @@ const radialPick = await page.evaluate(async () => {
   return { afterDrift, afterVisible, afterRow, afterCancel };
 });
 check(
-  "サークルメニュー: 指がぶれても出て、まっすぐ上でも見えている区画でも選べる",
+  "サークルメニュー: 指がぶれても出て、見えている区画で選べる",
   radialPick.afterDrift.opened &&
     radialPick.afterDrift.levels === 1 &&
     radialPick.afterVisible.levels === 2 &&
-    // `52`: 端では輪が縮んで少しだけ寄る。ずれが小さければ向きは合う
-    radialPick.afterDrift.offset < 40 &&
+    // `53`: 端では輪が右へ寄る。向きは輪の中心から読むので食い違わない
+    radialPick.afterDrift.offset < 90 &&
     radialPick.afterRow.active === 0 &&
     radialPick.afterCancel.added === 0,
   `ぶれても開く ${radialPick.afterDrift.opened} → 段 ${radialPick.afterDrift.levels}（中心のずれ ${radialPick.afterDrift.offset.toFixed(0)}px）/ ` +
@@ -10936,6 +10957,42 @@ check(
     `履歴「${mergeAfter.entry}」· トースト「${mergeAfter.hint}」`,
 );
 
+/* 53a. 編集（マルチカット）の長押しからもマージが走る（`53`） */
+const mergeFromEdit = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const core = window.macbethCore;
+  app.setMode("model");
+  app.setCompMode("object");
+  app.state.comp.clear();
+  app.state.doc.objects.length = 0;
+  const plane = () =>
+    core.PRIMITIVES.plane.build({ ...core.defaultParams("plane"), width: 2, height: 2, sdW: 1, sdH: 1 });
+  const a = app.state.doc.addMesh(plane(), "Edt53");
+  const b = app.state.doc.addMesh(plane(), "Edt53b");
+  app.viewport.syncAll();
+  app.state.select(a);
+  app.state.addObject(b);
+  app.combineForTest();
+  app.refresh();
+  app.history.clear();
+  await new Promise((r) => setTimeout(r, 80));
+  return { verts: app.state.doc.objects[0].mesh.vertexCount };
+});
+await pickFromGroup("edit", "SE"); // 編集 → 距離でマージ
+const editMergeAfter = await page.evaluate(() => {
+  const app = window.macbeth;
+  return {
+    verts: app.state.doc.objects[0].mesh.vertexCount,
+    entry: app.history.lastEntry()?.label ?? "",
+    hint: document.getElementById("hudHint").textContent,
+  };
+});
+check(
+  "編集（マルチカット）の長押し → 距離でマージ",
+  editMergeAfter.verts === mergeFromEdit.verts / 2 && editMergeAfter.entry === "距離でマージ",
+  `頂点 ${mergeFromEdit.verts} → ${editMergeAfter.verts} / 履歴「${editMergeAfter.entry}」· トースト「${editMergeAfter.hint}」`,
+);
+
 /* 52b. 輪が画面からはみ出さない（`52`）: 左下の削除ボタンでも丸ごと画面の中 */
 const ringFits = await page.evaluate(async () => {
   const app = window.macbeth;
@@ -10989,7 +11046,8 @@ const ringFits = await page.evaluate(async () => {
   return { del, tool, w: window.innerWidth, h: window.innerHeight };
 });
 check(
-  "サークルメニューは画面からはみ出さない（端では縮めてから、入らない分だけ寄せる）",
+  // `53`: 大きさはそのまま（外径 176）。画面に入る所まで右へ寄せる
+  "サークルメニューは大きさそのままで、画面からはみ出さない所まで寄る",
   !!ringFits.del &&
     !!ringFits.tool &&
     ringFits.del.left >= -1 &&
@@ -10998,8 +11056,8 @@ check(
     ringFits.del.bottom <= ringFits.h + 1 &&
     ringFits.tool.left >= -1 &&
     ringFits.tool.right <= ringFits.w + 1 &&
-    ringFits.tool.outer < 176 &&
-    ringFits.tool.off < 40,
+    ringFits.tool.outer >= 176 &&
+    ringFits.tool.off < 90,
   `削除ボタン 左 ${ringFits.del?.left.toFixed(0)}px・右 ${ringFits.del?.right.toFixed(0)}/${ringFits.w}px・` +
     `外径 ${ringFits.del?.outer.toFixed(0)}（寄せ ${ringFits.del?.off.toFixed(0)}px）/ ` +
     `変形ボタン 左 ${ringFits.tool?.left.toFixed(0)}px・外径 ${ringFits.tool?.outer.toFixed(0)}（寄せ ${ringFits.tool?.off.toFixed(0)}px）`,
@@ -11041,10 +11099,10 @@ const parkedSlice = await page.evaluate(async () => {
   const hub = window.macbethRing();
   const off = hub ? Math.hypot(hub.x - x, hub.y - y) : 0;
   const parked = hub ? (y > hub.y ? "S" : "N") : "";
-  // 指を 20px だけずらして離す（持ち替えのぶれ）
-  fire(window, "pointermove", x + 12, y + 16);
+  // 指を 15px だけずらして離す（長押し中のぶれ）
+  fire(window, "pointermove", x + 9, y + 12);
   await wait(30);
-  fire(window, "pointerup", x + 12, y + 16);
+  fire(window, "pointerup", x + 9, y + 12);
   await wait(200);
   const objects = app.state.doc.objects.length;
 
@@ -11062,7 +11120,7 @@ check(
   "寄せた輪: 開いた時に指が乗っている区画は、そこから出るまで選ばれない",
   parkedSlice.off > 40 && parkedSlice.parked === "S" && parkedSlice.objects === 1,
   `輪の寄せ ${parkedSlice.off.toFixed(0)}px（指は ${parkedSlice.parked} の上）/ ` +
-    `20px ぶれて離してもオブジェクトは ${parkedSlice.objects} 個のまま`,
+    `15px ぶれて離してもオブジェクトは ${parkedSlice.objects} 個のまま`,
 );
 
 /* 52c. 左側の UI は指で押せる大きさ（`52`） */
