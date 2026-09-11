@@ -2738,6 +2738,10 @@ export class App {
         material: "マテリアル（焼いた法線と AO）",
       }[display],
     );
+    // 焼いていなければ絵は乗らない。黙って灰色のままだと「効かない」と思わせる
+    if (display === "material" && bakeState(this.state.selected) === "none") {
+      this.hud.toast("マテリアル表示（まだ焼いていません。「焼く」を押すと絵が乗ります）");
+    }
     this.uv?.rebuild();
   }
 
