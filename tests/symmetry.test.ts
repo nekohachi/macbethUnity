@@ -221,3 +221,35 @@ describe("中心線の継ぎ目（`41` の T1）", () => {
     expect(centerHeight(guarded)).toBeLessThan(centerHeight(now) * 0.9);
   });
 });
+
+describe("重なった頂点の対応（`47` の T3）", () => {
+  it("同じ場所に重なる頂点は、番号の順で k 番目どうしを組にする", () => {
+    // 押し出し（距離 0）のあとの形: 元の 4 頂点と、その上に重なる先端 4 頂点
+    const p = new Float32Array([
+      1, 0, 0, // 0: +X の元
+      -1, 0, 0, // 1: −X の元
+      1, 1, 0, // 2
+      -1, 1, 0, // 3
+      1, 0, 0, // 4: +X の先端（0 と重なる）
+      -1, 0, 0, // 5: −X の先端（1 と重なる）
+      1, 1, 0, // 6
+      -1, 1, 0, // 7
+    ]);
+    const map = buildMirrorMap(p, 8, 1e-6);
+    expect(map.mirror[0]).toBe(1);
+    expect(map.mirror[1]).toBe(0);
+    expect(map.mirror[4]).toBe(5);
+    expect(map.mirror[5]).toBe(4);
+    expect(map.mirror[2]).toBe(3);
+    expect(map.mirror[6]).toBe(7);
+    expect(map.paired).toBe(8);
+  });
+
+  it("重なりの数が左右で違えば、余った方は相手なし", () => {
+    const p = new Float32Array([1, 0, 0, -1, 0, 0, 1, 0, 0]);
+    const map = buildMirrorMap(p, 3, 1e-6);
+    expect(map.mirror[0]).toBe(1);
+    expect(map.mirror[1]).toBe(0);
+    expect(map.mirror[2]).toBe(-1);
+  });
+});

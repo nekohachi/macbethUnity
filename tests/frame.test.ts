@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { Matrix4, Vector3 } from "three";
-import { normalFrame, objectFrame, worldFrame } from "../src/app/tools/frame.js";
+import { fixedAxis, nearestAxis, normalFrame, objectFrame, worldFrame } from "../src/app/tools/frame.js";
 
 const near = (v: Vector3, x: number, y: number, z: number, digits = 6) => {
   expect(v.x).toBeCloseTo(x, digits);
@@ -71,5 +71,51 @@ describe("マニピュレータの軸の向き（`45` の T2）", () => {
     for (const a of f.axes) expect(a.length()).toBeCloseTo(1, 6);
     expect(f.axes[0].dot(f.axes[2])).toBeCloseTo(0, 6);
     rightHanded(f);
+  });
+});
+
+describe("枠から「この向きに近い 1 本」を選ぶ（`47` の T2）", () => {
+  it("ワールドで画面の右が +X なら X、符号は +", () => {
+    const a = nearestAxis(worldFrame(), new Vector3(0.9, 0.1, 0.3));
+    expect(a.axis).toBe(0);
+    expect(a.sign).toBe(1);
+    expect(a.label).toBe("X");
+    near(a.dir, 1, 0, 0);
+  });
+
+  it("右が −U なら符号込みで −U を返す", () => {
+    // 法線 +Y の枠。U は +X。画面の右が −X を向いているとき
+    const f = normalFrame(new Vector3(0, 1, 0), null, worldFrame());
+    const a = nearestAxis(f, new Vector3(-1, 0, 0.2));
+    expect(a.axis).toBe(0);
+    expect(a.sign).toBe(-1);
+    expect(a.label).toBe("U");
+    near(a.dir, -1, 0, 0);
+  });
+
+  it("候補を絞れる（法線の枠の横スワイプは U / V だけから）", () => {
+    // 法線が画面の右を向いていても、U / V に絞れば N は選ばれない
+    const f = normalFrame(new Vector3(1, 0, 0), null, worldFrame());
+    const a = nearestAxis(f, new Vector3(1, 0, 0.1), [0, 1]);
+    expect(a.axis).not.toBe(2);
+    expect(Math.abs(a.dir.dot(f.axes[2]))).toBeLessThan(1e-6);
+  });
+
+  it("回したオブジェクトの枠でも、画面の上に近い 1 本を選ぶ", () => {
+    // Z に 90° 回すと、ローカルの +X が +Y を向く
+    const f = objectFrame(new Matrix4().makeRotationZ(Math.PI / 2));
+    const a = nearestAxis(f, new Vector3(0, 1, 0));
+    expect(a.axis).toBe(0);
+    expect(a.sign).toBe(1);
+    near(a.dir, 0, 1, 0, 5);
+  });
+
+  it("fixedAxis は符号 + でその本をそのまま返す（縦スワイプ = N、常に）", () => {
+    const f = normalFrame(new Vector3(0, 0, -1), null, worldFrame());
+    const a = fixedAxis(f, 2);
+    expect(a.axis).toBe(2);
+    expect(a.sign).toBe(1);
+    expect(a.label).toBe("N");
+    near(a.dir, 0, 0, -1);
   });
 });

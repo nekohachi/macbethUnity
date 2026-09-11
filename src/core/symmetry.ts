@@ -105,12 +105,37 @@ export function buildMirrorMap(positions: Float32Array, vertexCount: number, tol
   const cursor = Int32Array.from(heads.subarray(0, buckets));
   for (let v = 0; v < vertexCount; v++) items[cursor[slot[v]]++] = v;
 
-  /** そのバケットの中から、v の鏡映の相手を探す。無ければ -1。 */
-  const findIn = (bucket: number, v: number): number => {
+  /**
+   * v と同じ側で v と**重なっている**頂点のうち、番号が v より小さいものの数。
+   *
+   * 押し出し（距離 0）のあとは元の頂点と先端が同じ場所に重なる。相手を「最初に
+   * 見つかった 1 つ」にすると、両側の元どうしが組になって先端が余る（`47` の T3）。
+   * 重なりは**番号の順で k 番目どうし**を組にする。
+   */
+  const rankOf = (v: number): number => {
+    const x = positions[v * 3],
+      y = positions[v * 3 + 1],
+      z = positions[v * 3 + 2];
+    const bucket = slot[v];
+    let rank = 0;
+    for (let i = heads[bucket]; i < heads[bucket + 1]; i++) {
+      const u = items[i];
+      if (u >= v || side[u] !== side[v]) continue;
+      if (Math.abs(positions[u * 3] - x) > tol) continue;
+      if (Math.abs(positions[u * 3 + 1] - y) > tol) continue;
+      if (Math.abs(positions[u * 3 + 2] - z) > tol) continue;
+      rank++;
+    }
+    return rank;
+  };
+
+  /** そのバケットの中から、v の鏡映の相手（重なりの中では `skip` 番目）を探す。無ければ -1。 */
+  const findIn = (bucket: number, v: number, skip: number): number => {
     const x = positions[v * 3],
       y = positions[v * 3 + 1],
       z = positions[v * 3 + 2];
     const wantSide = side[v];
+    let seen = 0;
     for (let i = heads[bucket]; i < heads[bucket + 1]; i++) {
       const u = items[i];
       if (u === v) continue;
@@ -119,7 +144,7 @@ export function buildMirrorMap(positions: Float32Array, vertexCount: number, tol
       if (Math.abs(positions[u * 3] + x) > tol) continue;
       if (Math.abs(positions[u * 3 + 1] - y) > tol) continue;
       if (Math.abs(positions[u * 3 + 2] - z) > tol) continue;
-      return u;
+      if (seen++ === skip) return u;
     }
     return -1;
   };
@@ -131,7 +156,8 @@ export function buildMirrorMap(positions: Float32Array, vertexCount: number, tol
       paired++;
       continue;
     }
-    let m = findIn(slot[v], v);
+    const rank = rankOf(v);
+    let m = findIn(slot[v], v, rank);
     if (m < 0) {
       // 格子の境目をまたいだ。隣の 26 個を見る
       outer: for (let dx = -1; dx <= 1; dx++) {
@@ -139,7 +165,7 @@ export function buildMirrorMap(positions: Float32Array, vertexCount: number, tol
           for (let dz = -1; dz <= 1; dz++) {
             if (dx === 0 && dy === 0 && dz === 0) continue;
             const b = cellHash(qx[v] + dx, qy[v] + dy, qz[v] + dz) & mask;
-            m = findIn(b, v);
+            m = findIn(b, v, rank);
             if (m >= 0) break outer;
           }
         }

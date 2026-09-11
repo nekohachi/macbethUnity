@@ -78,3 +78,38 @@ export function normalFrame(n: Vector3, hintU: Vector3 | null, fallback: Frame):
   const V = new Vector3().crossVectors(N, U);
   return { axes: [U, V, N], labels: ["U", "V", "N"] };
 }
+
+/** 枠の 3 本から選んだ 1 本。`dir` は符号込みの単位ベクトル（`axis` 本目 × `sign`）。 */
+export interface FrameAxis {
+  axis: 0 | 1 | 2;
+  sign: 1 | -1;
+  dir: Vector3;
+  /** 軸の名前（符号は付けない。量の符号で見せる） */
+  label: string;
+}
+
+/**
+ * 枠の 3 本のうち、`toward` に**いちばん近い 1 本**を符号込みで返す（`47` の T2）。
+ *
+ * 3 本指の「横スワイプ = 画面の右に近い軸」「縦スワイプ = 画面の上に近い軸」
+ * 「ひねり = 視線に近い軸」を枠ごとに決めるのに使う。右が −U なら sign = −1。
+ * `pick` で候補を絞れる（法線の枠で横スワイプを U / V だけから選ぶ、など）。
+ */
+export function nearestAxis(frame: Frame, toward: Vector3, pick: ReadonlyArray<0 | 1 | 2> = [0, 1, 2]): FrameAxis {
+  let best: 0 | 1 | 2 = pick[0] ?? 0;
+  let bestDot = -Infinity;
+  for (const a of pick) {
+    const d = Math.abs(frame.axes[a].dot(toward));
+    if (d > bestDot) {
+      bestDot = d;
+      best = a;
+    }
+  }
+  const sign: 1 | -1 = frame.axes[best].dot(toward) < 0 ? -1 : 1;
+  return { axis: best, sign, dir: frame.axes[best].clone().multiplyScalar(sign), label: frame.labels[best] };
+}
+
+/** その本を +向きで返す（法線の枠の「縦 = N、常に」に使う）。 */
+export function fixedAxis(frame: Frame, axis: 0 | 1 | 2): FrameAxis {
+  return { axis, sign: 1, dir: frame.axes[axis].clone(), label: frame.labels[axis] };
+}

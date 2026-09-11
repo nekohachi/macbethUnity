@@ -247,7 +247,13 @@ export function applyGestureTransform(
   drag: DragState,
   object: SceneObject,
   t: {
-    scale?: number | [number, number, number];
+    /**
+     * 倍率。数なら全方向、3 つ組なら成分ごと。
+     * `{ axis, index, factor }` なら**枠の 1 本に沿って**（`47` の T2）。コンポーネントは
+     * その向きに伸ばし、オブジェクトは `index` 本目の `scale` に掛ける
+     * （オブジェクト / ローカルの枠はオブジェクトの軸そのもの）
+     */
+    scale?: number | [number, number, number] | { axis: Vector3; index: 0 | 1 | 2; factor: number };
     move?: Vector3;
     /** ひねりの回転（`26` の T1）。右ねじの向きで `angle` ラジアン回す。 */
     rotate?: { axis: Vector3; angle: number };
@@ -255,10 +261,13 @@ export function applyGestureTransform(
 ): void {
   // 裏返らないように下限を置く。軸ごとの倍率にも同じ下限（`25` の T2）
   const raw = t.scale ?? 1;
+  const along = typeof raw === "object" && !Array.isArray(raw) ? raw : null;
   const s =
     typeof raw === "number"
       ? new Vector3(Math.max(0.02, raw), Math.max(0.02, raw), Math.max(0.02, raw))
-      : new Vector3(Math.max(0.02, raw[0]), Math.max(0.02, raw[1]), Math.max(0.02, raw[2]));
+      : Array.isArray(raw)
+        ? new Vector3(Math.max(0.02, raw[0]), Math.max(0.02, raw[1]), Math.max(0.02, raw[2]))
+        : new Vector3(1, 1, 1).setComponent(raw.index, Math.max(0.02, raw.factor));
   const move = t.move ?? new Vector3();
   const spin = t.rotate ?? null;
   const pivot = drag.pivot;
@@ -266,7 +275,10 @@ export function applyGestureTransform(
 
   /** ピボットからの距離を成分ごとに伸ばし、回して、軸に沿って動かす。 */
   const place = (p: Vector3, weight = 1): Vector3 => {
-    const r = p.clone().sub(pivot).multiply(s);
+    const r = p.clone().sub(pivot);
+    // 枠の 1 本に沿って伸ばす: r += (k − 1)(r·a)a（`45` の T2 と同じ式）
+    if (along) r.addScaledVector(along.axis, r.dot(along.axis) * (Math.max(0.02, along.factor) - 1));
+    else r.multiply(s);
     // 回転はソフト選択の重みを角度に掛ける（座標を混ぜると弧が内側に落ちる）
     if (spin) r.applyQuaternion(new Quaternion().setFromAxisAngle(spin.axis, spin.angle * weight));
     return r.add(pivot).add(move);

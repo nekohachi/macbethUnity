@@ -33,8 +33,13 @@ export type UvCutKind = "cut" | "moveSew" | "sew";
 /**
  * 修飾キーのラッチ。オンとオフの 2 段階だけ（docs/17 の 6 章）。
  * 一度使ったら消える中間の状態は置かない。消すのは自分でもう一度押したとき。
+ *
+ * **押している間だけ**効かせるのは別の印（`heldMod`。`47` の T1）。
+ * 本物の Shift キーと同じで、離せば消える。ラッチ（ロック）はこの 2 段階のまま。
  */
 export type ModState = "off" | "on";
+/** 押している間だけ効く修飾（`47` の T1）。 */
+export type ModName = "shift" | "ctrl" | "alt";
 
 /** カメラの設定。ペインごとに持つ（`25` の T5・T6）。 */
 export interface CamOpts {
@@ -335,6 +340,11 @@ export class AppState {
 
   mods: Mods = { shift: "off", ctrl: "off", alt: "off" };
   /**
+   * いま**押している**修飾ボタン（`47` の T1）。長押し中だけ立ち、離せば null。
+   * ロック（`mods`）とは別。`modOn()` はどちらも見る。
+   */
+  heldMod: ModName | null = null;
+  /**
    * X 対称（`45` の T1）。**アプリに 1 つ**。
    *
    * モデリングの頂点編集（`tools/transform.ts`）とスカルプトの筆（`stroke.ts`）が
@@ -540,7 +550,7 @@ export class AppState {
   }
 
   modOn(name: keyof Mods): boolean {
-    return this.mods[name] !== "off";
+    return this.mods[name] !== "off" || this.heldMod === name;
   }
 
   /** スナップが効いているか。ツール列のボタンか、X / V / C を押している間。 */
@@ -551,9 +561,14 @@ export class AppState {
   /** オンになっている修飾の名前。HUD に出して消し忘れに気づけるようにする。 */
   activeMods(): string[] {
     const out: string[] = [];
-    if (this.mods.shift !== "off") out.push("SHF");
-    if (this.mods.ctrl !== "off") out.push("CTL");
-    if (this.mods.alt !== "off") out.push("ALT");
+    // 押している間だけのものは「↓」を添える（離せば消えるので、消し忘れではない）
+    const tag = (name: ModName, label: string): void => {
+      if (this.mods[name] !== "off") out.push(label);
+      else if (this.heldMod === name) out.push(`${label}↓`);
+    };
+    tag("shift", "SHF");
+    tag("ctrl", "CTL");
+    tag("alt", "ALT");
     return out;
   }
 

@@ -20,7 +20,9 @@ import {
   shrinkFaces,
   shrinkVertices,
   type Edge,
+  type SceneObject,
 } from "../../core/index.js";
+import { mirrorMapOf } from "../levels.js";
 import type { ObjectView } from "../render/meshView.js";
 import type { Picker, ScreenPoint } from "../render/picking.js";
 import type { AppState } from "../state.js";
@@ -393,6 +395,82 @@ export class Selector {
     });
     this.lastClick = null;
     return { changed: true, objectChanged: false, message: `境界エッジ — ${this.state.comp.size}` };
+  }
+
+  /**
+   * 選択を鏡へ写す（`47` の T3）。`state.comp` に X 対称の相手を足す。
+   *
+   * トポロジの操作（押し出し・ベベル・削除・接続・マージ…）は選択から始まるので、
+   * **操作の前に選択を写す**と、操作ごとの分岐が要らない。
+   * 対応表は `41` の `mirrorMapOf`（レベル 0）。相手が無ければ写さない。
+   *
+   *   頂点   `mirror[v]`
+   *   エッジ 両端の鏡を `view.edges` から引く
+   *   面     頂点の集合をソートした鍵で面を引く（表は 1 回作る。O(面)）
+   *
+   * @returns 足した数と、相手が見つからなかった数
+   */
+  mirrorSelection(o: SceneObject): { added: number; missing: number } {
+    const comp = this.state.comp;
+    const map = mirrorMapOf(o, 0, o.mesh);
+    if (!map || !comp.size) return { added: 0, missing: comp.size };
+    const mirror = map.mirror;
+    let added = 0;
+    let missing = 0;
+    const put = (i: number, self: number): void => {
+      if (i === self || comp.has(i)) return;
+      comp.add(i);
+      added++;
+    };
+
+    if (this.state.compMode === "vertex") {
+      for (const v of [...comp]) {
+        const m = mirror[v];
+        if (m < 0) missing++;
+        else put(m, v);
+      }
+    } else if (this.state.compMode === "edge") {
+      const view = this.viewOf(o.id);
+      if (!view) return { added: 0, missing: comp.size };
+      const keyIdx = this.edgeIndex(view);
+      for (const ei of [...comp]) {
+        const e = view.edges[ei];
+        if (!e) continue;
+        const a = mirror[e[0]];
+        const b = mirror[e[1]];
+        const mi = a >= 0 && b >= 0 ? keyIdx.get(edgeKey(a, b)) : undefined;
+        if (mi === undefined) missing++;
+        else put(mi, ei);
+      }
+    } else if (this.state.compMode === "face") {
+      const mesh = o.mesh;
+      // 相手の面は「鏡の頂点に触る面」の中から探す（表は 1 回だけ作る）。
+      // 面の頂点の鍵で全面の表を作ると、25 万面では文字列がそれだけ生まれる
+      const around = mesh.vertexFaces();
+      for (const f of [...comp]) {
+        if (f >= mesh.faceCount) continue;
+        const verts = mesh.faceVerts(f);
+        const want = new Set<number>();
+        for (const v of verts) {
+          const m = mirror[v];
+          if (m < 0) break;
+          want.add(m);
+        }
+        let mf = -1;
+        if (want.size === verts.length) {
+          for (const cand of around.get([...want][0]) ?? []) {
+            const cv = mesh.faceVerts(cand);
+            if (cv.length === want.size && cv.every((v) => want.has(v))) {
+              mf = cand;
+              break;
+            }
+          }
+        }
+        if (mf < 0) missing++;
+        else put(mf, f);
+      }
+    }
+    return { added, missing };
   }
 
   /** コンポーネント選択に含まれる頂点。変形の対象を求めるのに使う。 */

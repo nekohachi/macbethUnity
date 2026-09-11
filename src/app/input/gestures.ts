@@ -355,6 +355,12 @@ export class GestureRouter {
 
   /** F ボタンを押している間 true。外（UI 側）から更新する。 */
   fHeld = false;
+  /**
+   * F のロック（`47` の T1）。長押しして**左へずらして離す**と立つ。
+   * 立っている間は `fHeld` も true のまま（矩形選択とピンチがそのまま効く）。
+   * タップで解除（フレームはしない）。
+   */
+  fLock = false;
   /** F を押しながら別の操作をしたか。離したときにフレームしないための印。 */
   fChord = false;
   /** true = 指は常にカメラ。 */
@@ -499,6 +505,13 @@ export class GestureRouter {
       const finger = e.pointerType === "touch";
       const onMesh = !(finger && this.fingerCam) && this.h.isOnMesh(p, e);
       if (!onMesh) {
+        // モデリングで SHF を立てて空白を引いたら、タンブルではなく矩形選択（足す。`47` の T4）。
+        // **空白と分かってから**入る。ハンドルの上から引く SHF + 移動 = 押し出しを潰さない
+        if (!this.h.freeDragTumbles() && this.h.shiftOn(e)) {
+          this.gesture = { mode: "tool", moved: false, sx: p.x, sy: p.y };
+          this.h.marqueeStart(p);
+          return;
+        }
         this.gesture = {
           mode: "tumble",
           live: false,

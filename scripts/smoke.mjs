@@ -9482,6 +9482,630 @@ check(
     `編集 ${Object.values(mergeMoved.edit).join(" / ")} / オブジェクトでは一覧 ${mergeObject.xformList.length} 件`,
 );
 
+/* 47a. 修飾ボタンの長押し（`47` の T1）: 本物の Shift キー。押している間だけ・左でロック・タップで解除 */
+const holdMod = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const btn = document.getElementById("modShift");
+  const r = btn.getBoundingClientRect();
+  const cx = r.x + r.width / 2;
+  const cy = r.y + r.height / 2;
+  let id = 500;
+  const fire = (type, x) =>
+    btn.dispatchEvent(
+      new PointerEvent(type, { pointerId: id, pointerType: "touch", bubbles: true, cancelable: true, clientX: x, clientY: cy }),
+    );
+  /** 押して、holdMs 待って、dx ずらして離す。途中の様子も返す */
+  const press = async (holdMs, dx) => {
+    id++;
+    fire("pointerdown", cx);
+    await wait(holdMs);
+    const during = {
+      on: app.state.modOn("shift"),
+      state: btn.dataset.state,
+      hud: document.getElementById("hudMode").textContent,
+    };
+    if (dx) fire("pointermove", cx + dx);
+    const tag = btn.querySelector(".cmod-lock");
+    const tagShown = !!tag && !tag.hidden;
+    fire("pointerup", cx + dx);
+    await wait(20);
+    return { during, tagShown, after: { on: app.state.modOn("shift"), latch: app.state.mods.shift, state: btn.dataset.state } };
+  };
+
+  app.state.mods.shift = "off";
+  app.state.heldMod = null;
+  const tap1 = await press(30, 0);
+  const tap2 = await press(30, 0);
+  const hold = await press(280, 0);
+  const holdRight = await press(280, 30);
+  const holdLeft = await press(280, -30);
+  const tapUnlock = await press(30, 0);
+  // ロック中に長押しして右で離すと解除
+  app.state.mods.shift = "on";
+  const unlockByHold = await press(280, 30);
+  app.state.mods.shift = "off";
+  app.state.heldMod = null;
+  return { tap1, tap2, hold, holdRight, holdLeft, tapUnlock, unlockByHold };
+});
+check(
+  "修飾ボタン: タップは今までどおりロックの入り切り",
+  holdMod.tap1.after.latch === "on" && holdMod.tap1.after.on && holdMod.tap2.after.latch === "off" && !holdMod.tap2.after.on,
+  `タップ → ${holdMod.tap1.after.latch} → ${holdMod.tap2.after.latch}`,
+);
+check(
+  "修飾ボタン: 長押し中だけ効いて、そのまま / 右で離せば消える",
+  holdMod.hold.during.on &&
+    holdMod.hold.during.state === "held" &&
+    holdMod.hold.during.hud.includes("SHF↓") &&
+    !holdMod.hold.after.on &&
+    holdMod.hold.after.latch === "off" &&
+    holdMod.holdRight.during.on &&
+    !holdMod.holdRight.after.on &&
+    !holdMod.holdRight.tagShown,
+  `長押し中 ${holdMod.hold.during.on}（${holdMod.hold.during.state}・HUD「${holdMod.hold.during.hud.includes("SHF↓") ? "SHF↓" : "?"}」）→ 離して ${holdMod.hold.after.on} / ` +
+    `右で離して ${holdMod.holdRight.after.on}`,
+);
+check(
+  "修飾ボタン: 左へずらして離すとロック。タップで解除。ロック中の長押しは解除",
+  holdMod.holdLeft.tagShown &&
+    holdMod.holdLeft.after.latch === "on" &&
+    holdMod.holdLeft.after.on &&
+    holdMod.tapUnlock.after.latch === "off" &&
+    holdMod.unlockByHold.after.latch === "off" &&
+    !holdMod.unlockByHold.after.on,
+  `札 ${holdMod.holdLeft.tagShown} → ロック ${holdMod.holdLeft.after.latch} → タップで ${holdMod.tapUnlock.after.latch} / ` +
+    `ロック中に長押し → ${holdMod.unlockByHold.after.latch}`,
+);
+
+/* 47b. F の長押し（`47` の T1）: 長押しして離してもフレームしない。左でロックすると矩形選択が残る */
+const holdF = await page.evaluate(
+  async ({ empty, far }) => {
+    const app = window.macbeth;
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    const keep = [...app.state.doc.objects];
+    const keepSel = app.state.selected;
+    const camBefore = app.viewport.saveLayout();
+    app.setMode("model");
+    app.state.doc.objects.length = 0;
+    const o = app.state.doc.addObject("cube");
+    app.viewport.syncAll();
+    app.state.select(o);
+    app.setCompMode("vertex");
+    app.state.comp.clear();
+    app.viewport.setView("persp");
+    app.viewport.frameSelected();
+    // フレームすれば戻る位置へ、わざとずらしておく
+    app.viewport.pan(120, 40);
+    app.refresh();
+    await wait(60);
+
+    const f = document.getElementById("btnFrame");
+    const r = f.getBoundingClientRect();
+    const cx = r.x + r.width / 2;
+    const cy = r.y + r.height / 2;
+    let id = 520;
+    const fire = (type, x) =>
+      f.dispatchEvent(
+        new PointerEvent(type, { pointerId: id, pointerType: "touch", bubbles: true, cancelable: true, clientX: x, clientY: cy }),
+      );
+    const layout = () => JSON.stringify(app.viewport.saveLayout());
+
+    // 長押し → そのまま離す: フレームしない
+    const l0 = layout();
+    id++;
+    fire("pointerdown", cx);
+    await wait(280);
+    const heldDuring = app.frameHeldForTest();
+    fire("pointerup", cx);
+    await wait(30);
+    const afterHold = { ...app.frameHeldForTest(), moved: layout() !== l0 };
+
+    // 長押し → 左 → 離す: F ロック。空白を引くと矩形選択で、F は残る
+    id++;
+    fire("pointerdown", cx);
+    await wait(280);
+    fire("pointermove", cx - 30);
+    fire("pointerup", cx - 30);
+    await wait(30);
+    const locked = app.frameHeldForTest();
+    const canvas = document.getElementById("gl");
+    const touch = (type, pid, x, y) =>
+      canvas.dispatchEvent(
+        new PointerEvent(type, {
+          pointerId: pid,
+          pointerType: "touch",
+          isPrimary: true,
+          bubbles: true,
+          cancelable: true,
+          clientX: x,
+          clientY: y,
+          buttons: type === "pointerup" ? 0 : 1,
+        }),
+      );
+    const thetaBefore = app.viewport.cam.theta;
+    touch("pointerdown", 530, empty.x, empty.y);
+    for (let i = 1; i <= 8; i++) {
+      touch("pointermove", 530, empty.x + ((far.x - empty.x) * i) / 8, empty.y + ((far.y - empty.y) * i) / 8);
+      await wait(8);
+    }
+    touch("pointerup", 530, far.x, far.y);
+    await wait(40);
+    const selected = app.state.comp.size;
+    const stillLocked = app.frameHeldForTest();
+    const thetaKept = Math.abs(app.viewport.cam.theta - thetaBefore) < 1e-9;
+
+    // ロック中のタップは解除。フレームもしない
+    const l1 = layout();
+    id++;
+    fire("pointerdown", cx);
+    await wait(30);
+    fire("pointerup", cx);
+    await wait(30);
+    const unlocked = { ...app.frameHeldForTest(), moved: layout() !== l1 };
+
+    // ふつうのタップはフレーム
+    id++;
+    fire("pointerdown", cx);
+    await wait(30);
+    fire("pointerup", cx);
+    await wait(30);
+    const framed = layout() !== l1;
+
+    app.state.comp.clear();
+    app.setCompMode("object");
+    app.state.doc.objects.length = 0;
+    app.state.doc.objects.push(...keep);
+    app.viewport.syncAll();
+    if (keepSel) app.state.select(keepSel);
+    app.viewport.restoreLayout(camBefore);
+    app.history.clear();
+    app.refresh();
+    return { heldDuring, afterHold, locked, selected, stillLocked, thetaKept, unlocked, framed };
+  },
+  { empty: EMPTY, far: at(0.9, 0.9) },
+);
+check(
+  "F: 長押し中は押している間だけ。離してもフレームしない。左でロックすると矩形選択が続けて引ける",
+  holdF.heldDuring.held &&
+    !holdF.heldDuring.lock &&
+    !holdF.afterHold.held &&
+    !holdF.afterHold.moved &&
+    holdF.locked.held &&
+    holdF.locked.lock &&
+    holdF.selected > 0 &&
+    holdF.stillLocked.lock &&
+    holdF.thetaKept &&
+    !holdF.unlocked.lock &&
+    !holdF.unlocked.held &&
+    !holdF.unlocked.moved &&
+    holdF.framed,
+  `長押し中 held ${holdF.heldDuring.held} → 離して held ${holdF.afterHold.held}・カメラ動いた ${holdF.afterHold.moved} / ` +
+    `左で lock ${holdF.locked.lock} → 矩形で ${holdF.selected} 頂点（カメラそのまま ${holdF.thetaKept}）・lock 残る ${holdF.stillLocked.lock} / ` +
+    `タップで解除 ${!holdF.unlocked.lock}（フレームしない ${!holdF.unlocked.moved}）→ ふつうのタップでフレーム ${holdF.framed}`,
+);
+
+/* 47c. 3 本指を枠に通す（`47` の T2）: 法線の枠なら縦スワイプ = N、ひねりは N まわり */
+const gestureFrame = await page.evaluate(
+  async (center) => {
+    const app = window.macbeth;
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    const keep = [...app.state.doc.objects];
+    const keepSel = app.state.selected;
+    const spaceBefore = app.state.manipSpace;
+    const camBefore = app.viewport.saveLayout();
+    app.setMode("model");
+    app.state.doc.objects.length = 0;
+    const o = app.state.doc.addObject("cube");
+    app.viewport.syncAll();
+    app.state.select(o);
+    app.setCompMode("face");
+    app.state.comp.clear();
+    let top = -1;
+    for (let f = 0; f < o.mesh.faceCount; f++) if (o.mesh.faceNormal(f)[1] > 0.9) top = f;
+    app.state.comp.add(top);
+    app.setManipSpace("normal");
+    // 斜め上から。世界の Y は画面の上に近いが、法線の枠では規則ではなく N を決め打ち
+    app.viewport.setView("persp");
+    app.viewport.frameSelected();
+    app.refresh();
+    await wait(60);
+    const labels = app.manipFrameForTest().labels.join("");
+    const corner = o.mesh.faceCorners[o.mesh.faceOffsets[top]];
+    const p0 = [...o.mesh.getPosition(corner)];
+
+    const canvas = document.getElementById("gl");
+    const fire = (type, id, x, y) =>
+      canvas.dispatchEvent(
+        new PointerEvent(type, {
+          pointerId: id,
+          pointerType: "touch",
+          isPrimary: id === 141,
+          clientX: x,
+          clientY: y,
+          buttons: type === "pointerup" ? 0 : 1,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    // 3 本を横に並べて、まっすぐ上へ 60px
+    const fingers = [
+      { x: center.x - 40, y: center.y },
+      { x: center.x, y: center.y },
+      { x: center.x + 40, y: center.y },
+    ];
+    fingers.forEach((p, i) => fire("pointerdown", 141 + i, p.x, p.y));
+    for (let step = 1; step <= 10; step++) {
+      fingers.forEach((p, i) => fire("pointermove", 141 + i, p.x, p.y - step * 6));
+      await wait(8);
+    }
+    const note = document.getElementById("hudHint").textContent;
+    fingers.forEach((p, i) => fire("pointerup", 141 + i, p.x, p.y - 60));
+    await wait(40);
+    const p1 = [...o.mesh.getPosition(corner)];
+    const swipe = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
+    const swipeLabel = app.history.undoLabel;
+    app.doUndo();
+    await wait(30);
+
+    // ひねり: 親指は左下、対の 2 本は右上（`43z-13b` と同じ持ち方）
+    app.state.comp.clear();
+    app.state.comp.add(top);
+    app.refresh();
+    const thumb = { x: center.x - 50, y: center.y + 50 };
+    const pair = [
+      { x: center.x + 43, y: center.y - 50 },
+      { x: center.x + 57, y: center.y - 43 },
+    ];
+    const turn = (p, deg) => {
+      const a = (deg * Math.PI) / 180;
+      const dx = p.x - center.x;
+      const dy = p.y - center.y;
+      return { x: center.x + dx * Math.cos(a) - dy * Math.sin(a), y: center.y + dx * Math.sin(a) + dy * Math.cos(a) };
+    };
+    const q0 = [...o.mesh.getPosition(corner)];
+    fire("pointerdown", 141, thumb.x, thumb.y);
+    fire("pointerdown", 142, pair[0].x, pair[0].y);
+    fire("pointerdown", 143, pair[1].x, pair[1].y);
+    for (let step = 1; step <= 10; step++) {
+      const deg = (40 / 10) * step;
+      const a = turn(thumb, deg);
+      const b = turn(pair[0], deg);
+      const c = turn(pair[1], deg);
+      fire("pointermove", 141, a.x, a.y);
+      fire("pointermove", 142, b.x, b.y);
+      fire("pointermove", 143, c.x, c.y);
+      await wait(8);
+    }
+    const pop = document.querySelector(".twist-pop")?.textContent ?? "";
+    fire("pointerup", 141, center.x, center.y);
+    fire("pointerup", 142, center.x, center.y);
+    fire("pointerup", 143, center.x, center.y);
+    await wait(40);
+    const q1 = [...o.mesh.getPosition(corner)];
+    const twistLabel = app.history.undoLabel;
+    app.doUndo();
+
+    app.setManipSpace(spaceBefore);
+    app.state.comp.clear();
+    app.setCompMode("object");
+    app.state.doc.objects.length = 0;
+    app.state.doc.objects.push(...keep);
+    app.viewport.syncAll();
+    if (keepSel) app.state.select(keepSel);
+    app.viewport.restoreLayout(camBefore);
+    app.history.clear();
+    app.refresh();
+    return {
+      labels, note, swipe, swipeLabel, pop, twistLabel,
+      twistY: q1[1] - q0[1],
+      twistXZ: Math.hypot(q1[0] - q0[0], q1[2] - q0[2]),
+      radiusKept: Math.abs(Math.hypot(q1[0], q1[2]) - Math.hypot(q0[0], q0[2])),
+    };
+  },
+  ON_MESH,
+);
+check(
+  "3 本指: 法線の枠なら縦スワイプで面が法線方向（+Y）に出る。x・z は変わらない",
+  gestureFrame.labels === "UVN" &&
+    gestureFrame.note.includes("N") &&
+    gestureFrame.swipe[1] > 0.05 &&
+    Math.abs(gestureFrame.swipe[0]) < 1e-6 &&
+    Math.abs(gestureFrame.swipe[2]) < 1e-6 &&
+    gestureFrame.swipeLabel === "変形",
+  `軸名 ${gestureFrame.labels} · 札「${gestureFrame.note}」/ 動いた (${gestureFrame.swipe.map((v) => v.toFixed(3)).join(", ")}) / 履歴「${gestureFrame.swipeLabel}」`,
+);
+check(
+  "3 本指: 法線の枠ならひねりは N まわり。y は変わらず、軸からの距離も保つ",
+  gestureFrame.pop.startsWith("N") &&
+    Math.abs(gestureFrame.twistY) < 1e-6 &&
+    gestureFrame.twistXZ > 0.1 &&
+    gestureFrame.radiusKept < 1e-6 &&
+    gestureFrame.twistLabel === "回転",
+  `札「${gestureFrame.pop}」/ y の変化 ${gestureFrame.twistY.toExponential(1)} · xz で ${gestureFrame.twistXZ.toFixed(3)} 動いた（半径のずれ ${gestureFrame.radiusKept.toExponential(1)}）/ 履歴「${gestureFrame.twistLabel}」`,
+);
+
+/* 47d. 対称でトポロジの操作も対称に（`47` の T3） */
+const symTopo = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const core = window.macbethCore;
+  const keep = [...app.state.doc.objects];
+  const keepSel = app.state.selected;
+  const symBefore = app.state.symX;
+  const camBefore = app.viewport.saveLayout();
+  app.setMode("model");
+  app.setManipSpace("world");
+  app.state.symX = true;
+
+  /** 全頂点に相手が居て、左右がぴったりか。 */
+  const symmetric = (o) => {
+    const map = window.macbethLevels.mirrorMapOf(o, 0, o.mesh);
+    if (!map) return { ok: false, worst: Infinity, unpaired: o.mesh.vertexCount };
+    let worst = 0;
+    let unpaired = 0;
+    for (let v = 0; v < o.mesh.vertexCount; v++) {
+      const m = map.mirror[v];
+      if (m < 0) {
+        unpaired++;
+        continue;
+      }
+      const a = o.mesh.getPosition(v);
+      const b = o.mesh.getPosition(m);
+      worst = Math.max(worst, Math.abs(a[0] + b[0]), Math.abs(a[1] - b[1]), Math.abs(a[2] - b[2]));
+    }
+    return { ok: unpaired === 0 && worst < 1e-6, worst, unpaired };
+  };
+  const fresh = (kind, name) => {
+    app.state.doc.objects.length = 0;
+    const o =
+      kind === "cube"
+        ? app.state.doc.addObject("cube")
+        : app.state.doc.addMesh(
+            core.PRIMITIVES.plane.build({ ...core.defaultParams("plane"), width: 2, height: 2, sdW: 4, sdH: 4 }),
+            name,
+          );
+    app.viewport.syncAll();
+    app.state.select(o);
+    app.viewport.frameSelected();
+    app.history.clear();
+    return o;
+  };
+  const faceAt = (o, nx) => {
+    for (let f = 0; f < o.mesh.faceCount; f++) if (o.mesh.faceNormal(f)[0] * nx > 0.9) return f;
+    return -1;
+  };
+  const vertAt = (o, x, z) => {
+    for (let v = 0; v < o.mesh.vertexCount; v++) {
+      const p = o.mesh.getPosition(v);
+      if (Math.abs(p[0] - x) < 1e-6 && Math.abs(p[2] - z) < 1e-6) return v;
+    }
+    return -1;
+  };
+  const edgeIndexOf = (o, a, b) => {
+    const view = app.viewport.viewOf(o);
+    return view.edges.findIndex(([x, y]) => (x === a && y === b) || (x === b && y === a));
+  };
+
+  // 1. +X の面を押し出し（メニュー）→ 両側に 4 面ずつ
+  let o = fresh("cube");
+  app.setCompMode("face");
+  app.state.comp.clear();
+  app.state.comp.add(faceAt(o, 1));
+  app.runEditForTest("extrude");
+  const extrude = { faces: o.mesh.faceCount, ...symmetric(o), note: document.getElementById("hudHint").textContent };
+
+  // 2. +X の面を SHF ドラッグで押し出して X に引く → 両側が外へ出る
+  o = fresh("cube");
+  app.setCompMode("face");
+  app.state.comp.clear();
+  app.state.comp.add(faceAt(o, 1));
+  app.refresh();
+  const okDrag = app.extrudeDragForTest();
+  const facesAfterDrag = o.mesh.faceCount;
+  app.dragAxisForTest(0, 0.5);
+  let maxX = 0;
+  let minX = 0;
+  for (let v = 0; v < o.mesh.vertexCount; v++) {
+    const x = o.mesh.getPosition(v)[0];
+    maxX = Math.max(maxX, x);
+    minX = Math.min(minX, x);
+  }
+  app.history.clear();
+  const shiftDrag = { okDrag, faces: facesAfterDrag, maxX, minX, ...symmetric(o) };
+
+  // 3. +X のエッジを 1 本ベベル → 両側に入る
+  o = fresh("cube");
+  app.setCompMode("edge");
+  app.state.comp.clear();
+  const ea = vertAt(o, 0.5, 0.5) >= 0 ? -1 : -1;
+  void ea;
+  // 立方体の +X・+Y の辺（z 方向）
+  let top = -1;
+  let bottom = -1;
+  for (let v = 0; v < o.mesh.vertexCount; v++) {
+    const p = o.mesh.getPosition(v);
+    if (p[0] > 0 && p[1] > 0 && p[2] > 0) top = v;
+    if (p[0] > 0 && p[1] > 0 && p[2] < 0) bottom = v;
+  }
+  app.state.comp.add(edgeIndexOf(o, top, bottom));
+  const facesBeforeBevel = o.mesh.faceCount;
+  app.bevelForTest(40);
+  const bevel = { before: facesBeforeBevel, faces: o.mesh.faceCount, ...symmetric(o) };
+
+  // 4. 平面。+X 側の X 方向の辺をマルチカット（t = 0.3）→ 左右に 1 本ずつ
+  o = fresh("plane", "Sym47");
+  app.setCompMode("edge");
+  app.state.comp.clear();
+  const f0 = o.mesh.faceCount;
+  const hintTwo = app.multicutForTest(vertAt(o, 0.5, 0), vertAt(o, 1, 0), 0.3);
+  const cutTwo = { hint: hintTwo ?? "", before: f0, faces: o.mesh.faceCount, ...symmetric(o) };
+  app.doUndo();
+  // 中心線をまたぐループ（Z 方向の辺）では 1 本だけ
+  const hintOne = app.multicutForTest(vertAt(o, 0.5, 0), vertAt(o, 0.5, 0.5), 0.3);
+  const cutOne = { hint: hintOne ?? "", faces: o.mesh.faceCount, ...symmetric(o) };
+  app.doUndo();
+
+  // 5. 両側を選んで X に引く → 押した側（+X）だけ動いて相手へ写る = 左右が離れる
+  app.setCompMode("vertex");
+  app.state.comp.clear();
+  const right = vertAt(o, 1, 0);
+  const left = vertAt(o, -1, 0);
+  app.state.comp.add(right);
+  app.state.comp.add(left);
+  app.refresh();
+  app.dragAxisForTest(0, 0.3);
+  const both = { rightX: o.mesh.getPosition(right)[0], leftX: o.mesh.getPosition(left)[0] };
+  app.doUndo();
+
+  // 6. ターゲットウェルド → 鏡の組も溶接されて頂点が 2 減る
+  const vBefore = o.mesh.vertexCount;
+  app.state.comp.clear();
+  app.state.comp.add(right);
+  app.weldForTest(right, vertAt(o, 0.5, 0));
+  const weld = { before: vBefore, after: o.mesh.vertexCount, note: document.getElementById("hudHint").textContent };
+
+  // 7. 対称オフなら片側だけ
+  app.state.symX = false;
+  o = fresh("cube");
+  app.setCompMode("face");
+  app.state.comp.clear();
+  app.state.comp.add(faceAt(o, 1));
+  app.runEditForTest("extrude");
+  const oneSide = { faces: o.mesh.faceCount };
+
+  app.state.symX = symBefore;
+  app.state.comp.clear();
+  app.setCompMode("object");
+  app.state.doc.objects.length = 0;
+  app.state.doc.objects.push(...keep);
+  app.viewport.syncAll();
+  if (keepSel) app.state.select(keepSel);
+  app.viewport.restoreLayout(camBefore);
+  app.history.clear();
+  app.refresh();
+  return { extrude, shiftDrag, bevel, cutTwo, cutOne, both, weld, oneSide };
+});
+check(
+  "対称: 押し出し（メニューと SHF ドラッグ）が両側に効いて、左右がぴったり",
+  symTopo.extrude.faces === 14 &&
+    symTopo.extrude.ok &&
+    symTopo.shiftDrag.okDrag &&
+    symTopo.shiftDrag.faces === 14 &&
+    Math.abs(symTopo.shiftDrag.maxX - 1) < 1e-6 &&
+    Math.abs(symTopo.shiftDrag.minX + 1) < 1e-6 &&
+    symTopo.shiftDrag.ok &&
+    symTopo.oneSide.faces === 10,
+  `メニュー ${symTopo.extrude.faces} 面（ずれ ${symTopo.extrude.worst.toExponential(1)}・相手なし ${symTopo.extrude.unpaired}）/ ` +
+    `SHF ドラッグ ${symTopo.shiftDrag.faces} 面 · x ${symTopo.shiftDrag.minX.toFixed(2)}〜${symTopo.shiftDrag.maxX.toFixed(2)}（ずれ ${symTopo.shiftDrag.worst.toExponential(1)}）/ ` +
+    `対称オフなら ${symTopo.oneSide.faces} 面`,
+);
+check(
+  "対称: ベベルとマルチカットも両側に。中心線をまたぐループは 1 本だけ",
+  symTopo.bevel.faces > symTopo.bevel.before + 2 &&
+    symTopo.bevel.ok &&
+    symTopo.cutTwo.hint.includes("鏡側にも") &&
+    symTopo.cutTwo.faces === symTopo.cutTwo.before + 8 &&
+    symTopo.cutTwo.ok &&
+    !symTopo.cutOne.hint.includes("鏡側にも") &&
+    symTopo.cutOne.faces === symTopo.cutTwo.before + 4 &&
+    symTopo.cutOne.ok,
+  `ベベル ${symTopo.bevel.before} → ${symTopo.bevel.faces} 面（ずれ ${symTopo.bevel.worst.toExponential(1)}）/ ` +
+    `X 方向の辺 ${symTopo.cutTwo.before} → ${symTopo.cutTwo.faces} 面「${symTopo.cutTwo.hint.replace(/<[^>]+>/g, "")}」/ ` +
+    `Z 方向の辺 → ${symTopo.cutOne.faces} 面`,
+);
+check(
+  "対称: 両側を選んで X に引くと左右が離れる。ターゲットウェルドは鏡の組も",
+  Math.abs(symTopo.both.rightX - 1.3) < 1e-6 &&
+    Math.abs(symTopo.both.leftX + 1.3) < 1e-6 &&
+    symTopo.weld.after === symTopo.weld.before - 2 &&
+    symTopo.weld.note.includes("鏡の組も"),
+  `右 ${symTopo.both.rightX.toFixed(3)} · 左 ${symTopo.both.leftX.toFixed(3)} / ` +
+    `ウェルド ${symTopo.weld.before} → ${symTopo.weld.after} 頂点「${symTopo.weld.note}」`,
+);
+
+/* 47e. SHF の吸着はスカルプトだけ。モデリングで SHF + 空白ドラッグは矩形選択（`47` の T4） */
+const shiftMarquee = await page.evaluate(
+  async ({ empty, far }) => {
+    const app = window.macbeth;
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    const keep = [...app.state.doc.objects];
+    const keepSel = app.state.selected;
+    const camBefore = app.viewport.saveLayout();
+    app.setMode("model");
+    app.state.doc.objects.length = 0;
+    const o = app.state.doc.addObject("cube");
+    app.viewport.syncAll();
+    app.state.select(o);
+    app.setCompMode("vertex");
+    app.state.comp.clear();
+    app.viewport.setView("persp");
+    app.viewport.frameSelected();
+    app.refresh();
+    await wait(60);
+    // 先に 1 つ選んでおく。SHF なので足される
+    app.state.comp.add(0);
+    app.refresh();
+
+    const canvas = document.getElementById("gl");
+    const touch = (type, x, y) =>
+      canvas.dispatchEvent(
+        new PointerEvent(type, {
+          pointerId: 540,
+          pointerType: "touch",
+          isPrimary: true,
+          bubbles: true,
+          cancelable: true,
+          clientX: x,
+          clientY: y,
+          buttons: type === "pointerup" ? 0 : 1,
+        }),
+      );
+    app.state.mods.shift = "on";
+    const thetaBefore = app.viewport.cam.theta;
+    const phiBefore = app.viewport.cam.phi;
+    touch("pointerdown", empty.x, empty.y);
+    for (let i = 1; i <= 8; i++) {
+      touch("pointermove", empty.x + ((far.x - empty.x) * i) / 8, empty.y + ((far.y - empty.y) * i) / 8);
+      await wait(8);
+    }
+    const marqueeShown = document.querySelector(".marquee")?.style.display === "block";
+    touch("pointerup", far.x, far.y);
+    await wait(40);
+    const selected = app.state.comp.size;
+    const camKept = Math.abs(app.viewport.cam.theta - thetaBefore) < 1e-9 && Math.abs(app.viewport.cam.phi - phiBefore) < 1e-9;
+    app.state.mods.shift = "off";
+
+    // SHF なしなら今までどおり回る
+    app.state.comp.clear();
+    touch("pointerdown", empty.x, empty.y);
+    for (let i = 1; i <= 8; i++) {
+      touch("pointermove", empty.x + 10 * i, empty.y);
+      await wait(8);
+    }
+    touch("pointerup", empty.x + 80, empty.y);
+    await wait(40);
+    const tumbled = Math.abs(app.viewport.cam.theta - thetaBefore) > 1e-4;
+    const snapModel = app.viewport.snappedForTest();
+
+    app.state.comp.clear();
+    app.setCompMode("object");
+    app.state.doc.objects.length = 0;
+    app.state.doc.objects.push(...keep);
+    app.viewport.syncAll();
+    if (keepSel) app.state.select(keepSel);
+    app.viewport.restoreLayout(camBefore);
+    app.history.clear();
+    app.refresh();
+    return { marqueeShown, selected, camKept, tumbled, snapModel };
+  },
+  { empty: EMPTY, far: at(0.9, 0.9) },
+);
+check(
+  "モデリング: SHF を立てて空白を引くと矩形選択（足す）。カメラは動かない。SHF なしなら回る",
+  shiftMarquee.marqueeShown && shiftMarquee.selected >= 2 && shiftMarquee.camKept && shiftMarquee.tumbled,
+  `矩形 ${shiftMarquee.marqueeShown} → ${shiftMarquee.selected} 頂点（カメラそのまま ${shiftMarquee.camKept}）/ SHF なしで回った ${shiftMarquee.tumbled}`,
+);
+
 /* 43. 例外が出ていない */
 check("例外なし", errors.length === 0, errors.join(" / "));
 

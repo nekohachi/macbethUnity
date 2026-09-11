@@ -129,7 +129,7 @@ import { BevelTool } from "./tools/bevel.js";
 import { MultiCut } from "./tools/multicut.js";
 import { Preselect } from "./tools/preselect.js";
 import { Selector } from "./tools/select.js";
-import { normalFrame, objectFrame, worldFrame, type Frame } from "./tools/frame.js";
+import { fixedAxis, nearestAxis, normalFrame, objectFrame, worldFrame, type Frame, type FrameAxis } from "./tools/frame.js";
 import { softWeights } from "./tools/softSelect.js";
 import {
   applyGestureTransform,
@@ -329,6 +329,10 @@ const SNAP_ICONS: Record<SnapKind, string> = {
 /** シェーディングごとのアイコン。 */
 /** 3 本指のひねりの刻み（度。`26` の T1）。マニピュレータの刻みとは別。 */
 const TWIST_STEP_DEG = 5;
+/** 修飾ボタンの長押し（`47` の T1）。輪と同じ 200ms。それより短ければタップ。 */
+const HOLD_MS = 200;
+/** 長押しから**左へこれだけ**ずらして離すとロック（`47` の T1）。 */
+const MOD_LOCK_PX = 24;
 
 /**
  * その頂点たちに触る面の、すべてのコーナー番号（`29` の B-T4）。
@@ -651,17 +655,65 @@ export class App {
     if (!on) this.fChord = false;
   }
 
+  /** F の押下とロックの様子（`47` の T1）。 */
+  frameHeldForTest(): { held: boolean; lock: boolean } {
+    return { held: this.fHeld, lock: this.fLock };
+  }
+
+  /**
+   * 辺 (a, b) を t で切る（`47` の T3 の通し確認）。予測線を出してから確定するので、
+   * 鏡の辺の扱いも本物と同じ道を通る。戻り値は予測線のヒント文
+   */
+  multicutForTest(a: number, b: number, t: number): string | null {
+    const o = this.state.selected;
+    const view = o ? this.viewport.viewOf(o) : undefined;
+    if (!view) return null;
+    const ei = view.edges.findIndex(([x, y]) => (x === a && y === b) || (x === b && y === a));
+    if (ei < 0) return null;
+    const hint = this.multicut.show(view, ei, t);
+    this.doMultiCut();
+    return hint;
+  }
+
+  /** SHF ドラッグの押し出し（トポロジの部分だけ。続けて `dragAxisForTest` で引く）。 */
+  extrudeDragForTest(): boolean {
+    const o = this.state.selected;
+    return !!o && this.extrudeForDrag(o);
+  }
+
+  /** ターゲットウェルド（`47` の T3）。 */
+  weldForTest(moving: number, target: number): void {
+    const o = this.state.selected;
+    if (o) this.applyTargetWeld(o, moving, target);
+  }
+
+  /** ベベルを横に `dx` px 引いて確定する（`47` の T3）。 */
+  bevelForTest(dx: number): void {
+    this.startBevel({ x: 0, y: 0 });
+    this.dragBevel({ x: dx, y: 0 });
+    this.endBevel(true);
+  }
+
   /** 通し確認から選択の同期を叩くための入口。 */
   pushSelectionToUvForTest(): void {
     this.pushSelectionToUv();
   }
   private uvSplit: UvSplit = "both";
-  /** 3 本指のジェスチャ中に固定しておくカメラ由来の値。 */
+  /**
+   * 3 本指のジェスチャ中に固定しておくカメラ由来の値と枠（`47` の T2）。
+   *
+   * 軸は**枠の 3 本から**選ぶ（`45` の T2 の `manipFrame()`。ドラッグ開始で固定）。
+   * 前はワールド軸に決め打ちだった（`26` の T1）。
+   */
   private gestureView: {
     pixelToWorld: number;
-    horizontal: Vector3;
-    /** ひねりの軸（`26` の T1）。視線にいちばん近いワールド軸。開始時に決めて固定。 */
-    viewAxis: { name: string; dir: Vector3 };
+    frame: Frame;
+    /** 枠の種類。法線の枠だけ「縦 = N、ひねり = N まわり」を決め打ちにする */
+    kind: "world" | "object" | "normal";
+    /** 画面の右・上・奥（ワールド）。開始時に控えて、途中で取り直さない */
+    right: Vector3;
+    up: Vector3;
+    forward: Vector3;
   } | null = null;
   /** 3 本指のひねりの角度を出す小さな札（`26` の T1）。 */
   private twistPop: HTMLElement | null = null;
@@ -1011,9 +1063,10 @@ export class App {
       tumble: (dx, dy, pivot, snap) =>
         pivot || snap ? this.viewport.tumbleAbout(pivot, dx, dy, snap ?? undefined) : this.viewport.tumble(dx, dy),
       tumblePivot: (p) => this.tumblePivot(p),
-      // SHF を立てて回すと標準ビューの向きに吸着（`36` の T4）
+      // SHF を立てて回すと標準ビューの向きに吸着（`36` の T4）。
+      // **スカルプトだけ**（`47` の T4）。モデリングの SHF は Maya の「選択に足す」
       snapStart: (e) =>
-        this.state.modOn("shift") || e.shiftKey
+        this.state.mode === "sculpt" && (this.state.modOn("shift") || e.shiftKey)
           ? { theta: this.viewport.cam.theta, phi: this.viewport.cam.phi }
           : null,
       pan: (dx, dy) => this.viewport.pan(dx, dy),
@@ -1046,43 +1099,6 @@ export class App {
   }
 
   /**
-   * 画面の右方向に一番近いワールド軸（X か Z）。左右スワイプの行き先。
-   * 今見ているカメラの向きで決まるので、ジェスチャ中は固定する。
-   */
-  private screenRightAxis(): Vector3 {
-    const right = new Vector3().setFromMatrixColumn(this.viewport.camera.matrix, 0);
-    return Math.abs(right.x) >= Math.abs(right.z)
-      ? new Vector3(Math.sign(right.x) || 1, 0, 0)
-      : new Vector3(0, 0, Math.sign(right.z) || 1);
-  }
-
-  /**
-   * 視線にいちばん近いワールド軸（`26` の T1）。ひねりの回転軸になる。
-   *
-   * カメラの向きと X / Y / Z の内積の絶対値がいちばん大きいものを 1 本選ぶ。
-   * 前ビューなら Z、上ビューなら Y。**必ずワールド軸で、自由軸は返さない。**
-   */
-  private screenDepthAxis(): { name: string; dir: Vector3 } {
-    const forward = new Vector3();
-    this.viewport.camera.getWorldDirection(forward);
-    const axes: Array<{ name: string; dir: Vector3 }> = [
-      { name: "X", dir: new Vector3(1, 0, 0) },
-      { name: "Y", dir: new Vector3(0, 1, 0) },
-      { name: "Z", dir: new Vector3(0, 0, 1) },
-    ];
-    let best = axes[2];
-    let dot = -1;
-    for (const a of axes) {
-      const d = Math.abs(forward.dot(a.dir));
-      if (d > dot) {
-        dot = d;
-        best = a;
-      }
-    }
-    return best;
-  }
-
-  /**
    * 3 本指で選択を動かし始める。選ぶものが無ければ false。
    * カメラには化けさせないので、呼び出し側はそのまま何もしない。
    */
@@ -1107,11 +1123,17 @@ export class App {
       cameraPosition: this.cameraPosition(),
       label: "変形",
     });
-    // カメラの向きはジェスチャ中固定。途中で軸や縮尺が変わらないようにする
+    // カメラの向きと枠はジェスチャ中固定。途中で軸や縮尺が変わらないようにする。
+    // 枠は控えではなく作り直す（スカルプトではマニピュレータを出さないので控えが古い）
+    const frame = this.computeManipFrame();
+    const cam = this.viewport.camera;
     this.gestureView = {
       pixelToWorld: this.pixelToWorldAt(pivot),
-      horizontal: this.screenRightAxis(),
-      viewAxis: this.screenDepthAxis(),
+      frame,
+      kind: frame.labels[2] === "N" ? "normal" : this.state.manipSpace === "world" ? "world" : "object",
+      right: new Vector3().setFromMatrixColumn(cam.matrix, 0).normalize(),
+      up: new Vector3().setFromMatrixColumn(cam.matrix, 1).normalize(),
+      forward: cam.getWorldDirection(new Vector3()),
     };
     this.gestureMoved = false;
     this.gestureLabel = "変形";
@@ -1127,7 +1149,7 @@ export class App {
 
     let note: string;
     if (t.kind === "rotate") {
-      // 軸はワールドの 1 本だけ（`26` の T1）。ALT なら画面の面に沿った軸へ
+      // 軸は枠の 1 本だけ（`26` の T1、`47` の T2）。ALT なら画面の面に沿った軸へ
       const axis = this.twistAxis(t.axis);
       // 5° 刻み。手のひねりをそのまま当てるとモデルが微妙に傾く
       const stepped = Math.round((t.radians * 180) / Math.PI / TWIST_STEP_DEG) * TWIST_STEP_DEG;
@@ -1151,28 +1173,24 @@ export class App {
           ? `回転 <kbd>${axis.name} ${signed}</kbd>`
           : `回転 <kbd>${axis.name} ${Math.round(tilt)}°</kbd> <kbd>${signed}</kbd>`;
     } else if (t.kind === "scale") {
-      // ALT を押しながらなら、つまんだ向きの軸だけ伸ばす（`25` の T2）
-      const axis = this.state.modOn("alt") ? this.gestureScaleAxis(t.axis) : null;
+      // ALT を押しながらなら、つまんだ向きの軸だけ伸ばす（`25` の T2）。
+      // 軸は枠の 1 本（縦につまめば上に近い本、横なら右に近い本。`47` の T2）
+      const axis = this.state.modOn("alt") ? this.gestureAxis(t.axis === "vertical" ? "up" : "right") : null;
       applyGestureTransform(drag, o, {
-        scale: axis
-          ? ([axis.x ? t.scale : 1, axis.y ? t.scale : 1, axis.z ? t.scale : 1] as [number, number, number])
-          : t.scale,
+        scale: axis ? { axis: axis.dir, index: axis.axis, factor: t.scale } : t.scale,
       });
       // つまんだ時点で「移動」ではなくなるので、UV を保つのはここでやめる
       this.preserve = null;
-      note = `スケール ${axis ? `<kbd>${axis.name}</kbd> ` : ""}<kbd>×${t.scale.toFixed(2)}</kbd>`;
-    } else if (t.axis === "vertical") {
-      // 画面の上がプラス Y
-      const amount = -t.pixels * view.pixelToWorld;
-      applyGestureTransform(drag, o, { move: new Vector3(0, amount, 0) });
-      note = `移動 <kbd>Y ${amount >= 0 ? "+" : ""}${amount.toFixed(2)}</kbd>`;
+      note = `スケール ${axis ? `<kbd>${axis.label}</kbd> ` : ""}<kbd>×${t.scale.toFixed(2)}</kbd>`;
     } else {
-      const amount = t.pixels * view.pixelToWorld;
-      const axis = view.horizontal;
-      applyGestureTransform(drag, o, { move: axis.clone().multiplyScalar(amount) });
-      const name = axis.x !== 0 ? "X" : "Z";
-      const signed = amount * (axis.x !== 0 ? axis.x : axis.z);
-      note = `移動 <kbd>${name} ${signed >= 0 ? "+" : ""}${signed.toFixed(2)}</kbd>`;
+      // 縦スワイプは画面の上に近い本（法線の枠なら常に N）、横は右に近い本（`47` の T2）
+      const axis = this.gestureAxis(t.axis === "vertical" ? "up" : "right");
+      // 画面の上がプラス
+      const amount = (t.axis === "vertical" ? -t.pixels : t.pixels) * view.pixelToWorld;
+      applyGestureTransform(drag, o, { move: axis.dir.clone().multiplyScalar(amount) });
+      // 札の量は「その軸の + 向きにいくら」
+      const signed = amount * axis.sign;
+      note = `移動 <kbd>${axis.label} ${signed >= 0 ? "+" : ""}${signed.toFixed(2)}</kbd>`;
     }
     this.gestureMoved = true;
     this.applyPreserve();
@@ -1197,18 +1215,45 @@ export class App {
   /**
    * ひねりの軸（`26` の T1・T3）。
    *
-   * ALT なしは**視線にいちばん近いワールド軸**（画面の面の中で回る）。
+   * ALT なしは**視線にいちばん近い枠の軸**（画面の面の中で回る）。
    * ALT ありは**画面の面に沿った軸**にして、手前 / 奥へ倒す。どちらの軸かは
-   * ALT + つまみと同じ規則（指の並びが縦なら画面の横に沿った軸、横なら Y）。
+   * ALT + つまみと同じ規則（指の並びが縦なら画面の横に沿った軸、横なら上に近い軸）。
+   * 向きは枠の + 向きのまま（画面での回し方向は呼ぶ側が `toward` で合わせる）。
    */
   private twistAxis(axis: "vertical" | "horizontal"): { name: string; dir: Vector3 } {
+    const which = !this.state.modOn("alt") ? "view" : axis === "horizontal" ? "up" : "right";
+    const a = this.gestureAxis(which);
+    return { name: a.label, dir: (this.gestureView?.frame ?? this.manipFrame()).axes[a.axis].clone() };
+  }
+
+  /**
+   * 3 本指の軸を枠から選ぶ（`47` の T2）。
+   *
+   *   枠           右（横スワイプ）       上（縦スワイプ）   奥（ひねり）
+   *   ワールド     画面の右に近い X / Z   Y                  視線に近い軸
+   *   オブジェクト 画面の右に近い 1 本    画面の上に近い 1 本 視線に近い 1 本
+   *   法線         U / V の右に近い方     **N（常に）**       **N（常に）**
+   *
+   * 法線の枠だけ決め打ちなのは、声が「法線方向にスワイプ・回転」だから。
+   * 面がカメラを向いていると N は視線に近く、画面の上には乗らない。規則で選ぶと
+   * N が縦スワイプに割り当たらないことがある。
+   */
+  private gestureAxis(which: "right" | "up" | "view"): FrameAxis {
     const view = this.gestureView;
-    if (!this.state.modOn("alt")) return view?.viewAxis ?? this.screenDepthAxis();
-    if (axis === "horizontal") return { name: "Y", dir: new Vector3(0, 1, 0) };
-    const right = view?.horizontal ?? this.screenRightAxis();
-    return right.x !== 0
-      ? { name: "X", dir: new Vector3(1, 0, 0) }
-      : { name: "Z", dir: new Vector3(0, 0, 1) };
+    const frame = view?.frame ?? this.manipFrame();
+    const cam = this.viewport.camera;
+    const right = view?.right ?? new Vector3().setFromMatrixColumn(cam.matrix, 0).normalize();
+    const up = view?.up ?? new Vector3().setFromMatrixColumn(cam.matrix, 1).normalize();
+    const forward = view?.forward ?? cam.getWorldDirection(new Vector3());
+    const kind = view?.kind ?? (frame.labels[2] === "N" ? "normal" : this.state.manipSpace === "world" ? "world" : "object");
+    if (kind === "normal") return which === "right" ? nearestAxis(frame, right, [0, 1]) : fixedAxis(frame, 2);
+    if (kind === "world") {
+      if (which === "right") return nearestAxis(frame, right, [0, 2]);
+      if (which === "up") return fixedAxis(frame, 1);
+      return fixedAxis(frame, nearestAxis(frame, forward).axis);
+    }
+    if (which === "view") return fixedAxis(frame, nearestAxis(frame, forward).axis);
+    return nearestAxis(frame, which === "right" ? right : up);
   }
 
   /**
@@ -1234,18 +1279,6 @@ export class App {
   private hideTwist(): void {
     this.twistPop?.remove();
     this.twistPop = null;
-  }
-
-  /**
-   * ALT + つまみの軸（`25` の T2）。
-   * 縦につまめば Y、横につまめば**カメラから見て横のワールド軸**（X か Z）。
-   */
-  private gestureScaleAxis(axis: "vertical" | "horizontal"): { name: string; x: boolean; y: boolean; z: boolean } {
-    if (axis === "vertical") return { name: "Y", x: false, y: true, z: false };
-    const right = this.gestureView?.horizontal ?? this.screenRightAxis();
-    return right.x !== 0
-      ? { name: "X", x: true, y: false, z: false }
-      : { name: "Z", x: false, y: false, z: true };
   }
 
   private endGestureTransform(): void {
@@ -1394,8 +1427,14 @@ export class App {
     return [...out];
   }
 
-  /** ドラッグ開始時に動かす対象を控える。ソフト選択と対称編集もここで決める。 */
-  private captureTarget(): DragTarget | null {
+  /**
+   * ドラッグ開始時に動かす対象を控える。ソフト選択と対称編集もここで決める。
+   *
+   * @param side 押した側（`47` の T3）。**両側が選ばれているときは押した側だけを
+   *   動かして、相手へ写す**。両側を別々に動かすと、ワールド X に引いたときに
+   *   両側が同じ向きへ動いて崩れる。ハンドルや 3 本指から始めたときは +X
+   */
+  private captureTarget(side: 1 | -1 = 1): DragTarget | null {
     const o = this.state.selected;
     if (!o) return null;
     const view = this.viewport.viewOf(o);
@@ -1415,10 +1454,19 @@ export class App {
     });
     if (soft.skipped) this.hud.toast("範囲が広すぎるのでソフト選択を省きました");
 
+    // 両側が動く組は押した側だけ残す（`47` の T3）。相手は下の `mirrorTargets` で組になる
+    const map = this.state.symX ? mirrorMapOf(o, 0, o.mesh) : null;
+    const dropOther = (v: number): boolean => {
+      if (!map) return false;
+      const m = map.mirror[v];
+      return m >= 0 && m !== v && soft.weights.has(m) && map.side[v] === -side;
+    };
+
     const verts: number[] = [];
     const weights: number[] = [];
     const world: Vector3[] = [];
     for (const [v, w] of soft.weights) {
+      if (dropOther(v)) continue;
       const p = o.mesh.getPosition(v);
       verts.push(v);
       weights.push(w);
@@ -1566,7 +1614,8 @@ export class App {
       }
     }
 
-    const target = this.captureTarget();
+    // 選んだコンポーネントの上から引いたなら、押した側が主（`47` の T3）
+    const target = this.captureTarget(handle === HANDLE_TWEAK ? this.pressedSide(o, p) : 1);
     if (!target) {
       this.startMarquee(p);
       return;
@@ -1594,6 +1643,29 @@ export class App {
     if (this.drag.kind === "move") this.beginPreserve(o, this.movedVerts(target));
     this.manipulator.hot = handle;
     this.refreshManipulator();
+  }
+
+  /**
+   * 押した点の下にあるコンポーネントが X のどちら側か（`47` の T3）。
+   * 拾えなければ +X。中心線の上（x = 0）も +X。
+   */
+  private pressedSide(o: SceneObject, p: ScreenPoint): 1 | -1 {
+    const view = this.viewport.viewOf(o);
+    if (!view) return 1;
+    const mesh = o.mesh;
+    let x = 0;
+    if (this.state.compMode === "vertex") {
+      const v = this.picker.pickVertex(view, p, 22 * TOUCH_TOLERANCE);
+      if (v >= 0) x = mesh.positions[v * 3];
+    } else if (this.state.compMode === "edge") {
+      const r = this.picker.pickEdge(view, p, 16 * TOUCH_TOLERANCE);
+      const e = r.edge >= 0 ? view.edges[r.edge] : undefined;
+      if (e) x = mesh.positions[e[0] * 3] + mesh.positions[e[1] * 3];
+    } else if (this.state.compMode === "face") {
+      const hit = this.picker.pickSurface(p);
+      if (hit && hit.object === o) x = mesh.faceCenter(hit.face)[0];
+    }
+    return x < 0 ? -1 : 1;
   }
 
   /* ---- スライド（SHF + CTL + 移動） ------------------------------------ */
@@ -2020,6 +2092,9 @@ export class App {
 
   /** Shift ドラッグの押し出し。面とエッジに対応。頂点はそのまま移動する。 */
   private extrudeForDrag(o: SceneObject): boolean {
+    // 対称なら鏡側も押し出す（`47` の T3）。押し出した先端は距離 0 で元と重なるが、
+    // 対応表は重なりを番号の順で組にするので、先端どうしが相手になる
+    this.mirrorSelectionForOp(o);
     if (this.state.compMode === "face") {
       const r = extrudeFaces(o.mesh, this.state.comp, 0);
       if (!r) return false;
@@ -2243,13 +2318,26 @@ export class App {
   }
 
   private applyTargetWeld(o: SceneObject, moving: number, target: number): void {
-    o.mesh = compact(weldVertices(o.mesh, [[moving, target]]));
+    const groups: number[][] = [[moving, target]];
+    // 対称なら鏡の組も溶接（`47` の T3）。4 つが別々の頂点のときだけ
+    // （中心線をまたぐ組は 1 つの塊になってしまう）
+    const map = this.state.symX ? mirrorMapOf(o, 0, o.mesh) : null;
+    let twice = false;
+    if (map) {
+      const mm = map.mirror[moving];
+      const mt = map.mirror[target];
+      if (mm >= 0 && mt >= 0 && new Set([moving, target, mm, mt]).size === 4) {
+        groups.push([mm, mt]);
+        twice = true;
+      }
+    }
+    o.mesh = compact(weldVertices(o.mesh, groups));
     const dropped = o.markTopologyChanged();
     this.state.comp.clear();
     this.viewport.rebuildObject(o);
     this.viewport.rebuildOverlay();
     this.refresh();
-    let note = "ターゲットウェルド";
+    let note = twice ? "ターゲットウェルド · 鏡の組も" : "ターゲットウェルド";
     if (dropped.droppedMask) note += " · マスクを破棄";
     if (dropped.droppedLevels || dropped.droppedLayers) {
       note += ` · 上位レベル ${dropped.droppedLevels} とレイヤー ${dropped.droppedLayers} を破棄`;
@@ -2363,6 +2451,8 @@ export class App {
       this.hud.toast("エッジモードでエッジを選択してから、左右にドラッグしてください");
       return;
     }
+    // 対称なら鏡のエッジも一緒にベベル（`47` の T3）
+    this.mirrorSelectionForOp(o);
     const edges = this.selectedEdgePairs(o);
     const snapshot = this.history.snapshot();
     if (!this.bevel.begin(o, edges, p.x)) return;
@@ -2412,7 +2502,7 @@ export class App {
     if (dropped.droppedLevels || dropped.droppedLayers) {
       note += ` · 上位レベル ${dropped.droppedLevels} とレイヤー ${dropped.droppedLayers} を破棄`;
     }
-    this.hud.toast(`${note}（オプションで作り直せます）`);
+    this.hud.toast(this.withSymNote(`${note}（オプションで作り直せます）`));
   }
 
   /** オプションの幅 / セグメントを動かしたとき、確定したベベルをかけ直す。 */
@@ -2473,7 +2563,7 @@ export class App {
   private computeManipFrame(): Frame {
     // 引いている最中は押した時点の枠のまま（`45` の T2）。
     // 法線の枠は選択のまわりの面を舐めるので、毎コマ作り直すわけにいかない
-    if (this.drag || this.pivotDrag) return this.manipFrameCache;
+    if (this.drag || this.pivotDrag || this.gestureDrag) return this.manipFrameCache;
     const space = this.state.manipSpace;
     const o = this.state.selected;
     if (!o || space === "world") return worldFrame();
@@ -3679,10 +3769,15 @@ export class App {
       note += ` · 上位レベル ${dropped.droppedLevels} とレイヤー ${dropped.droppedLayers} を破棄`;
     }
     if (dropped.rebased) note += " · UV の土台を取り直した";
-    this.hud.toast(note);
+    this.hud.toast(this.withSymNote(note));
   }
 
-  /** 対象を確かめる。合っていなければ理由を出して null。 */
+  /**
+   * 対象を確かめる。合っていなければ理由を出して null。
+   *
+   * **通ったら、X 対称がオンなら選択を鏡へ写す**（`47` の T3）。トポロジの操作は
+   * 全部ここを通ってから選択を読むので、ここが 1 か所になる。
+   */
   private requireComponents(mode: CompMode, least = 1): SceneObject | null {
     const o = this.state.selected;
     const name = { object: "オブジェクト", vertex: "頂点", edge: "エッジ", face: "フェース" }[mode];
@@ -3690,7 +3785,44 @@ export class App {
       this.hud.toast(`${name}モードで${least > 1 ? `${least} つ以上` : ""}選択してから実行してください`);
       return null;
     }
+    this.mirrorSelectionForOp(o);
     return o;
+  }
+
+  /**
+   * トポロジの操作の前に、選択を鏡へ写す（`47` の T3）。X 対称がオフなら何もしない。
+   *
+   * 相手が 1 つも見つからなければ今までどおり片側だけに効かせて、`symOneSided` を
+   * 立てる（操作の言い添えに「鏡の相手が見つからず、片側だけ」と足す。黙って片側にしない）。
+   *
+   * @returns 写す前の選択に戻す手。写さなかったら null
+   */
+  private mirrorSelectionForOp(o: SceneObject): (() => void) | null {
+    this.symOneSided = false;
+    this.lastMirrorRestore = null;
+    if (!this.state.symX || this.state.compMode === "object" || !this.state.comp.size) return null;
+    const before = new Set(this.state.comp);
+    const r = this.selector.mirrorSelection(o);
+    if (r.added === 0) {
+      if (r.missing > 0) this.symOneSided = true;
+      return null;
+    }
+    this.lastMirrorRestore = () => {
+      this.state.comp = before;
+    };
+    return this.lastMirrorRestore;
+  }
+
+  /** 直前の操作で選択を鏡へ写さなかった（相手が無かった）印。言い添えに使う。 */
+  private symOneSided = false;
+  /** 直前に写した選択を元に戻す手（ブリッジが 4 組で壊れたときに片側へ戻す）。 */
+  private lastMirrorRestore: (() => void) | null = null;
+
+  /** 言い添えに「片側だけ」を足す。 */
+  private withSymNote(note: string): string {
+    if (!this.symOneSided) return note;
+    this.symOneSided = false;
+    return `${note} · 鏡の相手が見つからず、片側だけ`;
   }
 
   private doExtrudeFaces(): void {
@@ -3789,6 +3921,8 @@ export class App {
       return;
     }
     const threshold = this.state.vertexOpts.mergeDist;
+    // 選択の中だけをマージするときは、鏡側も入れる（`47` の T3）
+    if (this.state.comp.size >= 2) this.mirrorSelectionForOp(o);
     const scope = this.state.comp.size >= 2 ? [...this.state.comp] : undefined;
     const r = mergeByDistance(o.mesh, threshold, scope);
     if (!r) {
@@ -3885,7 +4019,14 @@ export class App {
     const view = this.viewport.viewOf(o);
     if (!view) return;
     const edges = [...this.state.comp].map((i) => view.edges[i]).filter(Boolean);
-    const r = bridgeEdges(o.mesh, edges, this.state.bridgeSegments);
+    let r = bridgeEdges(o.mesh, edges, this.state.bridgeSegments);
+    // 鏡へ写して 4 組になって繋げなかったら、片側だけに戻してもう一度（`47` の T3）
+    if (!r && this.lastMirrorRestore) {
+      this.lastMirrorRestore();
+      this.lastMirrorRestore = null;
+      this.symOneSided = true;
+      r = bridgeEdges(o.mesh, [...this.state.comp].map((i) => view.edges[i]).filter(Boolean), this.state.bridgeSegments);
+    }
     if (!r) {
       this.hud.toast("ブリッジできません（境界エッジの 2 列を同じ本数だけ選んでください）");
       return;
@@ -6055,37 +6196,146 @@ export class App {
     ];
   }
 
+  /**
+   * 修飾ボタン（SHF / CTL / ALT / F）。**本物の Shift キーと同じ使い心地**（`47` の T1）。
+   *
+   *   タップ            ロックの入り切り（今までどおり。ロック中のタップで解除）
+   *   長押し（200ms〜） 押している間だけ効く。**離せば消える**（右へずれても）
+   *   長押し → 左へ 24px 以上ずらして離す   ロック（がっつり。複数選択に使う）
+   *
+   * 「次の 1 回だけ」は作らない（声で「入れない方が自然」と決まった）。
+   * F も同じ形。タップ = フレーム、長押し = 押している間だけ（矩形選択・ピンチ）、
+   * 左で F ロック。**長押しして離してもフレームはしない**（やめたのに飛ぶと驚く）。
+   */
   private buildCluster(): void {
-    // オンとオフの 2 段階だけ。使っても消えないので、消すのはもう一度押したとき
-    const cycle = (name: "shift" | "ctrl" | "alt") => {
-      this.state.mods[name] = this.state.mods[name] === "off" ? "on" : "off";
-      this.syncModButtons();
-      this.hud.refreshStats();
-    };
-    byId("modShift").addEventListener("click", () => cycle("shift"));
-    byId("modCtrl").addEventListener("click", () => cycle("ctrl"));
-    byId("modAlt").addEventListener("click", () => cycle("alt"));
+    for (const [name, id] of [
+      ["shift", "modShift"],
+      ["ctrl", "modCtrl"],
+      ["alt", "modAlt"],
+    ] as const) {
+      this.bindHoldButton(byId(id), {
+        tap: () => {
+          this.state.mods[name] = this.state.mods[name] === "off" ? "on" : "off";
+        },
+        hold: () => {
+          this.state.heldMod = name;
+        },
+        release: (lock) => {
+          if (this.state.heldMod === name) this.state.heldMod = null;
+          // 右も真ん中も「離したら消える」。ロック中に長押しして離しても解除
+          this.state.mods[name] = lock ? "on" : "off";
+        },
+        look: () => (this.state.heldMod === name ? "held" : this.state.mods[name]),
+      });
+    }
 
-    // F は押しっぱなしで効く修飾。タップならフレーム
-    const f = byId("btnFrame");
-    f.addEventListener("touchstart", (e) => e.preventDefault(), { passive: false });
-    f.addEventListener("pointerdown", (e) => {
-      // 押している指を追い続ける。合成した入力では捕まえられないことがある
-      try {
-        f.setPointerCapture(e.pointerId);
-      } catch {
-        /* 捕まえられなくても、離した合図は届く */
-      }
-      this.fHeld = true;
-    });
-    for (const t of ["pointerup", "pointercancel"] as const) {
-      f.addEventListener(t, () => {
-        if (!this.fHeld) return;
+    // F。押した瞬間から効く（矩形選択とピンチの分岐に使う）ので `hold` は見た目だけ
+    this.bindHoldButton(byId("btnFrame"), {
+      down: () => {
+        this.fHeld = true;
+      },
+      tap: () => {
+        if (this.fLock) {
+          // ロック中のタップは解除。フレームはしない
+          this.fLock = false;
+          this.fHeld = false;
+          this.fChord = false;
+          return;
+        }
         this.fHeld = false;
         if (!this.fChord) this.viewport.frameSelected();
         this.fChord = false;
-      });
-    }
+      },
+      hold: () => {},
+      release: (lock) => {
+        this.fLock = lock;
+        this.fHeld = lock;
+        this.fChord = false;
+      },
+      look: () => (this.fLock ? "on" : this.fHeld ? "held" : "off"),
+    });
+  }
+
+  /**
+   * 長押しの判定を 1 つのボタンに付ける。
+   *
+   * `HOLD_MS` より短ければ `tap`。それより長ければ `hold` を呼び、離したときに
+   * `release(lock)`（押した点から `MOD_LOCK_PX` 以上左なら lock）。
+   * 左へずらしている間は「← ロック」の札をボタンの左に出す。
+   */
+  private bindHoldButton(
+    button: HTMLElement,
+    h: {
+      down?: () => void;
+      tap: () => void;
+      hold: () => void;
+      release: (lock: boolean) => void;
+      look: () => string;
+    },
+  ): void {
+    let pointer = -1;
+    let x0 = 0;
+    let held = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const tag = el("span", "cmod-lock", "← ロック");
+    tag.hidden = true;
+    button.appendChild(tag);
+    const sync = () => {
+      button.dataset.state = h.look();
+      this.syncModButtons();
+      this.hud.refreshStats();
+    };
+    const clearTimer = () => {
+      if (timer !== null) clearTimeout(timer);
+      timer = null;
+    };
+    const finish = (e: PointerEvent, cancelled: boolean) => {
+      if (e.pointerId !== pointer) return;
+      pointer = -1;
+      clearTimer();
+      tag.hidden = true;
+      if (!held) h.tap();
+      else h.release(!cancelled && x0 - e.clientX >= MOD_LOCK_PX);
+      held = false;
+      sync();
+    };
+
+    button.addEventListener("touchstart", (e) => e.preventDefault(), { passive: false });
+    button.addEventListener("pointerdown", (e) => {
+      if (pointer >= 0) return;
+      pointer = e.pointerId;
+      x0 = e.clientX;
+      held = false;
+      // 押している指を追い続ける。合成した入力では捕まえられないことがある
+      try {
+        button.setPointerCapture(e.pointerId);
+      } catch {
+        /* 捕まえられなくても、離した合図は届く */
+      }
+      h.down?.();
+      sync();
+      timer = setTimeout(() => {
+        timer = null;
+        held = true;
+        h.hold();
+        navigator.vibrate?.(6);
+        sync();
+      }, HOLD_MS);
+    });
+    button.addEventListener("pointermove", (e) => {
+      if (e.pointerId !== pointer || !held) return;
+      tag.hidden = x0 - e.clientX < MOD_LOCK_PX;
+    });
+    button.addEventListener("pointerup", (e) => finish(e, false));
+    button.addEventListener("pointercancel", (e) => finish(e, true));
+    // キーボードの Enter / Space と、確認スクリプトの `.click()` は pointer の
+    // 合図が来ない（`detail` が 0）。**そのときだけ**タップとして扱う。
+    // 指やマウスの click は pointerup のあとにも来るので、拾うと 2 回入り切りする
+    button.addEventListener("click", (e) => {
+      if (e.detail !== 0 || pointer >= 0) return;
+      h.tap();
+      sync();
+    });
   }
 
   /** F の押下状態は GestureRouter が持つ（矩形選択とピンチの分岐に使う）。 */
@@ -6101,6 +6351,12 @@ export class App {
   private set fChord(v: boolean) {
     this.router.fChord = v;
   }
+  private get fLock(): boolean {
+    return this.router.fLock;
+  }
+  private set fLock(v: boolean) {
+    this.router.fLock = v;
+  }
 
   private syncModButtons(): void {
     for (const [name, id] of [
@@ -6108,8 +6364,9 @@ export class App {
       ["ctrl", "modCtrl"],
       ["alt", "modAlt"],
     ] as const) {
-      byId(id).dataset.state = this.state.mods[name];
+      byId(id).dataset.state = this.state.heldMod === name ? "held" : this.state.mods[name];
     }
+    byId("btnFrame").dataset.state = this.fLock ? "on" : this.fHeld ? "held" : "off";
   }
 
   /* ---- キーボード ------------------------------------------------------ */
