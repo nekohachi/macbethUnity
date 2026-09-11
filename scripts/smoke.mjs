@@ -10106,6 +10106,225 @@ check(
   `矩形 ${shiftMarquee.marqueeShown} → ${shiftMarquee.selected} 頂点（カメラそのまま ${shiftMarquee.camKept}）/ SHF なしで回った ${shiftMarquee.tumbled}`,
 );
 
+/* 48a. E 書き出し（`48`）: glTF に焼いた絵を埋める / テクスチャセットを ZIP で出す */
+const exportSet = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const core = window.macbethCore;
+  const keep = [...app.state.doc.objects];
+  const keepSel = app.state.selected;
+  const camBefore = app.viewport.saveLayout();
+  app.setMode("model");
+  app.state.doc.objects.length = 0;
+  const o = app.state.doc.addMesh(
+    core.PRIMITIVES.sphere.build({ ...core.defaultParams("sphere"), sdAxis: 12, sdHeight: 8 }),
+    "Head",
+  );
+  app.viewport.syncAll();
+  app.state.select(o);
+  app.setMode("sculpt");
+  await app.levelForTest("add");
+  app.viewport.frameSelected();
+  app.refresh();
+  app.history.clear();
+  await new Promise((r) => setTimeout(r, 100));
+
+  // 512 で、法線 + 高さ + AO + 曲率
+  await app.bakeForTest("size", 512);
+  for (const m of ["ao", "curvature"]) await app.bakeForTest("map", m, true);
+  await app.bakeForTest("samples", 4);
+  await app.bakeForTest("bake");
+  const maps = app.bakeInfoForTest().maps;
+
+  /** 落ちてきたファイルを捕まえる。blob の URL は 2 秒で捨てられるのでその場で読む */
+  const realPicker = window.showSaveFilePicker;
+  const realClick = HTMLAnchorElement.prototype.click;
+  const grab = async (run) => {
+    window.showSaveFilePicker = undefined;
+    const got = [];
+    HTMLAnchorElement.prototype.click = function () {
+      got.push({ name: this.download, bytes: fetch(this.href).then((r) => r.arrayBuffer()) });
+    };
+    await run();
+    HTMLAnchorElement.prototype.click = realClick;
+    window.showSaveFilePicker = realPicker;
+    return Promise.all(got.map(async (g) => ({ name: g.name, bytes: new Uint8Array(await g.bytes) })));
+  };
+
+  /** .glb を JSON とバイナリに戻す */
+  const readGlb = (bytes) => {
+    const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const magic = dv.getUint32(0, true) === 0x46546c67;
+    let at = 12;
+    let json = null;
+    let bin = null;
+    while (at < bytes.byteLength) {
+      const length = dv.getUint32(at, true);
+      const kind = dv.getUint32(at + 4, true);
+      const body = bytes.subarray(at + 8, at + 8 + length);
+      if (kind === 0x4e4f534a) json = JSON.parse(new TextDecoder().decode(body));
+      else bin = body;
+      at += 8 + length;
+    }
+    return { magic, json, bin };
+  };
+
+  /** ZIP の中央ディレクトリから名前と大きさを読む */
+  const readZip = (bytes) => {
+    const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const end = bytes.byteLength - 22;
+    const ok = dv.getUint32(end, true) === 0x06054b50;
+    const count = dv.getUint16(end + 8, true);
+    let at = dv.getUint32(end + 16, true);
+    const entries = [];
+    for (let i = 0; i < count; i++) {
+      const nameLen = dv.getUint16(at + 28, true);
+      const size = dv.getUint32(at + 24, true);
+      const name = new TextDecoder().decode(bytes.subarray(at + 46, at + 46 + nameLen));
+      entries.push({ name, size });
+      at += 46 + nameLen + dv.getUint16(at + 30, true) + dv.getUint16(at + 32, true);
+    }
+    return { ok, entries };
+  };
+
+  // 1. glTF + 焼いた絵
+  const glbFiles = await grab(() => app.exportForTest("glbMaps"));
+  const glb = readGlb(glbFiles[0].bytes);
+  const material = glb.json.materials[glb.json.meshes[0].primitives[0].material];
+  const normalImage = glb.json.images[glb.json.textures[material.normalTexture.index].source];
+  const view = glb.json.bufferViews[normalImage.bufferView];
+  const png = glb.bin.subarray(view.byteOffset ?? 0, (view.byteOffset ?? 0) + view.byteLength);
+  const pngOk = png[0] === 0x89 && png[1] === 0x50 && png[2] === 0x4e && png[3] === 0x47;
+  const pngWidth = (png[16] << 24) | (png[17] << 16) | (png[18] << 8) | png[19];
+
+  // **埋めた絵の向き**（`48` の T2 の「確かめること」）。
+  // 焼いた配列は下から上（行 y が v）、PNG は上から下。glTF は「(0,0) が画像の左上」で、
+  // 書き出しでは V をひっくり返しているので、
+  // **PNG の行 (size-1-y) が、焼いた配列の行 y** になっていれば全部つながる
+  const bitmap = await createImageBitmap(new Blob([png], { type: "image/png" }));
+  const canvas = document.createElement("canvas");
+  canvas.width = pngWidth;
+  canvas.height = pngWidth;
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(bitmap, 0, 0);
+  const pixels = ctx.getImageData(0, 0, pngWidth, pngWidth).data;
+  const baked = o.bakeResult;
+  let checked = 0;
+  let matched = 0;
+  let flippedMatch = 0;
+  for (let t = 0; t < baked.coverage.length && checked < 300; t += 997) {
+    if (baked.coverage[t] !== 1) continue;
+    const x = t % pngWidth;
+    const y = Math.floor(t / pngWidth);
+    const up = ((pngWidth - 1 - y) * pngWidth + x) * 4;
+    const down = (y * pngWidth + x) * 4;
+    checked++;
+    // 緑（従法線の向き）で見る。ここが食い違うと法線マップが上下逆さに貼られる
+    if (pixels[up + 1] === baked.normal[t * 4 + 1]) matched++;
+    if (pixels[down + 1] === baked.normal[t * 4 + 1]) flippedMatch++;
+  }
+
+  // 2. テクスチャセット一式
+  const zipFiles = await grab(() => app.exportForTest("textureSet"));
+  const zip = readZip(zipFiles[0].bytes);
+
+  // 3. 彫ってから（`古` のまま）書き出すと、焼き直してから出る
+  const pane = document.getElementById("pane3d").getBoundingClientRect();
+  const gl = document.getElementById("gl");
+  const cx = pane.left + pane.width / 2;
+  const cy = pane.top + pane.height / 2;
+  const ev = (type, x, y) =>
+    new PointerEvent(type, {
+      pointerId: 97, pointerType: "pen", bubbles: true, cancelable: true,
+      clientX: x, clientY: y, pressure: 0.9, buttons: type === "pointerup" ? 0 : 1,
+    });
+  gl.dispatchEvent(ev("pointerdown", cx - 20, cy));
+  for (let i = 1; i <= 10; i++) gl.dispatchEvent(ev("pointermove", cx - 20 + i * 4, cy));
+  gl.dispatchEvent(ev("pointerup", cx + 20, cy));
+  await new Promise((r) => setTimeout(r, 80));
+  const badgeOf = () => {
+    app.renderToolColumn();
+    const b = document.querySelector('#dockLeft .ibtn[data-group="bake"] .badge');
+    return b ? b.textContent : "";
+  };
+  const badgeBefore = badgeOf();
+  await grab(() => app.exportForTest("textureSet"));
+  const staleNote = document.getElementById("hudHint").textContent;
+  const badgeAfter = badgeOf();
+
+  // 4. 焼いていないオブジェクトは断る
+  const fresh = app.state.doc.addMesh(core.PRIMITIVES.cube.build(core.defaultParams("cube")), "Bare");
+  app.viewport.syncAll();
+  app.state.select(fresh);
+  await app.exportForTest("glbMaps");
+  const refused = document.getElementById("hudHint").textContent;
+
+  o.bakeResult = null;
+  o.bake = null;
+  app.setMode("model");
+  app.state.doc.objects.length = 0;
+  app.state.doc.objects.push(...keep);
+  app.viewport.syncAll();
+  if (keepSel) app.state.select(keepSel);
+  app.viewport.restoreLayout(camBefore);
+  app.history.clear();
+  app.refresh();
+  return {
+    maps,
+    glbName: glbFiles[0].name,
+    glbMagic: glb.magic,
+    images: glb.json.images.length,
+    textures: glb.json.textures.length,
+    materials: glb.json.materials.length,
+    hasNormalTexture: !!material.normalTexture,
+    hasOcclusion: !!material.occlusionTexture,
+    hasTangent: glb.json.meshes[0].primitives[0].attributes.TANGENT !== undefined,
+    pngOk, pngWidth, checked, matched, flippedMatch,
+    zipName: zipFiles[0].name,
+    zipOk: zip.ok,
+    zipNames: zip.entries.map((e) => e.name),
+    zipBytes: zipFiles[0].bytes.length,
+    badgeBefore, badgeAfter, staleNote, refused,
+  };
+});
+check(
+  "glTF + 焼いた絵: 法線と AO が .glb の中に入り、接線も出る",
+  exportSet.glbName === "Head.glb" &&
+    exportSet.glbMagic &&
+    exportSet.images === 2 &&
+    exportSet.textures === 2 &&
+    exportSet.hasNormalTexture &&
+    exportSet.hasOcclusion &&
+    exportSet.hasTangent &&
+    exportSet.pngOk &&
+    exportSet.pngWidth === 512,
+  `${exportSet.glbName} — 画像 ${exportSet.images} 枚・テクスチャ ${exportSet.textures}・` +
+    `法線 ${exportSet.hasNormalTexture}・AO ${exportSet.hasOcclusion}・接線 ${exportSet.hasTangent} / ` +
+    `埋まった PNG ${exportSet.pngWidth}px（署名 ${exportSet.pngOk}）`,
+);
+check(
+  "埋めた法線マップの向きが合っている（PNG の下が v = 0。glTF へは V を返して渡す）",
+  exportSet.checked > 50 && exportSet.matched === exportSet.checked && exportSet.flippedMatch < exportSet.checked,
+  `${exportSet.checked} テクセルを照合 — そのまま ${exportSet.matched} · 逆さ ${exportSet.flippedMatch}`,
+);
+check(
+  "テクスチャセット一式: .glb と焼いた枚数ぶんの PNG が、名前の規則どおり入る",
+  exportSet.zipName === "Head.zip" &&
+    exportSet.zipOk &&
+    exportSet.zipNames[0] === "Head.glb" &&
+    exportSet.zipNames.length === exportSet.maps.length + 1 &&
+    exportSet.maps.every((m) => exportSet.zipNames.includes(`Head_${m}.png`)),
+  `${exportSet.zipName}（${(exportSet.zipBytes / 1024 / 1024).toFixed(1)}MB）中身 ${exportSet.zipNames.join(" / ")}`,
+);
+check(
+  "書き出しの前に焼き具合を見る: 古ければ焼き直し、焼いていなければ断る",
+  exportSet.badgeBefore === "古" &&
+    exportSet.badgeAfter === "済" &&
+    exportSet.staleNote.includes("焼き直して") &&
+    exportSet.refused.includes("焼く"),
+  `バッジ 「${exportSet.badgeBefore}」→「${exportSet.badgeAfter}」/ ` +
+    `トースト「${exportSet.staleNote}」/ 焼いていないもの「${exportSet.refused}」`,
+);
+
 /* 43. 例外が出ていない */
 check("例外なし", errors.length === 0, errors.join(" / "));
 

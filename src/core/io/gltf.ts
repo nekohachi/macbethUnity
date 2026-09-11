@@ -11,7 +11,21 @@
  */
 import { Mesh } from "../mesh.js";
 import { UV_SET } from "../uv/recipe.js";
+import { bakeFrames, type BakeFrames } from "../bake.js";
 import type { SceneObject } from "../document.js";
+
+/**
+ * ノードに添える焼いた絵（`48` の T2）。**PNG のバイト列**。
+ *
+ * PNG にするのは app（canvas を使う）。ここは受け取って詰めるだけ。
+ * glTF に置き場があるのはこの 2 つだけで、曲率や厚みは ZIP の中の PNG で渡す。
+ */
+export interface GltfMaps {
+  /** 接空間の法線マップ。`normalTexture` に入る */
+  normal?: Uint8Array;
+  /** AO。`occlusionTexture` に入る（glTF は赤だけを見るので灰色の PNG でよい） */
+  occlusion?: Uint8Array;
+}
 
 /** 書き出す 1 つ分。 */
 export interface GltfNode {
@@ -21,6 +35,11 @@ export interface GltfNode {
   /** クォータニオン (x, y, z, w)。 */
   rotation: [number, number, number, number];
   scale: [number, number, number];
+  /**
+   * 焼いた絵（`48` の T2）。付けると**このノード専用のマテリアル**ができて、
+   * 接線（TANGENT）も一緒に出る。無ければ今までどおり灰色のマテリアルを共有する。
+   */
+  maps?: GltfMaps;
 }
 
 export interface GltfOptions {
@@ -39,10 +58,19 @@ export interface GltfOptions {
 function buildPrimitive(
   mesh: Mesh,
   smoothAngle: number,
-): { position: Float32Array; normal: Float32Array; uv: Float32Array | null; index: Uint32Array } {
+  frames: BakeFrames | null,
+): {
+  position: Float32Array;
+  normal: Float32Array;
+  uv: Float32Array | null;
+  tangent: Float32Array | null;
+  index: Uint32Array;
+} {
   const faceNormals = mesh.faceNormals();
   const uvSet = mesh.uvSets.get(UV_SET) ?? null;
-  const limit = Math.cos((Math.max(0, Math.min(180, smoothAngle)) * Math.PI) / 180);
+  // 絵を添えるときは**焼いたときと同じ接空間**で出す（`48` の T2）。
+  // 法線マップは「なめらかな法線」に対して焼いてあるので、ここで角を割ると二重にかかる
+  const limit = frames ? -2 : Math.cos((Math.max(0, Math.min(180, smoothAngle)) * Math.PI) / 180);
 
   // 頂点ごとの「滑らかな法線」。角度が開いている面はそこに混ぜない
   const smooth = new Float32Array(mesh.vertexCount * 3);
@@ -64,6 +92,7 @@ function buildPrimitive(
   const position: number[] = [];
   const normal: number[] = [];
   const uv: number[] = [];
+  const tangent: number[] = [];
   const index: number[] = [];
   const seen = new Map<string, number>();
 
@@ -76,10 +105,15 @@ function buildPrimitive(
       faceNormals[f * 3 + 1] * smooth[v * 3 + 1] +
       faceNormals[f * 3 + 2] * smooth[v * 3 + 2];
     const hard = dot < limit;
-    const n: [number, number, number] = hard
-      ? [faceNormals[f * 3], faceNormals[f * 3 + 1], faceNormals[f * 3 + 2]]
-      : [smooth[v * 3], smooth[v * 3 + 1], smooth[v * 3 + 2]];
-    const t: [number, number] = uvSet ? [uvSet[corner * 2], uvSet[corner * 2 + 1]] : [0, 0];
+    const n: [number, number, number] = frames
+      ? [frames.normal[v * 3], frames.normal[v * 3 + 1], frames.normal[v * 3 + 2]]
+      : hard
+        ? [faceNormals[f * 3], faceNormals[f * 3 + 1], faceNormals[f * 3 + 2]]
+        : [smooth[v * 3], smooth[v * 3 + 1], smooth[v * 3 + 2]];
+    // **V をひっくり返す**（`48` の T2）。このアプリの UV は下から上、
+    // glTF は「(0,0) が画像の左上」。焼いた PNG も上が v = 1 なので、
+    // ここで返しておくと **同じ PNG が .glb の中でも単体でも正しく貼れる**
+    const t: [number, number] = uvSet ? [uvSet[corner * 2], 1 - uvSet[corner * 2 + 1]] : [0, 0];
     const key = `${v}|${n[0].toFixed(4)},${n[1].toFixed(4)},${n[2].toFixed(4)}|${t[0].toFixed(6)},${t[1].toFixed(6)}`;
     const found = seen.get(key);
     if (found !== undefined) return found;
@@ -87,6 +121,10 @@ function buildPrimitive(
     position.push(mesh.positions[v * 3], mesh.positions[v * 3 + 1], mesh.positions[v * 3 + 2]);
     normal.push(n[0], n[1], n[2]);
     uv.push(t[0], t[1]);
+    // glTF の TANGENT は VEC4。w は従法線の向き（`B = w × (N × T)`）
+    if (frames) {
+      tangent.push(frames.tangent[v * 3], frames.tangent[v * 3 + 1], frames.tangent[v * 3 + 2], frames.sign[v]);
+    }
     seen.set(key, at);
     return at;
   };
@@ -104,6 +142,7 @@ function buildPrimitive(
     position: Float32Array.from(position),
     normal: Float32Array.from(normal),
     uv: uvSet ? Float32Array.from(uv) : null,
+    tangent: frames && uvSet ? Float32Array.from(tangent) : null,
     index: Uint32Array.from(index),
   };
 }
@@ -152,12 +191,12 @@ export function writeGlb(nodes: GltfNode[], options: GltfOptions = {}): Uint8Arr
 
   const addAccessor = (
     data: Float32Array | Uint32Array,
-    type: "SCALAR" | "VEC2" | "VEC3",
+    type: "SCALAR" | "VEC2" | "VEC3" | "VEC4",
     componentType: number,
     target: number,
   ): number => {
     const view = addView(new Uint8Array(data.buffer, data.byteOffset, data.byteLength), target);
-    const size = type === "SCALAR" ? 1 : type === "VEC2" ? 2 : 3;
+    const size = type === "SCALAR" ? 1 : type === "VEC2" ? 2 : type === "VEC3" ? 3 : 4;
     const count = data.length / size;
     const min: number[] = new Array(size).fill(Infinity);
     const max: number[] = new Array(size).fill(-Infinity);
@@ -174,17 +213,57 @@ export function writeGlb(nodes: GltfNode[], options: GltfOptions = {}): Uint8Arr
 
   const meshes: Array<Record<string, unknown>> = [];
   const gltfNodes: Array<Record<string, unknown>> = [];
+  const images: Array<Record<string, unknown>> = [];
+  const textures: Array<Record<string, unknown>> = [];
+  const materials: Array<Record<string, unknown>> = [];
+
+  /** PNG を 1 枚詰めて、テクスチャの番号を返す。 */
+  const addTexture = (png: Uint8Array, name: string): number => {
+    const view = addView(png);
+    images.push({ name, mimeType: "image/png", bufferView: view });
+    textures.push({ source: images.length - 1, sampler: 0 });
+    return textures.length - 1;
+  };
+
+  /** 焼いた絵の付いたマテリアルを 1 つ作る。 */
+  const addMaterial = (node: GltfNode): number => {
+    const material: Record<string, unknown> = {
+      name: node.name,
+      pbrMetallicRoughness: { baseColorFactor: [0.75, 0.78, 0.81, 1], metallicFactor: 0, roughnessFactor: 0.7 },
+      doubleSided: true,
+    };
+    if (node.maps?.normal) material.normalTexture = { index: addTexture(node.maps.normal, `${node.name}_normal`) };
+    if (node.maps?.occlusion) material.occlusionTexture = { index: addTexture(node.maps.occlusion, `${node.name}_ao`) };
+    materials.push(material);
+    return materials.length - 1;
+  };
+
+  // 1 つも絵が無ければ、今までどおり灰色のマテリアルを共有する
+  const anyMaps = nodes.some((n) => n.maps?.normal || n.maps?.occlusion);
+  if (!anyMaps) {
+    materials.push({
+      name: "macbeth",
+      pbrMetallicRoughness: { baseColorFactor: [0.75, 0.78, 0.81, 1], metallicFactor: 0, roughnessFactor: 0.7 },
+      doubleSided: true,
+    });
+  }
 
   nodes.forEach((node) => {
-    const prim = buildPrimitive(node.mesh, smoothAngle);
+    const hasMaps = !!(node.maps?.normal || node.maps?.occlusion);
+    const uvSet = node.mesh.uvSets.get(UV_SET) ?? null;
+    // 絵があるなら、焼いたときと同じ接空間を出す（`44` の `buildFrames` と同じ式）
+    const frames = hasMaps && uvSet ? bakeFrames(node.mesh, uvSet) : null;
+    const prim = buildPrimitive(node.mesh, smoothAngle, frames);
     const attributes: Record<string, number> = {
       // 34962 = ARRAY_BUFFER、34963 = ELEMENT_ARRAY_BUFFER
       POSITION: addAccessor(prim.position, "VEC3", 5126, 34962),
       NORMAL: addAccessor(prim.normal, "VEC3", 5126, 34962),
     };
     if (prim.uv) attributes.TEXCOORD_0 = addAccessor(prim.uv, "VEC2", 5126, 34962);
+    if (prim.tangent) attributes.TANGENT = addAccessor(prim.tangent, "VEC4", 5126, 34962);
     const indices = addAccessor(prim.index, "SCALAR", 5125, 34963);
-    meshes.push({ name: node.name, primitives: [{ attributes, indices, material: 0, mode: 4 }] });
+    const material = hasMaps ? addMaterial(node) : anyMaps ? addMaterial({ ...node, maps: undefined }) : 0;
+    meshes.push({ name: node.name, primitives: [{ attributes, indices, material, mode: 4 }] });
     gltfNodes.push({
       name: node.name,
       mesh: meshes.length - 1,
@@ -194,27 +273,23 @@ export function writeGlb(nodes: GltfNode[], options: GltfOptions = {}): Uint8Arr
     });
   });
 
-  const json = {
+  const json: Record<string, unknown> = {
     asset: { version: "2.0", generator: options.generator ?? "macbeth" },
     scene: 0,
     scenes: [{ nodes: gltfNodes.map((_, i) => i) }],
     nodes: gltfNodes,
     meshes,
-    materials: [
-      {
-        name: "macbeth",
-        pbrMetallicRoughness: {
-          baseColorFactor: [0.75, 0.78, 0.81, 1],
-          metallicFactor: 0,
-          roughnessFactor: 0.7,
-        },
-        doubleSided: true,
-      },
-    ],
+    materials,
     accessors,
     bufferViews,
     buffers: [{ byteLength: offset }],
   };
+  if (images.length) {
+    json.images = images;
+    json.textures = textures;
+    // 既定のサンプラ 1 つ（繰り返し・線形）。glTF は空の `{}` を既定として読む
+    json.samplers = [{}];
+  }
 
   // JSON チャンクは空白で、バイナリチャンクはゼロで 4 バイトに詰める
   const encoder = new TextEncoder();
@@ -252,15 +327,21 @@ export function writeGlb(nodes: GltfNode[], options: GltfOptions = {}): Uint8Arr
   return out;
 }
 
+/**
+ * 書き出しに乗るオブジェクト（`48` の T3）。**見えていて面があるもの**だけ。
+ * ノードの並びはこの順なので、絵を添える相手を探すのにも使う。
+ */
+export function exportableObjects(objects: SceneObject[]): SceneObject[] {
+  return objects.filter((o) => o.visible && o.mesh.faceCount > 0);
+}
+
 /** シーンのオブジェクトから書き出し用のノードを作る。 */
 export function nodesFromObjects(objects: SceneObject[]): GltfNode[] {
-  return objects
-    .filter((o) => o.visible && o.mesh.faceCount > 0)
-    .map((o) => ({
-      name: o.name,
-      mesh: o.mesh,
-      position: [...o.transform.position] as [number, number, number],
-      rotation: [...o.transform.rotation] as [number, number, number, number],
-      scale: [...o.transform.scale] as [number, number, number],
-    }));
+  return exportableObjects(objects).map((o) => ({
+    name: o.name,
+    mesh: o.mesh,
+    position: [...o.transform.position] as [number, number, number],
+    rotation: [...o.transform.rotation] as [number, number, number, number],
+    scale: [...o.transform.scale] as [number, number, number],
+  }));
 }

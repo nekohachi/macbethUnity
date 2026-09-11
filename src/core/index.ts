@@ -31,3 +31,4 @@ export * from "./io/gltf.js";
 export * from "./io/binary.js";
 export * from "./io/mbz.js";
 export * from "./io/hash.js";
+export * from "./io/zip.js";

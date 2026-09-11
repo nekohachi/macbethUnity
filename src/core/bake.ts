@@ -193,9 +193,25 @@ function buildFrames(mesh: Mesh, uv: Float32Array): Frames {
       tangent[v * 3 + 1] = ax ? normal[v * 3 + 2] : 0;
       tangent[v * 3 + 2] = ax ? -normal[v * 3 + 1] : 0;
     } else {
-      tangent[v * 3] /= tl;
-      tangent[v * 3 + 1] /= tl;
-      tangent[v * 3 + 2] /= tl;
+      // **法線に直交させてから正規化する**（グラム・シュミット。`48` の T2）。
+      // MikkTSpace と Substance / Blender はこの基底を前提にしているので、
+      // ここを揃えておかないと `.glb` へ接線を渡しても向こうで組み直されてずれる
+      const d = tangent[v * 3] * normal[v * 3] + tangent[v * 3 + 1] * normal[v * 3 + 1] + tangent[v * 3 + 2] * normal[v * 3 + 2];
+      let ox = tangent[v * 3] - normal[v * 3] * d;
+      let oy = tangent[v * 3 + 1] - normal[v * 3 + 1] * d;
+      let oz = tangent[v * 3 + 2] - normal[v * 3 + 2] * d;
+      let ol = Math.hypot(ox, oy, oz);
+      if (ol < 1e-12) {
+        // 接線が法線と平行だった。法線に直交する軸を機械的に選ぶ
+        const ax = Math.abs(normal[v * 3]) < 0.9 ? 1 : 0;
+        ox = ax ? 0 : 1;
+        oy = ax ? normal[v * 3 + 2] : 0;
+        oz = ax ? -normal[v * 3 + 1] : 0;
+        ol = Math.hypot(ox, oy, oz) || 1;
+      }
+      tangent[v * 3] = ox / ol;
+      tangent[v * 3 + 1] = oy / ol;
+      tangent[v * 3 + 2] = oz / ol;
     }
     // N × T が dP/dv とどちら向きか
     const cx = normal[v * 3 + 1] * tangent[v * 3 + 2] - normal[v * 3 + 2] * tangent[v * 3 + 1];
@@ -205,6 +221,19 @@ function buildFrames(mesh: Mesh, uv: Float32Array): Frames {
     sign[v] = d < 0 ? -1 : 1;
   }
   return { normal, tangent, sign };
+}
+
+/** 焼くときの接空間（`48` の T2）。glTF の書き出しが**同じ基底**を使うための口。 */
+export type BakeFrames = Frames;
+
+/**
+ * 焼くときと同じ法線・接線を頂点ごとに作る（`48` の T2）。
+ *
+ * 法線マップは接空間なので、書き出し先で別の接線を組まれると陰影がずれる。
+ * `.glb` に TANGENT を入れるときはここを通す。
+ */
+export function bakeFrames(mesh: Mesh, uv: Float32Array): BakeFrames {
+  return buildFrames(mesh, uv);
 }
 
 /** ラスタライズで 1 テクセルに書き込むもの。`face` は元の面の番号（ID マップに使う）。 */

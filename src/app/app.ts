@@ -47,9 +47,13 @@ import {
   subdivide,
   estimateLevelBytes,
   reconcile,
+  exportableObjects,
   nodesFromObjects,
   writeGlb,
+  zipStore,
   writeObj,
+  type BakeResult,
+  type GltfNode,
   type Mesh,
   type SceneObject,
   type SculptLayer,
@@ -93,6 +97,8 @@ import {
   dirtyTiles,
   exportBake,
   mapBytes,
+  mapFileName,
+  pngBytes,
   type BakeMapKind,
   type BakeState,
 } from "./bake.js";
@@ -327,6 +333,11 @@ const SNAP_ICONS: Record<SnapKind, string> = {
 };
 
 /** シェーディングごとのアイコン。 */
+/** バイト数を読みやすく（書き出しのトースト。`48` の T3）。 */
+function mb(bytes: number): string {
+  return bytes >= 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1)}MB` : `${Math.max(1, Math.round(bytes / 1024))}KB`;
+}
+
 /** 3 本指のひねりの刻み（度。`26` の T1）。マニピュレータの刻みとは別。 */
 const TWIST_STEP_DEG = 5;
 /** 修飾ボタンの長押し（`47` の T1）。輪と同じ 200ms。それより短ければタップ。 */
@@ -4886,6 +4897,13 @@ export class App {
     else await this.exportBakeMap(what);
   }
 
+  /** 通し確認から書き出しを叩く（`48` の T3）。 */
+  async exportForTest(what: "glb" | "glbMaps" | "textureSet"): Promise<void> {
+    if (what === "glb") await this.exportGlb();
+    else if (what === "glbMaps") await this.exportGlbWithMaps();
+    else await this.exportTextureSet();
+  }
+
   /** 焼いた絵の状態（`46` の通し確認）。 */
   bakeInfoForTest(): {
     maps: string[];
@@ -6670,6 +6688,9 @@ export class App {
     item("OBJ を読み込む", () => this.importObj());
     item("OBJ を書き出す", () => this.exportObj());
     item("glTF を書き出す (.glb)", () => this.exportGlb());
+    // 焼いた絵を添える 2 つ（`48` の T3）。焼いていないオブジェクトでは断る
+    item("glTF + 焼いた絵 (.glb)", () => this.exportGlbWithMaps());
+    item("テクスチャセット一式 (.zip)", () => this.exportTextureSet());
     item("画面を画像で保存 (.png)", () => this.exportPng());
     item("更新を確認して開き直す", () => this.checkForUpdate());
     // 今開いているものがいつのビルドか。ホーム画面から開いたときの確認用
@@ -6783,6 +6804,131 @@ export class App {
     this.hud.toast(
       r.saved ? `${name} を書き出しました — ${nodes.length} オブジェクト` : "書き出しを取り消しました",
     );
+  }
+
+  /* ---- 焼いた絵を添えて書き出す（`48` の T3・T4） ---------------------- */
+
+
+  /**
+   * 書き出しに使う焼き方を用意する（`48` の T4）。
+   *
+   *   まだ焼いていない → 断る（勝手に焼くと数十秒待たせることになる）
+   *   `古`             → **焼き直してから**出す（古い絵を渡すほうが困る）
+   *   `済`             → そのまま
+   */
+  private bakeForExport(o: SceneObject): { result: BakeResult; rebaked: boolean } | null {
+    const state = bakeState(o);
+    if (state === "none") {
+      this.hud.toast("先に「焼く」を押してください");
+      return null;
+    }
+    let rebaked = false;
+    if (state === "stale") {
+      const report = bakeObject(o, dirtyTiles(o) > 0);
+      if (!report.ok) {
+        this.hud.toast("焼き直せませんでした");
+        return null;
+      }
+      rebaked = true;
+      this.renderToolColumn();
+    }
+    return o.bakeResult ? { result: o.bakeResult, rebaked } : null;
+  }
+
+  /** 焼いた絵ぜんぶを PNG にする。名前は `<オブジェクト名>_<チャンネル>.png`。 */
+  private async bakedPngs(o: SceneObject, result: BakeResult): Promise<Array<{ name: string; kind: BakeMapKind; data: Uint8Array }>> {
+    const out: Array<{ name: string; kind: BakeMapKind; data: Uint8Array }> = [];
+    for (const kind of result.maps) {
+      const data = await pngBytes(result, kind);
+      if (data) out.push({ name: mapFileName(o.name, kind), kind, data });
+    }
+    return out;
+  }
+
+  /**
+   * 書き出すノードを作って、選んでいるオブジェクトにだけ絵を付ける（`48` の T3）。
+   * 名前ではなく**並び**で相手を決める（同じ名前のオブジェクトがあっても間違えない）。
+   */
+  private nodesWithMaps(o: SceneObject, normal?: Uint8Array, occlusion?: Uint8Array): GltfNode[] | null {
+    const nodes = nodesFromObjects(this.state.doc.objects);
+    if (!nodes.length) {
+      this.hud.toast("書き出すものがありません");
+      return null;
+    }
+    const at = exportableObjects(this.state.doc.objects).indexOf(o);
+    if (at < 0) {
+      this.hud.toast("選んでいるオブジェクトが隠れています（目のマークを入れてください）");
+      return null;
+    }
+    nodes[at] = { ...nodes[at], maps: { normal, occlusion } };
+    return nodes;
+  }
+
+  /**
+   * 焼いた法線と AO を埋めた `.glb`（`48` の T3）。
+   *
+   * glTF に置き場があるのはこの 2 つだけ。曲率や厚みはテクスチャセット（ZIP）で渡す。
+   * 絵は**選んでいるオブジェクトのぶんだけ**付く（ほかのオブジェクトは形だけ）。
+   */
+  private async exportGlbWithMaps(): Promise<void> {
+    const o = this.state.selected;
+    if (!o) return void this.hud.toast("オブジェクトを選んでください");
+    const baked = this.bakeForExport(o);
+    if (!baked) return;
+    this.hud.toast("書き出しています…");
+    try {
+      const maps = await this.bakedPngs(o, baked.result);
+      const normal = maps.find((m) => m.kind === "normal")?.data;
+      const occlusion = maps.find((m) => m.kind === "ao")?.data;
+      const nodes = this.nodesWithMaps(o, normal, occlusion);
+      if (!nodes) return;
+      const bytes = writeGlb(nodes, { smoothAngle: this.state.smoothAngle, generator: "macbeth" });
+      const name = `${o.name}.glb`;
+      const r = await saveAs(bytes, name);
+      const added = [normal ? "法線" : null, occlusion ? "AO" : null].filter(Boolean).join(" + ") || "絵なし";
+      this.hud.toast(
+        r.saved
+          ? `${name} を書き出しました — ${added}・${mb(bytes.byteLength)}${baked.rebaked ? "（焼き直してから）" : ""}`
+          : "書き出しを取り消しました",
+      );
+    } catch (err) {
+      this.hud.toast(`書き出しに失敗: ${(err as Error).message}`);
+    }
+  }
+
+  /**
+   * `.glb` と焼いた絵を 1 つの ZIP にまとめる（`48` の T3）。
+   *
+   * Substance / Blender へは**これ 1 つ**で渡せる。中の名前は
+   * `<オブジェクト名>_<チャンネル>.png` で、テクスチャセットの規則に合わせてある。
+   */
+  private async exportTextureSet(): Promise<void> {
+    const o = this.state.selected;
+    if (!o) return void this.hud.toast("オブジェクトを選んでください");
+    const baked = this.bakeForExport(o);
+    if (!baked) return;
+    this.hud.toast("書き出しています…");
+    try {
+      const maps = await this.bakedPngs(o, baked.result);
+      const normal = maps.find((m) => m.kind === "normal")?.data;
+      const occlusion = maps.find((m) => m.kind === "ao")?.data;
+      const nodes = this.nodesWithMaps(o, normal, occlusion);
+      if (!nodes) return;
+      const glb = writeGlb(nodes, { smoothAngle: this.state.smoothAngle, generator: "macbeth" });
+      const zip = zipStore([
+        { name: `${o.name}.glb`, data: glb },
+        ...maps.map((m) => ({ name: m.name, data: m.data })),
+      ]);
+      const name = `${o.name}.zip`;
+      const r = await saveAs(zip, name);
+      this.hud.toast(
+        r.saved
+          ? `${name} を書き出しました — ${maps.length} 枚・${mb(zip.byteLength)}${baked.rebaked ? "（焼き直してから）" : ""}`
+          : "書き出しを取り消しました",
+      );
+    } catch (err) {
+      this.hud.toast(`書き出しに失敗: ${(err as Error).message}`);
+    }
   }
 
   /** 今の 3D ビューを PNG で保存する（`12` の E5）。 */

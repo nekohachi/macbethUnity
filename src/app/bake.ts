@@ -196,14 +196,34 @@ export function mapBytes(result: BakeResult, kind: BakeMap): Uint8Array | null {
   }
 }
 
+/**
+ * 焼いた絵 1 枚の PNG（`48` の T3）。焼いていなければ null。
+ *
+ * **PNG にする口はここ 1 つ**。1 枚ずつの書き出しも、`.glb` に埋めるのも、
+ * テクスチャセットの ZIP も、全部ここを通る（向きが食い違わないように）。
+ */
+export async function pngBytes(result: BakeResult, kind: BakeMap): Promise<Uint8Array | null> {
+  const rgba = mapBytes(result, kind);
+  return rgba ? await rgbaToPng(rgba, result.size) : null;
+}
+
 /** 焼いた絵を PNG で書き出す。 */
 export async function exportBake(o: SceneObject, kind: BakeMapKind): Promise<{ ok: boolean; name?: string }> {
   const result = o.bakeResult;
   if (!result) return { ok: false };
-  const rgba = mapBytes(result, kind);
-  if (!rgba) return { ok: false };
-  const png = await rgbaToPng(rgba, result.size);
+  const png = await pngBytes(result, kind);
+  if (!png) return { ok: false };
   const name = `${o.name}_${kind}_${result.size}.png`;
   const saved = await saveAs(png, name);
   return { ok: saved.saved, name };
+}
+
+/**
+ * テクスチャセットの中の 1 枚の名前（`48` の T3。`11` の 3 章）。
+ *
+ * `<オブジェクト名>_<チャンネル>.png`。**大きさは入れない**
+ * （Substance で読み戻すときに、名前で対応を取れるようにするため）。
+ */
+export function mapFileName(objectName: string, kind: BakeMap): string {
+  return `${objectName}_${kind}.png`;
 }

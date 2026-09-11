@@ -145,3 +145,96 @@ describe("G3. シーンから", () => {
     expect(json.materials.length).toBe(1);
   });
 });
+
+/** accessorOf は VEC4 を知らないので、接線用に別口で読む。 */
+function vec4Of(json: any, bin: Uint8Array<ArrayBufferLike>, index: number): Float32Array {
+  const acc = json.accessors[index];
+  const view = json.bufferViews[acc.bufferView];
+  expect(acc.type).toBe("VEC4");
+  return new Float32Array(bin.buffer as ArrayBuffer, bin.byteOffset + (view.byteOffset ?? 0), acc.count * 4);
+}
+
+/** バッファビューの生バイト。埋めた PNG を取り出すのに使う。 */
+function viewBytes(json: any, bin: Uint8Array<ArrayBufferLike>, index: number): Uint8Array {
+  const view = json.bufferViews[index];
+  const start = (view.byteOffset ?? 0);
+  return bin.subarray(start, start + view.byteLength);
+}
+
+const png = (tag: number, length = 40) => Uint8Array.from({ length }, (_, i) => (i === 0 ? tag : (i * 7 + tag) % 256));
+
+describe("G4. 焼いた絵を添える（`48` の T2）", () => {
+  it("絵を渡さなければ今までどおり（マテリアル 1 つ・画像なし・接線なし）", () => {
+    const { json } = readGlb(writeGlb([node(), node()]));
+    expect(json.materials.length).toBe(1);
+    expect(json.images).toBeUndefined();
+    expect(json.textures).toBeUndefined();
+    expect(json.meshes[0].primitives[0].material).toBe(0);
+    expect(json.meshes[0].primitives[0].attributes.TANGENT).toBeUndefined();
+  });
+
+  it("法線と AO を渡すと、画像 2 枚とノードごとのマテリアルができる", () => {
+    const a: GltfNode = { ...node(), name: "Head", maps: { normal: png(1), occlusion: png(2) } };
+    const b: GltfNode = { ...node(), name: "Body" };
+    const { json } = readGlb(writeGlb([a, b]));
+    expect(json.images.length).toBe(2);
+    expect(json.textures.length).toBe(2);
+    expect(json.samplers.length).toBe(1);
+    // 絵のあるノードとないノードで、別のマテリアルになる
+    expect(json.materials.length).toBe(2);
+    const head = json.materials[json.meshes[0].primitives[0].material];
+    const body = json.materials[json.meshes[1].primitives[0].material];
+    expect(head.normalTexture.index).not.toBe(head.occlusionTexture.index);
+    expect(body.normalTexture).toBeUndefined();
+    expect(json.images[0].mimeType).toBe("image/png");
+  });
+
+  it("埋めた PNG は 1 バイトも変わらずに出てくる", () => {
+    const normal = png(1, 37); // 4 の倍数でない長さ（詰め物が混ざらないか）
+    const occlusion = png(2, 64);
+    const { json, bin } = readGlb(writeGlb([{ ...node(), maps: { normal, occlusion } }]));
+    expect([...viewBytes(json, bin, json.images[0].bufferView)]).toEqual([...normal]);
+    expect([...viewBytes(json, bin, json.images[1].bufferView)]).toEqual([...occlusion]);
+  });
+
+  it("接線は VEC4 で、w は ±1・法線と直交する", () => {
+    const { json, bin } = readGlb(writeGlb([{ ...node(), maps: { normal: png(1) } }]));
+    const prim = json.meshes[0].primitives[0];
+    const tangent = vec4Of(json, bin, prim.attributes.TANGENT);
+    const normal = accessorOf(json, bin, prim.attributes.NORMAL);
+    expect(tangent.length / 4).toBe(normal.length / 3);
+    for (let i = 0; i < tangent.length / 4; i++) {
+      const t = [tangent[i * 4], tangent[i * 4 + 1], tangent[i * 4 + 2]];
+      const n = [normal[i * 3], normal[i * 3 + 1], normal[i * 3 + 2]];
+      expect(Math.abs(tangent[i * 4 + 3])).toBe(1);
+      expect(Math.hypot(t[0], t[1], t[2])).toBeCloseTo(1, 5);
+      expect(t[0] * n[0] + t[1] * n[1] + t[2] * n[2]).toBeCloseTo(0, 5);
+    }
+  });
+
+  it("絵を添えると角で割らない（焼いたときと同じなめらかな法線）", () => {
+    const plain = readGlb(writeGlb([node()], { smoothAngle: 30 }));
+    const withMap = readGlb(writeGlb([{ ...node(), maps: { normal: png(1) } }], { smoothAngle: 30 }));
+    const count = (r: { json: any; bin: Uint8Array<ArrayBufferLike> }) =>
+      accessorOf(r.json, r.bin, r.json.meshes[0].primitives[0].attributes.POSITION).length / 3;
+    expect(count(plain)).toBe(24); // 面ごとに割れる
+    expect(count(withMap)).toBeLessThan(24); // なめらかなのでまとまる
+  });
+
+  it("V をひっくり返して出す（glTF は (0,0) が画像の左上）", () => {
+    const mesh = PRIMITIVES.plane.build({ ...defaultParams("plane"), sdW: 1, sdH: 1 });
+    const { json, bin } = readGlb(writeGlb([node(mesh)]));
+    const uv = accessorOf(json, bin, json.meshes[0].primitives[0].attributes.TEXCOORD_0);
+    const source = mesh.uvSets.get("map1")!;
+    // 元の v と足して 1 になる組が、どの頂点にも必ずある
+    for (let i = 0; i < uv.length / 2; i++) {
+      expect(uv[i * 2 + 1]).toBeGreaterThanOrEqual(-1e-6);
+      expect(uv[i * 2 + 1]).toBeLessThanOrEqual(1 + 1e-6);
+    }
+    const flipped = new Set<string>();
+    for (let c = 0; c < source.length / 2; c++) flipped.add(`${source[c * 2].toFixed(3)},${(1 - source[c * 2 + 1]).toFixed(3)}`);
+    for (let i = 0; i < uv.length / 2; i++) {
+      expect(flipped.has(`${uv[i * 2].toFixed(3)},${uv[i * 2 + 1].toFixed(3)}`)).toBe(true);
+    }
+  });
+});
