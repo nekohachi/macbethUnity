@@ -339,3 +339,69 @@ export function extrudeVertices(
   // 先端の番号を返す。SHF ドラッグではこれを選択に置き換えて、そのまま引っぱる
   return { mesh: out, faces: made, tips: plan.map(({ v }) => apex.get(v)!) };
 }
+
+/**
+ * **辺を 2 本しか持たない頂点を、面の角から外す**（`50`。Maya の Delete Edge/Vertex）。
+ *
+ * エッジを消した（`dissolveEdges`）あとは、その両端が「辺 2 本の通過点」として
+ * 残る。形は変わらないが、面の角が 1 つ余分に残るので、次の細分割で不要な
+ * 密度になる。Maya の Ctrl + Delete はここまで片づける。
+ *
+ * **面は残す。**（`dissolveVertices` はまわりの面を 1 枚に溶かすので、別のもの）
+ * 角から外すだけなので、UV も残りの角のぶんをそのまま持ち越す。
+ *
+ * @returns 外せた頂点の数。1 つも外せなければ null
+ */
+export function removeCorners(mesh: Mesh, verts: Iterable<number>): { mesh: Mesh; removed: number } | null {
+  // 辺 2 本の頂点だけが対象。隣の 2 点も控える（一直線かどうかを見る）
+  const near = new Map<number, number[]>();
+  for (const [a, b] of mesh.edges()) {
+    (near.get(a) ?? near.set(a, []).get(a)!).push(b);
+    (near.get(b) ?? near.set(b, []).get(b)!).push(a);
+  }
+  const ef = mesh.edgeFaceMap();
+  const drop = new Set<number>();
+  for (const v of new Set(verts)) {
+    const ns = near.get(v) ?? [];
+    if (ns.length !== 2) continue;
+    // **形が変わるなら外さない。** 平面の角のような「辺 2 本だが本物の角」を
+    // 外すと、そこだけ切り落とされてしまう。外してよいのは
+    //   ・両側が内側の辺（面が 2 枚ずつ）＝ 辺を消した跡の通過点
+    //   ・ほぼ一直線（角度が 160° 以上）＝ 外しても形が変わらない
+    const inside = ns.every((u) => (ef.get(edgeKey(v, u)) ?? []).length >= 2);
+    const p = mesh.getPosition(v);
+    const a = mesh.getPosition(ns[0]);
+    const b = mesh.getPosition(ns[1]);
+    const ax = a[0] - p[0], ay = a[1] - p[1], az = a[2] - p[2];
+    const bx = b[0] - p[0], by = b[1] - p[1], bz = b[2] - p[2];
+    const la = Math.hypot(ax, ay, az) || 1;
+    const lb = Math.hypot(bx, by, bz) || 1;
+    const straight = (ax * bx + ay * by + az * bz) / (la * lb) < -0.94;
+    if (inside || straight) drop.add(v);
+  }
+  if (!drop.size) return null;
+
+  const b = copyVertices(mesh);
+  for (let f = 0; f < mesh.faceCount; f++) {
+    const source = mesh.faceVerts(f);
+    const uvs = faceUvs(mesh, f);
+    const out: number[] = [];
+    const rows = new Map<string, number[][]>();
+    if (uvs) for (const name of uvs.keys()) rows.set(name, []);
+    for (let i = 0; i < source.length; i++) {
+      if (drop.has(source[i])) continue;
+      out.push(source[i]);
+      if (uvs) for (const [name, src] of uvs) rows.get(name)!.push(src[i] ?? [0, 0]);
+    }
+    // 三角形より小さくなる面は、外さずにそのまま残す（潰れるより残るほうがまし）
+    const keep = out.length >= 3 ? out : source;
+    b.face(keep, {
+      uv: uvs ? (out.length >= 3 ? rows : uvs) : undefined,
+      polygroup: mesh.polygroup[f],
+      materialId: mesh.materialId[f],
+    });
+  }
+  const next = b.build();
+  carryCreases(mesh, next);
+  return { mesh: next, removed: drop.size };
+}

@@ -31,6 +31,7 @@ import {
   dissolveVertices,
   extrudeVertices,
   mergeByDistance,
+  removeCorners,
   collapseFaces,
   compact,
   deleteFaces,
@@ -190,6 +191,7 @@ import {
   DIRECTIONS,
   attachRadialButton,
   closeRadial,
+  highlightRadial,
   openRadial,
   type RadialItem,
   type RadialMenu,
@@ -4009,13 +4011,20 @@ export class App {
     );
   }
 
-  private doDeleteEdges(): void {
+  /**
+   * エッジを削除する（`50`）。
+   *
+   * @param clean Maya の **Ctrl + Delete**（Delete Edge/Vertex）。辺を消したあと、
+   *   残った「辺 2 本の通過点」も面の角から外す。ふつうの Delete は頂点を残す
+   */
+  private doDeleteEdges(clean = false): void {
     const o = this.requireComponents("edge");
     if (!o) return;
     const view = this.viewport.viewOf(o);
     if (!view) return;
     const edges = [...this.state.comp].map((i) => view.edges[i]).filter(Boolean);
     let merged = 0;
+    let cleaned = 0;
     const r = dissolveEdges(o.mesh, edges);
     if (!r) {
       this.hud.toast("結合できるエッジがありません（境界エッジは削除できません）");
@@ -4023,13 +4032,25 @@ export class App {
     }
     this.applyTopologyChange(
       o,
-      "エッジを削除",
+      clean ? "エッジと頂点を削除" : "エッジを削除",
       () => {
         o.mesh = r.mesh;
         merged = r.merged;
+        if (clean) {
+          const ends = new Set<number>();
+          for (const [a, b] of edges) {
+            ends.add(a);
+            ends.add(b);
+          }
+          const tidy = removeCorners(o.mesh, ends);
+          if (tidy) {
+            o.mesh = compact(tidy.mesh);
+            cleaned = tidy.removed;
+          }
+        }
         return true;
       },
-      () => `エッジを削除 — ${merged} 面を結合`,
+      () => `${clean ? "エッジと頂点" : "エッジ"}を削除 — ${merged} 面を結合` + (cleaned ? ` · 頂点 ${cleaned} を片づけた` : ""),
     );
   }
 
@@ -4421,6 +4442,88 @@ export class App {
     this.viewport.syncAll();
     this.refresh();
     this.hud.toast(`${o.name} を削除しました`);
+  }
+
+  /* ---- 削除ボタン（`50`。ALT の下） ------------------------------------ */
+
+  /**
+   * いまのモードで「ふつうの削除」（Maya の Delete）。
+   *
+   *   オブジェクト … そのオブジェクトを消す
+   *   フェース     … 面を消して穴にする
+   *   エッジ       … 辺を消して面を結合（頂点は残る）
+   *   頂点         … 頂点を消して、まわりの面を 1 枚に
+   */
+  private doDeleteSmart(): void {
+    const mode = this.state.compMode;
+    if (mode === "object") return this.doDelete();
+    if (!this.state.comp.size) return void this.hud.toast("消すものを選んでください");
+    if (mode === "face") return this.doDeleteFaces();
+    if (mode === "edge") return this.doDeleteEdges(false);
+    return this.doDissolveVertices();
+  }
+
+  /**
+   * Maya の **Ctrl + Delete**（Delete Edge/Vertex）。
+   * 消したあとに残る「辺 2 本の通過点」まで片づける。
+   */
+  private doDeleteClean(): void {
+    const mode = this.state.compMode;
+    if (mode === "object") return this.doDelete();
+    if (!this.state.comp.size) return void this.hud.toast("消すものを選んでください");
+    if (mode === "edge") return this.doDeleteEdges(true);
+    if (mode === "vertex") return this.doRemoveCorners();
+    // 面はふつうの削除と同じ（Maya も Ctrl + Delete で変わらない）
+    return this.doDeleteFaces();
+  }
+
+  /** 選んだ頂点を面の角から外す（形は変えない）。 */
+  private doRemoveCorners(): void {
+    const o = this.requireComponents("vertex");
+    if (!o) return;
+    const r = removeCorners(o.mesh, this.state.comp);
+    if (!r) {
+      this.hud.toast("外せる頂点がありません（辺 2 本の通過点だけ外せます）");
+      return;
+    }
+    this.applyTopologyChange(
+      o,
+      "頂点を角から外す",
+      () => {
+        o.mesh = compact(r.mesh);
+        return true;
+      },
+      () => `${r.removed} 頂点を角から外した（面はそのまま）`,
+    );
+  }
+
+  /** 削除ボタンの長押しメニュー。 */
+  private deleteMenu(): RadialMenu {
+    const mode = this.state.compMode;
+    const what = { object: "オブジェクト", vertex: "頂点", edge: "エッジ", face: "フェース" }[mode];
+    const menu: RadialMenu = {
+      N: {
+        label: "削除",
+        sub: `${what}・Delete`,
+        icon: ICONS.del,
+        run: () => this.doDeleteSmart(),
+      },
+    };
+    if (mode !== "object") {
+      menu.E = {
+        label: "コントロール削除",
+        sub: mode === "edge" ? "辺と残った頂点・Ctrl+Del" : mode === "vertex" ? "角から外す・Ctrl+Del" : "面・Ctrl+Del",
+        icon: ICONS.del,
+        run: () => this.doDeleteClean(),
+      };
+      menu.S = {
+        label: "オブジェクトを削除",
+        sub: this.state.selected?.name ?? "",
+        icon: ICONS.del,
+        run: () => this.doDelete(),
+      };
+    }
+    return menu;
   }
 
   /* ---- 履歴 ------------------------------------------------------------ */
@@ -6260,8 +6363,13 @@ export class App {
           this.state.mods[name] = lock ? "on" : "off";
         },
         look: () => (this.state.heldMod === name ? "held" : this.state.mods[name]),
+        legend: () => this.modLegend({ shift: "SHF", ctrl: "CTL", alt: "ALT" }[name], this.state.mods[name] === "on"),
       });
     }
+
+    // 削除（`50`）。修飾ではなく操作なので、ふつうのボタンと同じ形にする。
+    // タップでいまのモードの削除、長押しで種類（削除 / コントロール削除 / オブジェクト）
+    attachRadialButton(byId("modDel"), () => this.deleteMenu(), () => this.doDeleteSmart());
 
     // F。押した瞬間から効く（矩形選択とピンチの分岐に使う）ので `hold` は見た目だけ
     this.bindHoldButton(byId("btnFrame"), {
@@ -6287,7 +6395,23 @@ export class App {
         this.fChord = false;
       },
       look: () => (this.fLock ? "on" : this.fHeld ? "held" : "off"),
+      legend: () => this.modLegend("F", this.fLock),
     });
+  }
+
+  /**
+   * 修飾ボタンを長押ししている間に出す「説明だけの輪」（`50` の声）。
+   *
+   * 今までは押している本人にしか分からなかった（「今の状態は知ってないとわからない」）。
+   * **選ばせる輪ではない**ので、指はこの下の画面へ素通りする。反対の手で
+   * 3D を触りながら、この輪で「いま効いている・このあとどうなる」が読める。
+   */
+  private modLegend(label: string, locked: boolean): RadialMenu {
+    return {
+      N: { label: `${label} 効いています`, sub: locked ? "ロック中" : "押している間だけ", icon: ICONS.vObj, run: () => {} },
+      W: { label: "ロック", sub: "← 左へずらして離す", icon: ICONS.vVert, run: () => {} },
+      E: { label: "解除", sub: "このまま離す →", icon: ICONS.del, run: () => {} },
+    };
   }
 
   /**
@@ -6305,15 +6429,14 @@ export class App {
       hold: () => void;
       release: (lock: boolean) => void;
       look: () => string;
+      /** 長押し中に出す「説明だけの輪」（`50`）。指はこの下の画面へ素通りする。 */
+      legend?: () => RadialMenu;
     },
   ): void {
     let pointer = -1;
     let x0 = 0;
     let held = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
-    const tag = el("span", "cmod-lock", "← ロック");
-    tag.hidden = true;
-    button.appendChild(tag);
     const sync = () => {
       button.dataset.state = h.look();
       this.syncModButtons();
@@ -6327,7 +6450,7 @@ export class App {
       if (e.pointerId !== pointer) return;
       pointer = -1;
       clearTimer();
-      tag.hidden = true;
+      closeRadial();
       if (!held) h.tap();
       else h.release(!cancelled && x0 - e.clientX >= MOD_LOCK_PX);
       held = false;
@@ -6354,11 +6477,22 @@ export class App {
         h.hold();
         navigator.vibrate?.(6);
         sync();
+        // 何が起きているか・このあとどうなるかを輪で見せる（`50` の声）。
+        // 選ばせる輪ではないので、指は下の画面へ素通りする
+        const legend = h.legend?.();
+        if (legend) {
+          const r = button.getBoundingClientRect();
+          openRadial(legend, r.left + r.width / 2, r.top + r.height / 2, [], {
+            passive: true,
+            hub: "押している間だけ",
+          });
+        }
       }, HOLD_MS);
     });
     button.addEventListener("pointermove", (e) => {
       if (e.pointerId !== pointer || !held) return;
-      tag.hidden = x0 - e.clientX < MOD_LOCK_PX;
+      // 左へずらしている間は「ロック」を光らせる。離せばそこで決まる
+      highlightRadial(x0 - e.clientX >= MOD_LOCK_PX ? "W" : null);
     });
     button.addEventListener("pointerup", (e) => finish(e, false));
     button.addEventListener("pointercancel", (e) => finish(e, true));

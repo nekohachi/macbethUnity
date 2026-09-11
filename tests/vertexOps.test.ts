@@ -9,7 +9,8 @@ import { PRIMITIVES, defaultParams } from "../src/core/primitives.js";
 import { Mesh, edgeKey } from "../src/core/mesh.js";
 import { compact } from "../src/core/topology.js";
 import { subdivide } from "../src/core/subdivide.js";
-import { dissolveVertices, extrudeVertices, mergeByDistance } from "../src/core/vertexOps.js";
+import { dissolveVertices, extrudeVertices, mergeByDistance, removeCorners } from "../src/core/vertexOps.js";
+import { dissolveEdges } from "../src/core/topology.js";
 
 const cube = () => PRIMITIVES.cube.build(defaultParams("cube"));
 /**
@@ -225,5 +226,54 @@ describe("頂点の押し出し", () => {
     for (const set of r.mesh.uvSets.values()) {
       expect(set.length).toBe(r.mesh.faceCorners.length * 2);
     }
+  });
+});
+
+describe("角から外す（`50`。Maya の Delete Edge/Vertex）", () => {
+  it("辺 2 本の頂点だけを面の角から外す。面は残る", () => {
+    // 平面を 2 × 1 に割る（真ん中の辺を消したあとの形を手で作る）
+    const m = PRIMITIVES.plane.build({ ...defaultParams("plane"), width: 2, height: 2, sdW: 2, sdH: 1 });
+    const faces = m.faceCount;
+    // 真ん中の縦の辺（x = 0）を消すと、上下の端に辺 2 本の頂点が残る
+    const middle = m.edges().filter(([a, b]) => {
+      const pa = m.getPosition(a);
+      const pb = m.getPosition(b);
+      return Math.abs(pa[0]) < 1e-6 && Math.abs(pb[0]) < 1e-6;
+    });
+    const merged = dissolveEdges(m, middle);
+    expect(merged).not.toBeNull();
+    const after = merged!.mesh;
+    expect(after.faceCount).toBe(faces - 1);
+
+    // 通過点になった頂点（辺が 2 本）
+    const valence = new Map<number, number>();
+    for (const [a, b] of after.edges()) {
+      valence.set(a, (valence.get(a) ?? 0) + 1);
+      valence.set(b, (valence.get(b) ?? 0) + 1);
+    }
+    const passers = [...valence].filter(([, n]) => n === 2).map(([v]) => v);
+    expect(passers.length).toBeGreaterThan(0);
+    // 消した辺の両端（x = 0 の上下の縁）。ここは一直線の通過点になっている
+    const onSeam = passers.filter((v) => Math.abs(after.getPosition(v)[0]) < 1e-6);
+    expect(onSeam.length).toBe(2);
+
+    const cleaned = removeCorners(after, passers);
+    expect(cleaned).not.toBeNull();
+    // **面の数は変わらない**（角が減るだけ）。外れるのは通過点だけで、板の角は残る
+    expect(cleaned!.mesh.faceCount).toBe(after.faceCount);
+    expect(cleaned!.removed).toBe(onSeam.length);
+    for (let f = 0; f < cleaned!.mesh.faceCount; f++) {
+      for (const v of cleaned!.mesh.faceVerts(f)) expect(onSeam.includes(v)).toBe(false);
+    }
+    // 板の 4 隅は残っている（外すと角が落ちてしまう）
+    const corners = passers.filter((v) => !onSeam.includes(v));
+    const kept = new Set<number>();
+    for (let f = 0; f < cleaned!.mesh.faceCount; f++) for (const v of cleaned!.mesh.faceVerts(f)) kept.add(v);
+    for (const v of corners) expect(kept.has(v)).toBe(true);
+  });
+
+  it("辺が 3 本以上の頂点は外さない", () => {
+    const m = PRIMITIVES.cube.build(defaultParams("cube"));
+    expect(removeCorners(m, [0, 1, 2])).toBeNull();
   });
 });

@@ -323,10 +323,11 @@ button{font-family:inherit; font-size:inherit; color:inherit; background:none; b
 .cmod{position:relative; touch-action:none}
 .cmod[data-state="held"], .cframe[data-state="held"]{background:var(--accent-dim); border-color:var(--accent); color:#eaf4fb}
 .cframe[data-state="on"]{background:var(--accent); border-color:var(--accent); color:#0f1418}
-/* 左へずらしている間に出す札。ここで離すとロック */
-.cmod-lock{position:absolute; right:calc(100% + 8px); top:50%; transform:translateY(-50%); white-space:nowrap;
-  font-size:10px; font-weight:600; letter-spacing:.04em; color:#0f1418; background:var(--accent);
-  border-radius:4px; padding:3px 7px; pointer-events:none}
+/* 削除ボタン（`50`）。修飾ではないので赤みを帯びさせて、押し間違いを減らす */
+.cdel{color:#e39a94; border-color:#5a3a38}
+.cdel:active{background:#7d2f2a; color:#fff}
+
+
 .cframe{width:66px; height:58px; border-radius:8px; display:grid; place-items:center; position:relative;
   background:rgba(37,42,48,.7); border:1px solid var(--line-soft); color:var(--text); backdrop-filter:blur(4px);
   box-shadow:0 4px 14px rgba(0,0,0,.4); touch-action:none}

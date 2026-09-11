@@ -7690,9 +7690,9 @@ const cluster = await page.evaluate(async () => {
       r: b.getBoundingClientRect(),
     }));
   const order = ids();
-  // 上から F / SHF / CTL / ALT で、x はそろっている
+  // 上から F / SHF / CTL / ALT / DEL で、x はそろっている（`50` で削除を足した）
   const stacked =
-    order.length === 4 &&
+    order.length === 5 &&
     order.every((b, i) => i === 0 || b.r.top > order[i - 1].r.top) &&
     order.every((b) => Math.abs(b.r.x - order[0].r.x) < 0.5);
   const names = order.map((b) => b.id).join(",");
@@ -7739,7 +7739,7 @@ const cluster = await page.evaluate(async () => {
 });
 check(
   "修飾ボタンは縦に並び、置き場所を表示から選べる",
-  cluster.names === "btnFrame,modShift,modCtrl,modAlt" &&
+  cluster.names === "btnFrame,modShift,modCtrl,modAlt,modDel" &&
     cluster.stacked &&
     cluster.cornerNear &&
     cluster.labels.join("/") === "左下/ツール列の横" &&
@@ -9521,10 +9521,16 @@ const holdMod = await page.evaluate(async () => {
       on: app.state.modOn("shift"),
       state: btn.dataset.state,
       hud: document.getElementById("hudMode").textContent,
+      // 長押し中は「説明だけの輪」が出て、指は下の画面へ素通りする（`50`）
+      legend: !!document.querySelector(".radial svg"),
+      passes: document.querySelector(".radial")?.style.pointerEvents === "none",
     };
     if (dx) fire("pointermove", cx + dx);
-    const tag = btn.querySelector(".cmod-lock");
-    const tagShown = !!tag && !tag.hidden;
+    // 左へずらすと輪の「ロック」が光る
+    const legendSvg = document.querySelector(".radial svg");
+    const tagShown = legendSvg
+      ? [...legendSvg.querySelectorAll("path")].some((q) => q.getAttribute("fill") === "#2f5f7d")
+      : false;
     fire("pointerup", cx + dx);
     await wait(20);
     return { during, tagShown, after: { on: app.state.modOn("shift"), latch: app.state.mods.shift, state: btn.dataset.state } };
@@ -9555,12 +9561,14 @@ check(
   holdMod.hold.during.on &&
     holdMod.hold.during.state === "held" &&
     holdMod.hold.during.hud.includes("SHF↓") &&
+    holdMod.hold.during.legend &&
+    holdMod.hold.during.passes &&
     !holdMod.hold.after.on &&
     holdMod.hold.after.latch === "off" &&
     holdMod.holdRight.during.on &&
     !holdMod.holdRight.after.on &&
     !holdMod.holdRight.tagShown,
-  `長押し中 ${holdMod.hold.during.on}（${holdMod.hold.during.state}・HUD「${holdMod.hold.during.hud.includes("SHF↓") ? "SHF↓" : "?"}」）→ 離して ${holdMod.hold.after.on} / ` +
+  `長押し中 ${holdMod.hold.during.on}（${holdMod.hold.during.state}・HUD「${holdMod.hold.during.hud.includes("SHF↓") ? "SHF↓" : "?"}」・輪 ${holdMod.hold.during.legend}・指を通す ${holdMod.hold.during.passes}）→ 離して ${holdMod.hold.after.on} / ` +
     `右で離して ${holdMod.holdRight.after.on}`,
 );
 check(
@@ -9571,7 +9579,7 @@ check(
     holdMod.tapUnlock.after.latch === "off" &&
     holdMod.unlockByHold.after.latch === "off" &&
     !holdMod.unlockByHold.after.on,
-  `札 ${holdMod.holdLeft.tagShown} → ロック ${holdMod.holdLeft.after.latch} → タップで ${holdMod.tapUnlock.after.latch} / ` +
+  `輪のロックが光る ${holdMod.holdLeft.tagShown} → ロック ${holdMod.holdLeft.after.latch} → タップで ${holdMod.tapUnlock.after.latch} / ` +
     `ロック中に長押し → ${holdMod.unlockByHold.after.latch}`,
 );
 
@@ -10542,6 +10550,117 @@ check(
     radialPick.afterCancel.added === 0,
   `ぶれても開く ${radialPick.afterDrift.opened} → 段 ${radialPick.afterDrift.levels}（中心のずれ ${radialPick.afterDrift.offset.toFixed(0)}px）/ ` +
     `見えている区画で 段 ${radialPick.afterVisible.levels} / 一覧で レベル ${radialPick.afterRow.active} へ / キャンセルで ${radialPick.afterCancel.added} 増`,
+);
+
+/* 50b. 削除ボタン（`50`）: ALT の下。タップで削除、長押しで種類を選ぶ */
+const delButton = await page.evaluate(async () => {
+  const app = window.macbeth;
+  const core = window.macbethCore;
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const keep = [...app.state.doc.objects];
+  const keepSel = app.state.selected;
+  app.setMode("model");
+  app.state.doc.objects.length = 0;
+  const o = app.state.doc.addMesh(
+    core.PRIMITIVES.plane.build({ ...core.defaultParams("plane"), width: 2, height: 2, sdW: 2, sdH: 1 }),
+    "Del50",
+  );
+  app.viewport.syncAll();
+  app.state.select(o);
+  app.refresh();
+  app.history.clear();
+  await wait(80);
+
+  const btn = document.getElementById("modDel");
+  const r = btn.getBoundingClientRect();
+  const bx = r.x + r.width / 2;
+  const by = r.y + r.height / 2;
+  let id = 70;
+  const fire = (target, type, x, y) =>
+    target.dispatchEvent(
+      new PointerEvent(type, { pointerId: id, pointerType: "touch", bubbles: true, cancelable: true, clientX: x, clientY: y }),
+    );
+  const tap = async () => {
+    id++;
+    fire(btn, "pointerdown", bx, by);
+    await wait(60);
+    fire(window, "pointerup", bx, by);
+    await wait(200);
+  };
+  /** 長押しして、見えている区画（方位）に指を乗せて離す */
+  const hold = async (dir) => {
+    id++;
+    fire(btn, "pointerdown", bx, by);
+    await wait(300);
+    const labels = [...document.querySelectorAll(".radial text")].map((t) => t.textContent);
+    const hub = [...document.querySelectorAll(".radial circle")].find((c) => c.getAttribute("r") === "54");
+    const cx = hub ? +hub.getAttribute("cx") : bx;
+    const cy = hub ? +hub.getAttribute("cy") : by;
+    const i = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"].indexOf(dir);
+    const a = ((i * 45 - 90) * Math.PI) / 180;
+    const x = cx + Math.cos(a) * 116;
+    const y = cy + Math.sin(a) * 116;
+    for (let k = 1; k <= 4; k++) {
+      fire(window, "pointermove", bx + ((x - bx) * k) / 4, by + ((y - by) * k) / 4);
+      await wait(10);
+    }
+    fire(window, "pointerup", x, y);
+    await wait(250);
+    return labels;
+  };
+
+  // 1. フェースを 1 枚選んでタップ = 削除
+  app.setCompMode("face");
+  app.state.comp.clear();
+  app.state.comp.add(0);
+  app.refresh();
+  const facesBefore = o.mesh.faceCount;
+  await tap();
+  const afterTap = { faces: o.mesh.faceCount, hint: document.getElementById("hudHint").textContent };
+  app.doUndo();
+  await wait(80);
+
+  // 2. 真ん中の辺を選んで、長押し → 東（コントロール削除）
+  app.setCompMode("edge");
+  app.state.comp.clear();
+  const view = app.viewport.viewOf(o);
+  view.edges.forEach(([a, b], i) => {
+    const pa = o.mesh.getPosition(a);
+    const pb = o.mesh.getPosition(b);
+    if (Math.abs(pa[0]) < 1e-6 && Math.abs(pb[0]) < 1e-6) app.state.comp.add(i);
+  });
+  const picked = app.state.comp.size;
+  const vertsBefore = o.mesh.vertexCount;
+  const labels = await hold("E");
+  const afterClean = {
+    faces: o.mesh.faceCount,
+    verts: o.mesh.vertexCount,
+    hint: document.getElementById("hudHint").textContent,
+    entry: app.history.lastEntry()?.label ?? "",
+  };
+
+  app.state.comp.clear();
+  app.setCompMode("object");
+  app.state.doc.objects.length = 0;
+  app.state.doc.objects.push(...keep);
+  app.viewport.syncAll();
+  if (keepSel) app.state.select(keepSel);
+  app.history.clear();
+  app.refresh();
+  return { facesBefore, afterTap, picked, vertsBefore, labels, afterClean };
+});
+check(
+  "削除ボタン: タップでいまのモードの削除、長押しでコントロール削除まで選べる",
+  delButton.afterTap.faces === delButton.facesBefore - 1 &&
+    delButton.picked === 1 &&
+    delButton.labels.includes("削除") &&
+    delButton.labels.includes("コントロール削除") &&
+    delButton.labels.includes("オブジェクトを削除") &&
+    delButton.afterClean.faces === delButton.facesBefore - 1 &&
+    delButton.afterClean.verts === delButton.vertsBefore - 2 &&
+    delButton.afterClean.entry.includes("エッジと頂点"),
+  `タップで ${delButton.facesBefore} → ${delButton.afterTap.faces} 面 / 輪「${delButton.labels.filter((t) => t && !t.includes("・")).slice(0, 4).join(" · ")}」/ ` +
+    `コントロール削除で ${delButton.afterClean.faces} 面・頂点 ${delButton.vertsBefore} → ${delButton.afterClean.verts}（履歴「${delButton.afterClean.entry}」）`,
 );
 
 /* 43. 例外が出ていない */

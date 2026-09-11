@@ -53,6 +53,8 @@ const ROW_GAP = 14;
 
 let open: {
   host: HTMLElement;
+  /** 選ばせない「説明だけ」の輪（`50`）。指はこの下の画面へ素通りする。 */
+  passive: boolean;
   slices: Array<Slice | null>;
   rows: Row[];
   cx: number;
@@ -91,11 +93,22 @@ function text(cls: string | null, x: number, y: number, content: string): SVGTex
  * サークルメニューを開く。
  * `list` を渡すと輪の下に一覧を並べる（数が決まらないもの。カメラなど）。
  */
+export interface RadialOptions {
+  /**
+   * **選ばせない輪**（`50` の修飾ボタン）。指の合図を受け取らず、下の画面へ素通りさせる。
+   * 光らせるのは呼び出し側（`highlightRadial`）。
+   */
+  passive?: boolean;
+  /** 真ん中に出す言葉。既定は「キャンセル」。 */
+  hub?: string;
+}
+
 export function openRadial(
   menu: RadialMenu,
   clientX: number,
   clientY: number,
   list: RadialItem[] = [],
+  opts: RadialOptions = {},
 ): void {
   closeRadial();
   // 一覧がある分だけ下の余白も見る
@@ -120,6 +133,8 @@ export function openRadial(
 
   const host = document.createElement("div");
   host.className = "radial";
+  // 説明だけの輪は、指を下の画面へ通す（押しながら反対の手で触れるように）
+  if (opts.passive) host.style.pointerEvents = "none";
   host.addEventListener("touchstart", (e) => e.preventDefault(), { passive: false });
   host.addEventListener("touchmove", (e) => e.preventDefault(), { passive: false });
   const svg = document.createElementNS(NS, "svg");
@@ -193,7 +208,7 @@ export function openRadial(
   hub.setAttribute("fill", "#20242a");
   hub.setAttribute("stroke", "#3d454e");
   svg.appendChild(hub);
-  svg.appendChild(text("sub", cx, cy + 4, "キャンセル"));
+  svg.appendChild(text("sub", cx, cy + 4, opts.hub ?? "キャンセル"));
 
   // 輪の下の一覧
   const rows: Row[] = [];
@@ -215,10 +230,33 @@ export function openRadial(
     rows.push({ rect, label, item, top });
   });
 
-  open = { host, slices, rows, cx, cy, px: clientX, py: clientY, selected: -1, selectedRow: -1 };
+  open = { host, passive: !!opts.passive, slices, rows, cx, cy, px: clientX, py: clientY, selected: -1, selectedRow: -1 };
+  if (opts.passive) return;
   window.addEventListener("pointermove", onMove);
   window.addEventListener("pointerup", onUp);
   window.addEventListener("pointercancel", onUp);
+}
+
+/** 区画の色を塗り直す。 */
+function paintSlices(sel: number): void {
+  if (!open) return;
+  for (const s of open.slices) {
+    if (!s) continue;
+    const on = s.index === sel;
+    s.path.setAttribute("fill", on ? "#2f5f7d" : "#2c3238");
+    s.path.setAttribute("stroke", on ? "#4f9fd1" : "#171a1e");
+    s.icon.setAttribute("stroke", on ? "#ffffff" : "#dfe5ea");
+  }
+  open.selected = sel;
+}
+
+/** 説明だけの輪で、いまの向きを光らせる（`50`）。 */
+export function highlightRadial(dir: Direction | null): void {
+  if (!open) return;
+  const sel = dir ? DIRECTIONS.indexOf(dir) : -1;
+  if (sel === open.selected) return;
+  paintSlices(open.slices[sel] ? sel : -1);
+  if (sel >= 0) navigator.vibrate?.(6);
 }
 
 /** その向きの方位（北が 0）。区画が無ければ −1。 */
@@ -284,14 +322,7 @@ function onMove(e: PointerEvent): void {
     else if (toPress >= DEAD_RADIUS) sel = sliceAt(dx, dy);
   }
   if (sel === open.selected) return;
-  for (const s of open.slices) {
-    if (!s) continue;
-    const on = s.index === sel;
-    s.path.setAttribute("fill", on ? "#2f5f7d" : "#2c3238");
-    s.path.setAttribute("stroke", on ? "#4f9fd1" : "#171a1e");
-    s.icon.setAttribute("stroke", on ? "#ffffff" : "#dfe5ea");
-  }
-  open.selected = sel;
+  paintSlices(sel);
   if (sel >= 0) navigator.vibrate?.(6);
 }
 
